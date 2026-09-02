@@ -17,6 +17,7 @@ from backend.schemas import (
     ThreadDeleteResponse,
 )
 from backend.service import WorkflowService, get_workflow_service
+from backend.service import ResearchService, get_research_service
 
 logger = logging.getLogger("backend.router.research")
 
@@ -54,24 +55,24 @@ async def run_research(
 @router.post("/stream")
 async def stream_research(
     payload: ResearchRequest,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ) -> StreamingResponse:
+    """P2: 纯 async generator + graph.astream 实现 token 级流式 SSE。"""
     logger.info("[ROUTE] /stream | user=%s | thread=%s | query=%s", payload.user_id, payload.thread_id, payload.query[:80])
-    async def event_stream():
-        start_event = {"type": "status", "message": "任务已接收，正在初始化多智能体链路"}
-        yield f"data: {json.dumps(start_event, ensure_ascii=False)}\n\n"
-        async for event in workflow_service.stream_events(
-            query=payload.query,
-            user_id=payload.user_id,
-            thread_id=payload.thread_id,
-            tenant_id=payload.tenant_id,
-            max_iterations=payload.max_iterations,
-            enable_memory=payload.enable_memory,
-            hitl_enabled=payload.hitl_enabled,
-        ):
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    gen = research_service.stream_research(
+        query=payload.query,
+        user_id=payload.user_id,
+        thread_id=payload.thread_id,
+        tenant_id=payload.tenant_id,
+        max_iterations=payload.max_iterations,
+        enable_memory=payload.enable_memory,
+        hitl_enabled=payload.hitl_enabled,
+    )
+    return StreamingResponse(
+        gen,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/cancel")
@@ -87,18 +88,19 @@ async def cancel_research(
 @router.post("/resume")
 async def resume_research(
     payload: ResumeRequest,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ) -> StreamingResponse:
     """恢复被中断的任务（流式输出）。"""
     logger.info("[ROUTE] /resume | thread=%s | resume_value=%s", payload.thread_id, str(payload.resume_value)[:100] if payload.resume_value else "(empty)")
-    async def event_stream():
-        async for event in workflow_service.resume_stream(
-            thread_id=payload.thread_id,
-            resume_value=payload.resume_value,
-        ):
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    gen = research_service.resume_stream(
+        thread_id=payload.thread_id,
+        resume_value=payload.resume_value,
+    )
+    return StreamingResponse(
+        gen,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/threads", response_model=ThreadListResponse)

@@ -4,6 +4,7 @@
 """
 import json
 import logging
+import re
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import interrupt, StreamWriter
@@ -21,7 +22,7 @@ from ._fallbacks import (
 logger = logging.getLogger("mult_agents")
 
 
-def write_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[write]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "write", "message": "正在撰写最终报告..."})
@@ -71,8 +72,19 @@ def write_node(state: AgentState, agent, agent_name: str, writer: StreamWriter |
     # 彻底断开之前的 messages 累积，只给模型当前这一条指令，避免被前面的 JSON 带偏
     if writer:
         writer({"node": "write", "message": "正在调用写作模型生成报告正文..."})
-    result = agent.invoke({"messages": [human]})
-    content = _last_content(result)
+    # P2: 使用 astream 实现 token 级流式
+    content = ""
+    async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
+        if isinstance(chunk, tuple) and len(chunk) == 2:
+            msg_chunk, metadata = chunk
+            text = getattr(msg_chunk, "content", "")
+            if text and writer:
+                writer({"type": "token", "node": "write", "text": text})
+                content += text
+    if not content:
+        # 降级：astream 未产出内容时回退到 invoke
+        result = agent.invoke({"messages": [human]})
+        content = _last_content(result)
     
     # 强制清理可能的错误 JSON 代码块
     content = re.sub(r"^```json\s*", "", content)
@@ -116,5 +128,5 @@ def write_node(state: AgentState, agent, agent_name: str, writer: StreamWriter |
     emit("write", final_content)
     if writer:
         writer({"node": "write", "message": "报告撰写完成"})
-    return {"draft": final_content, "final": final_content, "messages": [human, result["messages"][-1]]}
+    return {"draft": final_content, "final": final_content, "messages": [human]}
 

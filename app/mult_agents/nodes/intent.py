@@ -44,14 +44,26 @@ def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter 
 
 
 
-def direct_answer_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+async def direct_answer_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[direct_answer]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "direct_answer", "message": "正在生成直接回答..."})
     prompt = f"用户问题：{state['query']}"
     human = HumanMessage(content=with_memory_context(state, prompt))
-    result = agent.invoke({"messages": [human]})
-    content = _last_content(result).strip()
+    # P2: 使用 astream 实现 token 级流式
+    full_content = ""
+    async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
+        if isinstance(chunk, tuple) and len(chunk) == 2:
+            msg_chunk, metadata = chunk
+            text = getattr(msg_chunk, "content", "")
+            if text and writer:
+                writer({"type": "token", "node": "direct_answer", "text": text})
+                full_content += text
+    if not full_content:
+        # 降级：astream 未产出内容时回退到 invoke
+        result = agent.invoke({"messages": [human]})
+        full_content = _last_content(result).strip()
+    content = full_content
     emit("direct_answer", content)
     if writer:
         writer({"node": "direct_answer", "message": "回答生成完成"})
@@ -61,7 +73,7 @@ def direct_answer_node(state: AgentState, agent, agent_name: str, writer: Stream
         "draft": content,
         "analysis_summary": content,
         "needs_more_research": False,
-        "messages": [human, result["messages"][-1]],
+        "messages": [human],
     }
 
 
