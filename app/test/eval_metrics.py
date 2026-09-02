@@ -32,7 +32,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import build_agents, build_checkpointer, build_memory_manager
+from mult_agents.runtime import build_checkpointer, build_memory_manager
+from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 
 logger = logging.getLogger("eval")

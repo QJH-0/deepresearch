@@ -1,10 +1,11 @@
 """工具模块：封装 Web 检索、本地 RAG 查询与通用辅助工具函数。
 
 Web 检索采用多源降级策略（参考 gpt-researcher 项目）：
-1. 优先使用 Bing 搜索（国内可访问、免费、无需 API Key）
-2. 可选支持 SearXNG（自建实例，环境变量 SEARX_URL 配置）
+1. DuckDuckGo（duckduckgo-search >=7.0，免费、无需 API Key）
+2. Bing HTML（国内可直连的降级备选）
+3. SearXNG（自建实例，环境变量 SEARX_URL 配置）
 
-注意：Bocha 搜索已删除（P0），DuckDuckGo 接入在 P1-5 完成。
+SearchProvider 抽象层落位后，后续换 Tavily/Bing/SearXNG 只新增一个 Provider。
 """
 
 from datetime import datetime
@@ -26,7 +27,106 @@ from .rag.core import RAGSystem, RAGConfig
 
 logger = logging.getLogger("mult_agents")
 
-# ── Bing 搜索（国内可用的免费搜索，无需 API Key）──
+# ── DuckDuckGo 搜索（P1-5：主搜索源，三道限流防线）──
+
+import asyncio
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class SearchProvider(Protocol):
+    """搜索提供者抽象层。后续换 Tavily/Bing/SearXNG 只新增一个 Provider。"""
+
+    async def search(self, query: str, max_results: int = 6) -> list[dict]:
+        """返回标准化的搜索结果记录列表。"""
+        ...
+
+
+class DuckDuckGoProvider:
+    """DuckDuckGo 搜索（duckduckgo-search >=7.0）。
+
+    三道限流防线（计划 5.5 节硬性要求）：
+    1. max_results=5~8（默认 6），单次检索量收敛
+    2. Redis 结果缓存 TTL 1h（key: ddg:{query}）—— 如有 Redis 则启用
+    3. 任何异常（含 202/429 限流响应）→ 返回空列表 + 记 warning，绝不抛异常、绝不阻塞主流程
+    """
+
+    def __init__(self, redis_client=None):
+        self._redis = redis_client  # 可选，无则跳过缓存
+
+    def _ddgs(self):
+        from duckduckgo_search import DDGS
+        return DDGS()
+
+    async def search(self, query: str, max_results: int = 6) -> list[dict]:
+        cache_key = f"ddg:{query}"
+        # ② Redis 缓存 TTL 1h
+        if self._redis:
+            try:
+                cached = await self._redis.get(cache_key)
+                if cached:
+                    return json.loads(cached)
+            except Exception:
+                pass  # 缓存读取失败不阻塞
+
+        try:
+            raw = await asyncio.to_thread(
+                lambda: self._ddgs().text(query, max_results=max_results)
+            )
+            sources = [
+                {
+                    "source_id": "",
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                    "domain": urllib.parse.urlparse(r.get("href", "")).netloc if r.get("href") else "",
+                    "source_type": "web",
+                    "published_at": "",
+                }
+                for r in raw
+            ]
+            if self._redis:
+                try:
+                    await self._redis.setex(cache_key, 3600, json.dumps(sources, ensure_ascii=False))
+                except Exception:
+                    pass
+            logger.info("[ddg_search] 搜索完成 | query=%s | 记录数=%s", query, len(sources))
+            return sources
+        except Exception as e:
+            # ③ 失败降级：空结果不阻塞
+            logger.warning("[ddg_search] 搜索失败，降级为空结果 | query=%s | error=%s", query, e)
+            return []
+
+
+# 全局 DuckDuckGo provider 实例
+_DDG_PROVIDER: DuckDuckGoProvider | None = None
+
+
+def _get_ddg_provider() -> DuckDuckGoProvider:
+    global _DDG_PROVIDER
+    if _DDG_PROVIDER is None:
+        _DDG_PROVIDER = DuckDuckGoProvider()
+    return _DDG_PROVIDER
+
+
+def _ddg_search_records(query: str, count: int = 6) -> list[dict]:
+    """同步包装的 DuckDuckGo 搜索（供 web_search_records 调用）。"""
+    import asyncio as _asyncio
+    try:
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            # 已在事件循环中，用 run_until_complete 会报错——用新线程
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(
+                    lambda: _asyncio.run(_get_ddg_provider().search(query, max_results=count))
+                ).result()
+    except RuntimeError:
+        pass
+    return _asyncio.run(_get_ddg_provider().search(query, max_results=count))
+
+
+# ── Bing 搜索（降级备选）──
 
 
 def _bing_search_records(query: str, count: int = 5) -> list[dict]:
@@ -171,8 +271,9 @@ def web_search_records(query: str, count: int = 5) -> list[dict]:
     """统一的 Web 搜索入口，采用多源降级策略（参考 gpt-researcher）。
 
     搜索顺序：
-    1. Bing（免费、无需 API Key，国内可直连，首选）
-    2. SearXNG（如果配置了 SEARX_URL）
+    1. DuckDuckGo（首选，免费、无需 API Key）
+    2. Bing（国内可直连的降级备选）
+    3. SearXNG（如果配置了 SEARX_URL）
 
     Args:
         query: 搜索关键词
@@ -181,13 +282,19 @@ def web_search_records(query: str, count: int = 5) -> list[dict]:
     Returns:
         标准化的搜索结果记录列表
     """
-    # 策略1: Bing（首选，国内可直连）
+    # 策略1: DuckDuckGo（首选）
+    records = _ddg_search_records(query, count=count)
+    if records:
+        logger.info("[web_search] 使用 DuckDuckGo 成功 | 记录数=%s", len(records))
+        return records
+
+    # 策略2: Bing（国内可直连）
     records = _bing_search_records(query, count=count)
     if records:
         logger.info("[web_search] 使用 Bing 成功 | 记录数=%s", len(records))
         return records
 
-    # 策略2: SearXNG（自建实例）
+    # 策略3: SearXNG（自建实例）
     records = _searxng_search_records(query, count=count)
     if records:
         logger.info("[web_search] 使用 SearXNG 成功 | 记录数=%s", len(records))
