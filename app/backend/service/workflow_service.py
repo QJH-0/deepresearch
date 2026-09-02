@@ -31,8 +31,7 @@ class WorkflowService:
         self._memory_manager = None
         self._app = None
         self._thread_repo: Optional[ThreadRepository] = None
-        # ── 中断控制：允许前端取消正在运行的任务 ──
-        self._cancel_flags: dict[str, Event] = {}
+        # P3: _cancel_flags 已删除，取消走 TaskRegistry
 
     def _ensure_initialized(self) -> None:
         if self._initialized:
@@ -589,8 +588,8 @@ class WorkflowService:
 
         queue: asyncio.Queue[dict] = asyncio.Queue()
         loop = asyncio.get_running_loop()
-        cancel_event = Event()
-        self._cancel_flags[thread_id] = cancel_event
+        # P3: _cancel_flags 已删除，取消走 TaskRegistry
+        cancel_event = Event()  # 保留局部变量供 worker 内部使用
 
         # ── 落库会话记录：新建会话立刻出现在历史列表里，并自动命名 ──
         # 之前只在拿到 final 结果后才刷新列表，导致「新建会话后看不到历史在哪」。
@@ -637,7 +636,7 @@ class WorkflowService:
                 logger.error("[TRACE] stream_events EXCEPTION | thread=%s | error=%s", thread_id, exc, exc_info=True)
                 emit({"type": "error", "message": str(exc)})
             finally:
-                self._cancel_flags.pop(thread_id, None)
+                # P3: _cancel_flags 已删除
                 # 参考 gpt-researcher 的 JSONResearchHandler：保存研究日志
                 close_research_logger(thread_id, route=route, final=final)
                 emit({"type": "__done__"})
@@ -652,14 +651,8 @@ class WorkflowService:
                 break
             yield event
 
-    def cancel_task(self, thread_id: str) -> bool:
-        """取消正在运行的任务。"""
-        flag = self._cancel_flags.get(thread_id)
-        if flag:
-            flag.set()
-            logger.info("任务取消请求已发送 | thread_id=%s", thread_id)
-            return True
-        return False
+    # P3: cancel_task 已删除，取消走 TaskRegistry
+    # 旧 stream_events / resume_stream 方法已由 P2 的 research_service.py 替代
 
     # ── 会话元数据（chat_threads 表）────────────────────────────────
 
@@ -876,8 +869,8 @@ class WorkflowService:
                      thread_id, str(resume_value)[:200] if resume_value else "(empty)")
         queue: asyncio.Queue[dict] = asyncio.Queue()
         loop = asyncio.get_running_loop()
-        cancel_event = Event()
-        self._cancel_flags[thread_id] = cancel_event
+        # P3: _cancel_flags 已删除，取消走 TaskRegistry
+        cancel_event = Event()  # 保留局部变量供 worker 内部使用
 
         def emit(event: dict) -> None:
             asyncio.run_coroutine_threadsafe(queue.put(event), loop)
@@ -908,7 +901,7 @@ class WorkflowService:
                 logger.error("[TRACE] resume_stream EXCEPTION | thread=%s | error=%s", thread_id, exc, exc_info=True)
                 emit({"type": "error", "message": str(exc)})
             finally:
-                self._cancel_flags.pop(thread_id, None)
+                # P3: _cancel_flags 已删除
                 emit({"type": "__done__"})
 
         Thread(target=worker, daemon=True).start()

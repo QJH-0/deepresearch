@@ -69,6 +69,7 @@ class ResearchState(TypedDict):
     hitl_enabled: bool
     hitl_config: dict
     user_feedback: dict
+    plan_revision_count: int  # P4: plan revise 轮次计数（防死循环上限 3）
 
 
 # ── 进度追踪 ──
@@ -144,6 +145,7 @@ def create_initial_state(
             "write_review": False,
         },
         "user_feedback": {},
+        "plan_revision_count": 0,
         # ProgressState
         "phase": "initialized",
         "iteration": 0,

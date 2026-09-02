@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field
+from typing import Annotated, Literal, Union
+from pydantic import BaseModel, Field, model_validator
 
 
 class ResearchRequest(BaseModel):
@@ -21,7 +22,45 @@ class ResearchResponse(BaseModel):
 
 class ResumeRequest(BaseModel):
     thread_id: str = Field(..., min_length=1)
-    resume_value: dict | str = Field(...)
+    # P3: mode 区分崩溃续研 vs HITL 回答
+    # mode=continue: 崩溃续研，用 astream(None, config) 从最后 checkpoint 续跑
+    # mode=answer: HITL 回答，用 Command(resume=resume_value) 从 interrupt 点继续
+    mode: str = Field(default="answer", pattern="^(continue|answer)$")
+    resume_value: dict | str | None = None  # mode=answer 时必填
+
+
+# ── P4: 结构化 resume payload（按 interrupt kind 校验） ──
+
+class ClarifyResumePayload(BaseModel):
+    """澄清回答 resume payload。"""
+    kind: Literal["clarification"]
+    answers: list[str]  # 与问题列表一一对应
+
+
+class PlanApprovalResumePayload(BaseModel):
+    """计划审批 resume payload。"""
+    kind: Literal["plan_approval"]
+    action: Literal["approve", "revise", "reject"]
+    reason: str | None = None  # revise 必填（model_validator 校验）
+
+    @model_validator(mode="after")
+    def validate_reason(self):
+        if self.action == "revise" and not self.reason:
+            raise ValueError("revise 操作必须提供 reason")
+        return self
+
+
+class ReportReviewResumePayload(BaseModel):
+    """报告审核 resume payload。"""
+    kind: Literal["report_review"]
+    action: Literal["adopt", "deepen"]
+    extra_sub_questions: list[str] = []  # deepen 必填
+
+    @model_validator(mode="after")
+    def validate_extra(self):
+        if self.action == "deepen" and not self.extra_sub_questions:
+            raise ValueError("deepen 操作必须提供 extra_sub_questions")
+        return self
 
 
 class RollbackRequest(BaseModel):

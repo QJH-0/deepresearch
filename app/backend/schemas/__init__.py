@@ -11,6 +11,9 @@ from .research import (
     ThreadRenameRequest,
     ThreadPinRequest,
     ThreadDeleteResponse,
+    ClarifyResumePayload,
+    PlanApprovalResumePayload,
+    ReportReviewResumePayload,
 )
 from .document import (
     DocumentUploadResponse,
@@ -54,6 +57,9 @@ __all__ = [
     "ThreadRenameRequest",
     "ThreadPinRequest",
     "ThreadDeleteResponse",
+    "ClarifyResumePayload",
+    "PlanApprovalResumePayload",
+    "ReportReviewResumePayload",
     "DocumentUploadResponse",
     "DocumentInfo",
     "DocumentListResponse",

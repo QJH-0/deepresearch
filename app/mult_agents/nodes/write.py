@@ -7,10 +7,10 @@ import logging
 import re
 
 from langchain_core.messages import HumanMessage
-from langgraph.types import interrupt, StreamWriter
+from langgraph.types import StreamWriter, Command
 
 from ..state import AgentState
-from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs
+from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs, raise_interrupt
 from ._parsing import _invoke_json_agent, _last_content
 from ._fallbacks import (
     _render_fallback_report, _build_source_lookup, _extract_citation_ids,
@@ -97,33 +97,37 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     
     final_content = _ensure_reference_section(content, state)
 
-    # ── HITL: 报告审核中断（可选） ──
+    # ── HITL: report_review（P4 改造：kind=report_review，支持 adopt/deepen） ──
     if state.get("hitl_enabled", False) and state.get("hitl_config", {}).get("write_review", False):
-        interrupt_value = {
-            "type": "write_review",
-            "node": "write",
-            "draft": final_content,
+        decision = raise_interrupt("report_review", {
+            "report_preview": final_content[:2000],
+            "full_report": final_content,
             "message": "报告初稿已生成，请审核。",
-        }
-        user_feedback = interrupt(interrupt_value)
+        })
 
-        if isinstance(user_feedback, dict) and not user_feedback.get("approved", True):
-            feedback_text = user_feedback.get("feedback", "")
-            if feedback_text:
-                rewrite_prompt = (
-                    f"用户对初稿的修改意见：{feedback_text}\n"
-                    "请根据意见重新撰写报告。原始数据保持不变。"
-                )
-                human_rewrite = HumanMessage(content=with_memory_context(state, rewrite_prompt))
-                result = agent.invoke({"messages": [human_rewrite]})
-                content = _last_content(result)
-                content = re.sub(r"^```json\s*", "", content)
-                content = re.sub(r"^```markdown\s*", "", content)
-                content = re.sub(r"^```\s*", "", content)
-                content = re.sub(r"```$", "", content.strip())
-                content, _ = _validate_and_fix_citations(content, valid_source_ids_set)
-                final_content = _ensure_reference_section(content, state)
-                human = human_rewrite
+        action = decision.get("action", "adopt") if isinstance(decision, dict) else "adopt"
+
+        match action:
+            case "adopt":
+                logger.info("[write] 用户采纳报告")
+                pass  # 使用当前 final_content
+
+            case "deepen":
+                # “再深入方向 X” → 回检索追加子问题
+                extra_sub_questions = decision.get("extra_sub_questions", [])
+                iteration = state.get("iteration", 0)
+                max_iter = state.get("max_iterations", 3)
+
+                if iteration >= max_iter:
+                    logger.warning("[write] 迭代已达上限 %d，直接采纳", max_iter)
+                    if writer:
+                        writer({"node": "write", "message": "已达迭代上限，报告自动采纳"})
+                else:
+                    logger.info("[write] 用户要求再深入 | 方向=%s | iteration=%d", extra_sub_questions, iteration + 1)
+                    return Command(goto="plan", update={
+                        "sub_questions": extra_sub_questions,
+                        "iteration": iteration + 1,
+                    })
 
     emit("write", final_content)
     if writer:

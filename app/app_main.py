@@ -32,6 +32,7 @@ import uvicorn
 
 from backend.config import AppSettings
 from backend.router import health_router, research_router, document_router
+from backend.service import init_task_registry, get_task_registry
 from mult_agents.config import AppConfig
 from mult_agents.rag.core import RAGConfig
 from mult_agents.tools import init_rag_system
@@ -138,17 +139,70 @@ def _init_infra() -> None:
         logger.warning("基础设施初始化部分完成: RAG 不可用，文档上传后将无法向量化")
 
 
+async def _init_task_registry_and_scan(config: AppConfig) -> None:
+    """初始化 TaskRegistry 并执行崩溃恢复扫描。
+
+    P3-2: 进程重启后扫 Redis 拘留的 running 标记 + PG checkpointer，
+    标记 interrupted_by_restart，前端可据此提示"研究已中断可继续"。
+    """
+    redis_client = None
+    try:
+        import redis.asyncio as aioredis
+        redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+        await redis_client.ping()
+        logger.info("Redis 连接成功，TaskRegistry 启用多 worker 兜底")
+    except Exception as exc:
+        logger.warning("Redis 连接失败，TaskRegistry 降级为单进程模式: %s", exc)
+        redis_client = None
+
+    registry = init_task_registry(redis=redis_client)
+
+    # 崩溃恢复扫描：需要 graph_app 来检查 PG checkpoint
+    # 延迟导入避免循环
+    try:
+        from mult_agents.models import build_agents
+        from mult_agents.graph import build_app as build_workflow_app
+        from mult_agents.runtime import build_checkpointer
+
+        agents = build_agents(config.model, config.api_key, config)
+        checkpointer = build_checkpointer(config)
+        graph_app = build_workflow_app(agents, checkpointer)
+
+        orphaned = await registry.scan_orphans(graph_app=graph_app)
+        if orphaned:
+            logger.info("崩溃恢复扫描完成，标记 %d 个中断会话: %s", len(orphaned), orphaned)
+        else:
+            logger.info("崩溃恢复扫描完成，无中断会话")
+    except Exception as exc:
+        logger.warning("崩溃恢复扫描失败（不阻塞启动）: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan: 启动和关闭钩子。"""
     # 启动
     _init_infra()
+
+    # P3-2: 初始化 TaskRegistry + 崩溃恢复扫描
+    settings = AppSettings()
+    config = AppConfig.from_file(settings.config_path)
+    await _init_task_registry_and_scan(config)
+
     yield
     # 关闭
     global _chunk_consumer
     if _chunk_consumer is not None:
         _chunk_consumer.stop()
         logger.info("MQ 消费者已停止")
+
+    # 关闭 Redis 连接
+    registry = get_task_registry()
+    if registry.redis is not None:
+        try:
+            await registry.redis.aclose()
+            logger.info("Redis 连接已关闭")
+        except Exception:
+            pass
 
 
 def create_app() -> FastAPI:

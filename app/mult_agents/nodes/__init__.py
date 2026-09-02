@@ -2,7 +2,7 @@
 
 graph.py 的 `from .nodes import ...` 仍然有效。
 """
-from ._shared import bind_agent, detect_intent
+from ._shared import bind_agent, detect_intent, raise_interrupt
 from .intent import intent_node, direct_answer_node
 from .plan import plan_node
 from .web_search import web_search_node
@@ -15,6 +15,7 @@ from .clarify import clarify_node
 __all__ = [
     "bind_agent",
     "detect_intent",
+    "raise_interrupt",
     "intent_node",
     "direct_answer_node",
     "plan_node",

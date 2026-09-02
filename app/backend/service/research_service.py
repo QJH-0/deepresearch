@@ -223,10 +223,13 @@ class ResearchService:
                     if "__interrupt__" in chunk:
                         interrupts = chunk["__interrupt__"]
                         for intr in interrupts:
+                            # P4: 从 interrupt payload 中提取实际 kind（不再硬编码）
+                            intr_value = intr.value if isinstance(intr.value, dict) else {"value": intr.value}
+                            intr_kind = intr_value.get("kind", "unknown") if isinstance(intr_value, dict) else "unknown"
                             yield sse(event("interrupt.raised",
                                             interrupt_id=intr.id,
-                                            kind="plan_approval",
-                                            payload=intr.value if isinstance(intr.value, dict) else {"value": intr.value}))
+                                            kind=intr_kind,
+                                            payload=intr_value))
                         break
 
                     for node_name, node_output in chunk.items():
@@ -409,16 +412,68 @@ class ResearchService:
         return self._thread_repo.delete_thread(thread_id, user_id)
 
     def get_state(self, thread_id: str) -> dict:
+        """获取任务当前状态快照（P3 增强）。
+
+        返回字段：
+        - thread_id: 会话 ID
+        - status: idle | running | awaiting_input | interrupted_by_restart
+        - current_node: 当前执行到的节点名
+        - has_checkpoint: 是否有 checkpoint（可恢复）
+        - resumable: 是否可恢复
+        - interrupted_by_restart: 是否因进程重启被中断
+        - next_nodes: 下一步待执行的节点列表
+        - values: 核心状态值子集
+        - interrupts: 当前 interrupt 信息（如有）
+        """
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
         snapshot = self._app.get_state(config)
+
+        # 判断状态
+        from backend.service import get_task_registry
+        registry = get_task_registry()
+        is_running = registry.is_running(thread_id)
+
+        has_interrupts = bool(snapshot.interrupts)
+        has_next = bool(snapshot.next)
+
+        if is_running:
+            status = "running"
+        elif has_interrupts:
+            status = "awaiting_input"
+        elif has_next:
+            # 有待执行节点但不在运行 → 可能是崩溃中断
+            # 检查 Redis interrupted_by_restart 标记
+            import asyncio as _asyncio
+            try:
+                loop = _asyncio.get_event_loop()
+                if loop.is_running():
+                    # 异步上下文，但这里是同步方法，用安全方式检查
+                    pass
+            except Exception:
+                pass
+            status = "idle"  # 默认 idle，router 层异步检查 interrupted_by_restart
+        else:
+            status = "idle"
+
+        # next_nodes
+        next_nodes = list(snapshot.next) if snapshot.next else []
+
+        # current_node：从 next 推断
+        current_node = next_nodes[0] if next_nodes else ""
+
         return {
             "thread_id": thread_id,
+            "status": status,
+            "current_node": current_node,
+            "has_checkpoint": snapshot.parent_config is not None or has_next or bool(snapshot.values),
+            "resumable": has_next or has_interrupts,
+            "interrupted_by_restart": False,  # router 层异步补充
+            "next_nodes": next_nodes,
             "values": {k: v for k, v in snapshot.values.items() if k in (
                 "query", "phase", "intent", "iteration", "plan", "final",
-                "hitl_enabled", "user_feedback",
+                "hitl_enabled", "user_feedback", "needs_more_research",
             )},
-            "next": list(snapshot.next) if snapshot.next else [],
             "interrupts": [
                 {"id": intr.id, "value": intr.value}
                 for intr in snapshot.interrupts
@@ -426,6 +481,40 @@ class ResearchService:
             "created_at": snapshot.created_at,
             "parent_config": snapshot.parent_config,
         }
+
+    # ── P4: interrupt 状态重建 API ──
+
+    async def get_interrupt(self, thread_id: str) -> dict:
+        """获取当前 interrupt 信息，供前端重建审批卡片。
+
+        P4-3: 从 graph.get_state().tasks[*].interrupts 读取，
+        返回结构化审批数据（含 kind/payload）。
+        """
+        self._ensure_initialized()
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            snapshot = await self._app.aget_state(config)
+        except Exception:
+            # aget_state 不可用时回退到同步
+            snapshot = self._app.get_state(config)
+
+        if not snapshot.next or not snapshot.tasks:
+            return {"active": False, "thread_id": thread_id}
+
+        for task in snapshot.tasks:
+            if hasattr(task, "interrupts") and task.interrupts:
+                intr = task.interrupts[0]
+                value = intr.value if isinstance(intr.value, dict) else {"value": intr.value}
+                kind = value.get("kind", "unknown")
+                return {
+                    "active": True,
+                    "thread_id": thread_id,
+                    "interrupt_id": intr.id,
+                    "kind": kind,
+                    "payload": value,
+                }
+
+        return {"active": False, "thread_id": thread_id}
 
     def get_state_history(self, thread_id: str, limit: int = 20) -> list[dict]:
         self._ensure_initialized()
@@ -477,46 +566,127 @@ class ResearchService:
             logger.warning("获取会话消息失败: %s", exc)
         return messages
 
-    # ── 恢复（P3 重写，当前占位）──────────────────────
+    # ── 恢复（P3 重写）──────────────────────
 
-    async def resume_stream(self, thread_id: str, resume_value: dict | str) -> AsyncGenerator[str, None]:
-        """流式恢复中断的任务。P3 阶段重写。"""
+    async def resume_stream(
+        self,
+        thread_id: str,
+        resume_value: dict | str | None = None,
+        mode: str = "answer",
+    ) -> AsyncGenerator[str, None]:
+        """流式恢复中断的任务（P3 重写）。
+
+        两种模式：
+        - mode=continue: 崩溃续研，用 astream(None, config) 从最后 checkpoint 续跑
+          （None 输入 = 从断点节点开始，已检索的 sources/findings 全部保留）
+        - mode=answer: HITL 回答，用 Command(resume=resume_value) 从 interrupt 点继续
+          （P4 会扩展 resume_value 为结构化 payload）
+
+        Args:
+            thread_id: 会话 ID
+            resume_value: HITL 回答值（mode=answer 时必填，mode=continue 时忽略）
+            mode: "continue" | "answer"
+        """
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
         run_id = uuid.uuid4().hex[:12]
+        final = ""
+
+        logger.info("[TRACE] resume_stream START | run=%s | thread=%s | mode=%s", run_id, thread_id, mode)
 
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
 
+        # 输入路由：mode=continue → None（从最后 checkpoint 续跑）；mode=answer → Command(resume=...)
+        if mode == "continue":
+            input_state = None
+            logger.info("[TRACE] resume_stream CONTINUE | thread=%s | 从最后 checkpoint 续跑", thread_id)
+        else:
+            if resume_value is None:
+                yield sse(event("run.error", code="InvalidResume", message="mode=answer 需要 resume_value"))
+                return
+            input_state = Command(resume=resume_value)
+            logger.info("[TRACE] resume_stream ANSWER | thread=%s | resume_value=%s",
+                        thread_id, str(resume_value)[:100])
+
         try:
-            for update in self._app.stream(Command(resume=resume_value), config, stream_mode="updates"):
-                if not isinstance(update, dict):
+            async for mode_chunk, chunk in self._app.astream(
+                input_state, config, stream_mode=["custom", "updates"]
+            ):
+                if mode_chunk == "custom":
+                    if isinstance(chunk, dict):
+                        evt_type = chunk.get("type", "")
+                        if evt_type == "token":
+                            node = chunk.get("node", "")
+                            text = chunk.get("text", "")
+                            mid = f"{run_id}:{node}"
+                            yield sse(event("message.delta", message_id=mid, text=text))
+                        elif evt_type == "progress":
+                            node = chunk.get("node", "")
+                            label = NODE_LABELS.get(node, node)
+                            yield sse(event("agent.status", node=node, label=label, phase="running"))
+                        elif evt_type == "sources":
+                            sources = chunk.get("sources", [])
+                            yield sse(event("sources.found", sources=sources))
                     continue
-                if "__interrupt__" in update:
-                    for intr in update["__interrupt__"]:
-                        yield sse(event("interrupt.raised",
-                                        interrupt_id=intr.id,
-                                        kind="plan_approval",
-                                        payload=intr.value if isinstance(intr.value, dict) else {"value": intr.value}))
-                    break
-                for node_name, node_output in update.items():
-                    if node_name == "__interrupt__":
+
+                if mode_chunk == "updates":
+                    if not isinstance(chunk, dict):
                         continue
-                    label = NODE_LABELS.get(node_name, node_name)
-                    yield sse(event("agent.status", node=node_name, label=label, phase="completed"))
-                    if isinstance(node_output, dict):
-                        final = node_output.get("final")
-                        if final:
-                            yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
-                            return
-            # 如果没有 final，尝试快照
-            snapshot = self._app.get_state(config)
-            final = str(snapshot.values.get("final", ""))
+
+                    # interrupt 检测
+                    if "__interrupt__" in chunk:
+                        interrupts = chunk["__interrupt__"]
+                        for intr in interrupts:
+                            # P4: 从 interrupt payload 中提取实际 kind（不再硬编码）
+                            intr_value = intr.value if isinstance(intr.value, dict) else {"value": intr.value}
+                            intr_kind = intr_value.get("kind", "unknown") if isinstance(intr_value, dict) else "unknown"
+                            yield sse(event("interrupt.raised",
+                                            interrupt_id=intr.id,
+                                            kind=intr_kind,
+                                            payload=intr_value))
+                        break
+
+                    for node_name, node_output in chunk.items():
+                        if node_name == "__interrupt__":
+                            continue
+                        label = NODE_LABELS.get(node_name, node_name)
+                        yield sse(event("agent.status", node=node_name, label=label, phase="completed"))
+                        if isinstance(node_output, dict):
+                            value = node_output.get("final")
+                            if value:
+                                final = str(value)
+
+            # 尝试获取 final
             if final:
+                self._complete_thread(thread_id, intent="multiagent")
+                close_research_logger(thread_id, route="multiagent", final=final)
+                logger.info("[TRACE] resume_stream DONE | run=%s | thread=%s | final_len=%d",
+                             run_id, thread_id, len(final))
                 yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
             else:
-                yield sse(event("run.error", code="NoFinalOutput", message="恢复完成但未获得最终结果"))
+                snapshot = self._app.get_state(config)
+                final = str(snapshot.values.get("final", ""))
+                if final:
+                    self._complete_thread(thread_id, intent="multiagent")
+                    close_research_logger(thread_id, route="multiagent", final=final)
+                    yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                else:
+                    logger.warning("[TRACE] resume_stream NO-FINAL | run=%s | thread=%s", run_id, thread_id)
+                    yield sse(event("run.error", code="NoFinalOutput", message="恢复完成但未获得最终结果"))
+
+        except asyncio.CancelledError:
+            logger.info("[TRACE] resume_stream CANCELLED | run=%s | thread=%s", run_id, thread_id)
+            close_research_logger(thread_id, route="multiagent", final=final)
+            yield sse(event("run.cancelled", reason="user_cancelled"))
+            raise
+
         except Exception as e:
+            logger.error("[TRACE] resume_stream ERROR | run=%s | thread=%s | error=%s",
+                         run_id, thread_id, e, exc_info=True)
+            close_research_logger(thread_id, route="multiagent", final=final)
             yield sse(event("run.error", code=type(e).__name__, message=str(e)))
+
+        # ⚠️ 无 finally —— 与 stream_research 一致的结构性保证
 
 
 # ── 单例 ──────────────────────────────────────────

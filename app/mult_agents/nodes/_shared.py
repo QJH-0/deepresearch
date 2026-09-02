@@ -142,4 +142,20 @@ def bind_agent(node_func, agent, agent_name: str):
     return partial(node_func, agent=agent, agent_name=agent_name)
 
 
+# ── P4: 统一 interrupt 载荷封装 ──
+
+def raise_interrupt(kind: str, payload: dict):
+    """统一的 interrupt 调用，保证载荷含 kind 键。
+
+    Args:
+        kind: interrupt 类型 (clarification / plan_approval / report_review)
+        payload: 载荷数据（不含 kind，本函数自动添加）
+
+    Returns:
+        interrupt() 的返回值（用户 resume 时传入的值）
+    """
+    full_payload = {"kind": kind, **payload}
+    return interrupt(full_payload)
+
+
 
