@@ -1,0 +1,69 @@
+# ============================================================
+# DeepResearch 项目 .gitignore
+# ============================================================
+
+# 参考项目（不提交）
+参考项目/
+
+# 知识文档目录（不提交）
+docs_konwledge/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Node.js
+node_modules/
+agent_front/dist/
+agent_front/build_*.txt
+
+# 环境变量与密钥
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# 数据库与运行时数据
+*.db
+*.sqlite3
+app/data/
+
+# 日志与输出
+output/
+*.log
+
+# 知识库数据（运行时生成/下载的测试数据）
+data/knowledge/downloaded/
+data/knowledge/gen_docs/__pycache__/
+data/knowledge/gen_docs/generated/
+
+# AI 工具配置
+.workbuddy/
+
+# 临时文件
+*.tmp
+*.bak
+*.orig

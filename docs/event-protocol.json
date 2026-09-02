@@ -1,0 +1,247 @@
+{
+  "run.started": {
+    "properties": {
+      "thread_id": {
+        "title": "Thread Id",
+        "type": "string"
+      },
+      "run_id": {
+        "title": "Run Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "thread_id",
+      "run_id"
+    ],
+    "title": "RunStartedData",
+    "type": "object"
+  },
+  "agent.status": {
+    "properties": {
+      "node": {
+        "title": "Node",
+        "type": "string"
+      },
+      "label": {
+        "title": "Label",
+        "type": "string"
+      },
+      "phase": {
+        "title": "Phase",
+        "type": "string"
+      }
+    },
+    "required": [
+      "node",
+      "label",
+      "phase"
+    ],
+    "title": "AgentStatusData",
+    "type": "object"
+  },
+  "message.start": {
+    "properties": {
+      "message_id": {
+        "title": "Message Id",
+        "type": "string"
+      },
+      "role": {
+        "default": "assistant",
+        "title": "Role",
+        "type": "string"
+      },
+      "node": {
+        "default": "",
+        "title": "Node",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message_id"
+    ],
+    "title": "MessageStartData",
+    "type": "object"
+  },
+  "message.delta": {
+    "properties": {
+      "message_id": {
+        "title": "Message Id",
+        "type": "string"
+      },
+      "text": {
+        "title": "Text",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message_id",
+      "text"
+    ],
+    "title": "MessageDeltaData",
+    "type": "object"
+  },
+  "message.thinking": {
+    "properties": {
+      "message_id": {
+        "title": "Message Id",
+        "type": "string"
+      },
+      "text": {
+        "title": "Text",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message_id",
+      "text"
+    ],
+    "title": "MessageThinkingData",
+    "type": "object"
+  },
+  "sources.found": {
+    "$defs": {
+      "SourceItem": {
+        "properties": {
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Url"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "snippet": {
+            "default": "",
+            "title": "Snippet",
+            "type": "string"
+          },
+          "source_type": {
+            "default": "web",
+            "enum": [
+              "web",
+              "kb"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          },
+          "chunk_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Chunk Id"
+          }
+        },
+        "title": "SourceItem",
+        "type": "object"
+      }
+    },
+    "properties": {
+      "sources": {
+        "items": {
+          "$ref": "#/$defs/SourceItem"
+        },
+        "title": "Sources",
+        "type": "array"
+      }
+    },
+    "required": [
+      "sources"
+    ],
+    "title": "SourcesFoundData",
+    "type": "object"
+  },
+  "interrupt.raised": {
+    "properties": {
+      "interrupt_id": {
+        "title": "Interrupt Id",
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "plan_approval",
+          "clarification",
+          "report_review"
+        ],
+        "title": "Kind",
+        "type": "string"
+      },
+      "payload": {
+        "additionalProperties": true,
+        "title": "Payload",
+        "type": "object"
+      }
+    },
+    "required": [
+      "interrupt_id",
+      "kind",
+      "payload"
+    ],
+    "title": "InterruptRaisedData",
+    "type": "object"
+  },
+  "run.completed": {
+    "properties": {
+      "message_id": {
+        "title": "Message Id",
+        "type": "string"
+      },
+      "final_state": {
+        "title": "Final State",
+        "type": "string"
+      }
+    },
+    "required": [
+      "message_id",
+      "final_state"
+    ],
+    "title": "RunCompletedData",
+    "type": "object"
+  },
+  "run.cancelled": {
+    "properties": {
+      "reason": {
+        "title": "Reason",
+        "type": "string"
+      }
+    },
+    "required": [
+      "reason"
+    ],
+    "title": "RunCancelledData",
+    "type": "object"
+  },
+  "run.error": {
+    "properties": {
+      "code": {
+        "title": "Code",
+        "type": "string"
+      },
+      "message": {
+        "title": "Message",
+        "type": "string"
+      }
+    },
+    "required": [
+      "code",
+      "message"
+    ],
+    "title": "RunErrorData",
+    "type": "object"
+  }
+}

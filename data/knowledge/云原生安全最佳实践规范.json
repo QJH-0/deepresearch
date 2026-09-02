@@ -1,0 +1,151 @@
+{
+  "document_type": "technical_specification",
+  "title": "云原生安全最佳实践规范",
+  "version": "1.2",
+  "publish_date": "2024-03-15",
+  "scope": "Kubernetes + 容器化应用安全",
+  "categories": [
+    {
+      "id": "container-security",
+      "name": "容器安全",
+      "controls": [
+        {
+          "control_id": "CS-01",
+          "title": "使用可信基础镜像",
+          "description": "所有容器镜像必须从可信仓库拉取，禁止使用 latest 标签",
+          "severity": "high",
+          "implementation": "在 CI/CD 管道中集成 Trivy 或 Clair 镜像扫描"
+        },
+        {
+          "control_id": "CS-02",
+          "title": "最小化镜像",
+          "description": "使用 distroless 或 alpine 作为基础镜像，减少攻击面",
+          "severity": "medium",
+          "implementation": "多阶段构建，最终镜像不含编译工具"
+        },
+        {
+          "control_id": "CS-03",
+          "title": "非 root 运行",
+          "description": "容器进程必须以非 root 用户运行",
+          "severity": "high",
+          "implementation": "Dockerfile 中使用 USER 指令指定非 root 用户"
+        },
+        {
+          "control_id": "CS-04",
+          "title": "只读根文件系统",
+          "description": "容器根文件系统应设为只读",
+          "severity": "medium",
+          "implementation": "securityContext.readOnlyRootFilesystem: true"
+        }
+      ]
+    },
+    {
+      "id": "k8s-rbac",
+      "name": "Kubernetes RBAC",
+      "controls": [
+        {
+          "control_id": "RBAC-01",
+          "title": "最小权限原则",
+          "description": "ServiceAccount 绑定的 Role/ClusterRole 必须遵循最小权限原则",
+          "severity": "high",
+          "implementation": "使用 audit2rbac 工具分析实际权限需求"
+        },
+        {
+          "control_id": "RBAC-02",
+          "title": "禁止 cluster-admin 绑定",
+          "description": "禁止将 cluster-admin 角色绑定到业务 ServiceAccount",
+          "severity": "critical",
+          "implementation": "部署 OPA Gatekeeper 策略禁止该绑定"
+        },
+        {
+          "control_id": "RBAC-03",
+          "title": "命名空间隔离",
+          "description": "不同环境的命名空间必须使用独立的 RBAC 策略",
+          "severity": "medium",
+          "implementation": "dev/staging/prod 命名空间使用独立 RoleBinding"
+        }
+      ]
+    },
+    {
+      "id": "network-security",
+      "name": "网络隔离",
+      "controls": [
+        {
+          "control_id": "NET-01",
+          "title": "NetworkPolicy 默认拒绝",
+          "description": "所有命名空间必须配置默认拒绝入站和出站流量的 NetworkPolicy",
+          "severity": "high",
+          "implementation": "部署 Cilium 或 Calico 网络插件"
+        },
+        {
+          "control_id": "NET-02",
+          "title": "mTLS 加密",
+          "description": "服务间通信必须使用 mTLS 加密",
+          "severity": "high",
+          "implementation": "部署 Istio 或 Linkerd 服务网格"
+        },
+        {
+          "control_id": "NET-03",
+          "title": "Ingress TLS",
+          "description": "所有外部入口流量必须使用 TLS 1.2+ 加密",
+          "severity": "high",
+          "implementation": "cert-manager 自动管理证书"
+        }
+      ]
+    },
+    {
+      "id": "secret-management",
+      "name": "密钥管理",
+      "controls": [
+        {
+          "control_id": "SEC-01",
+          "title": "禁止明文密钥",
+          "description": "禁止在镜像、ConfigMap 或环境变量中存储明文密钥",
+          "severity": "critical",
+          "implementation": "使用 Vault 或 Sealed Secrets 管理密钥"
+        },
+        {
+          "control_id": "SEC-02",
+          "title": "密钥轮换",
+          "description": "所有密钥必须定期轮换（最长 90 天）",
+          "severity": "high",
+          "implementation": "External Secrets Operator 集成 Vault 轮换"
+        },
+        {
+          "control_id": "SEC-03",
+          "title": "etcd 加密",
+          "description": "Kubernetes etcd 中存储的 Secret 数据必须加密",
+          "severity": "high",
+          "implementation": "配置 EncryptionConfiguration 静态加密"
+        }
+      ]
+    },
+    {
+      "id": "supply-chain",
+      "name": "供应链安全",
+      "controls": [
+        {
+          "control_id": "SC-01",
+          "title": "镜像签名验证",
+          "description": "所有生产环境镜像必须使用 Cosign 进行签名验证",
+          "severity": "high",
+          "implementation": "Sigstore Cosign + Rekor 透明日志"
+        },
+        {
+          "control_id": "SC-02",
+          "title": "SBOM 生成",
+          "description": "每次构建必须生成 SBOM (软件物料清单)",
+          "severity": "medium",
+          "implementation": "使用 Syft 生成 CycloneDX 格式 SBOM"
+        },
+        {
+          "control_id": "SC-03",
+          "title": "准入策略",
+          "description": "集群入口必须配置镜像准入策略",
+          "severity": "high",
+          "implementation": "OPA Gatekeeper 或 Kyverno 策略引擎"
+        }
+      ]
+    }
+  ]
+}
