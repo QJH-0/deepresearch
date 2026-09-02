@@ -35,16 +35,14 @@ class AppConfig:
     tenant_id: str
     max_iterations: int
     enable_memory: bool
-    short_term_ttl_seconds: int
-    short_term_max_messages: int
-    short_term_summary_threshold: int
-    short_term_backend: str
-    long_term_backend: str
-    long_term_scope: str
+    # P5: 新记忆配置
+    memory_embedding_model: str
+    memory_hot_path_top_k: int
+    memory_background_enabled: bool
+    memory_extract_model: str
     save_conversation_task: bool
     checkpointer_backend: str
     enable_milvus: bool
-    memory_top_k: int
     redis_url: str
     postgres_dsn: str
     milvus_host: str
@@ -118,16 +116,14 @@ class AppConfig:
             tenant_id=_env_str("TENANT_ID", biz.tenant_id),
             max_iterations=_env_int("MAX_ITERATIONS", biz.max_iterations),
             enable_memory=_env_bool("ENABLE_MEMORY", biz.enable_memory),
-            short_term_ttl_seconds=_env_int("SHORT_TERM_TTL_SECONDS", biz.short_term_ttl_seconds),
-            short_term_max_messages=_env_int("SHORT_TERM_MAX_MESSAGES", biz.short_term_max_messages),
-            short_term_summary_threshold=_env_int("SHORT_TERM_SUMMARY_THRESHOLD", biz.short_term_summary_threshold),
-            short_term_backend=_env_str("SHORT_TERM_BACKEND", biz.short_term_backend).lower(),
-            long_term_backend=_env_str("LONG_TERM_BACKEND", biz.long_term_backend).lower(),
-            long_term_scope=_env_str("LONG_TERM_SCOPE", biz.long_term_scope).lower(),
+            # P5: 新记忆配置
+            memory_embedding_model=_env_str("MEMORY_EMBEDDING_MODEL", biz.memory_embedding_model),
+            memory_hot_path_top_k=_env_int("MEMORY_HOT_PATH_TOP_K", biz.memory_hot_path_top_k),
+            memory_background_enabled=_env_bool("MEMORY_BACKGROUND_ENABLED", biz.memory_background_enabled),
+            memory_extract_model=_env_str("MEMORY_EXTRACT_MODEL", biz.memory_extract_model),
             save_conversation_task=_env_bool("SAVE_CONVERSATION_TASK", biz.save_conversation_task),
             checkpointer_backend=_env_str("CHECKPOINTER_BACKEND", biz.checkpointer_backend).lower(),
             enable_milvus=_env_bool("ENABLE_MILVUS", biz.enable_milvus),
-            memory_top_k=_env_int("MEMORY_TOP_K", biz.memory_top_k),
             redis_url=_env_str("REDIS_URL", mw.redis_url),
             postgres_dsn=_env_str("POSTGRES_DSN", mw.postgres_dsn),
             milvus_host=_env_str("MILVUS_HOST", mw.milvus_host),

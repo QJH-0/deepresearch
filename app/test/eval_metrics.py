@@ -32,7 +32,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import build_checkpointer, build_memory_manager
+from mult_agents.runtime import build_checkpointer
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 
@@ -374,14 +374,8 @@ def _result_to_dict(r: EvalResult) -> dict:
 
 
 def run_single_query(app, config, query, token_acc, memory_manager=None):
+    # P5: 旧记忆系统已删除，新记忆走 MemoryService (langmem + PostgresStore)
     memory_context = ""
-    if memory_manager and config.enable_memory:
-        try:
-            memory_context = memory_manager.build_personalized_prompt_context(
-                user_id=config.user_id, thread_id=config.thread_id, query=query,
-                tenant_id=config.tenant_id, max_memories=config.memory_top_k)
-        except Exception:
-            pass
     state = create_initial_state(
         query=query, max_iterations=config.max_iterations,
         user_id=config.user_id, tenant_id=config.tenant_id, memory_context=memory_context)
@@ -397,7 +391,6 @@ def run_single_query(app, config, query, token_acc, memory_manager=None):
 def run_eval(config_path, output_path, max_queries=0):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     config = AppConfig.from_file(config_path)
-    memory_manager = build_memory_manager(config) if config.enable_memory else None
     agents = build_agents(config.model, config.api_key, config)
     checkpointer = build_checkpointer(config)
     app = build_workflow_app(agents, checkpointer)

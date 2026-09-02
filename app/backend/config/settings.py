@@ -47,16 +47,14 @@ class BusinessSettings(BaseSettings):
     thread_id: str = "default"
     max_iterations: int = 3
     enable_memory: bool = True
-    short_term_ttl_seconds: int = 604800
-    short_term_max_messages: int = 30
-    short_term_summary_threshold: int = 20
-    short_term_backend: str = "postgres"
-    long_term_backend: str = "postgres"
-    long_term_scope: str = "user"
+    # P5: 旧记忆配置已清理，新记忆走 MemoryService
+    memory_embedding_model: str = "text-embedding-v3"
+    memory_hot_path_top_k: int = 5
+    memory_background_enabled: bool = True
+    memory_extract_model: str = "qwen-turbo"
     save_conversation_task: bool = False
     checkpointer_backend: str = "postgres"
     enable_milvus: bool = True
-    memory_top_k: int = 6
     milvus_collection: str = "mult_agent_memory"
     minio_bucket: str = "deep-research-docs"
     minio_secure: bool = False

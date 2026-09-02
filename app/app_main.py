@@ -32,7 +32,8 @@ import uvicorn
 
 from backend.config import AppSettings
 from backend.router import health_router, research_router, document_router
-from backend.service import init_task_registry, get_task_registry
+from backend.service import init_task_registry, get_task_registry, init_memory_service, get_memory_service
+from backend.infra import init_store, close_store, get_store
 from mult_agents.config import AppConfig
 from mult_agents.rag.core import RAGConfig
 from mult_agents.tools import init_rag_system
@@ -188,8 +189,36 @@ async def lifespan(app: FastAPI):
     config = AppConfig.from_file(settings.config_path)
     await _init_task_registry_and_scan(config)
 
+    # P5: 初始化 PostgresStore + MemoryService
+    try:
+        await init_store(
+            postgres_dsn=config.postgres_dsn,
+            dashscope_api_key=config.api_key,
+        )
+        init_memory_service(
+            api_key=config.api_key,
+            model="qwen-turbo",
+            hot_path_top_k=5,
+            background_enabled=True,
+        )
+        logger.info("P5 记忆系统初始化完成 (PostgresStore + langmem)")
+    except Exception as exc:
+        logger.warning("P5 记忆系统初始化失败（不阻塞启动）: %s", exc)
+
     yield
     # 关闭
+    # P5: 等待后台记忆任务完成 + 关闭 PostgresStore
+    mem_service = get_memory_service()
+    if mem_service is not None:
+        try:
+            await mem_service.await_background_tasks()
+        except Exception:
+            pass
+    try:
+        await close_store()
+    except Exception:
+        pass
+
     global _chunk_consumer
     if _chunk_consumer is not None:
         _chunk_consumer.stop()

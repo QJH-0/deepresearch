@@ -392,3 +392,35 @@ async def rollback(
     return workflow_service.update_state(
         payload.thread_id, payload.values, as_node=payload.as_node
     )
+
+
+# ── P5: 记忆 API ────────────────────────────────────
+
+@router.get("/memories")
+async def list_memories(
+    user_id: str = "default_user",
+    query: str = "",
+    limit: int = 200,
+):
+    """P5: 列出用户全部记忆条目（只读优先）。
+
+    Args:
+        user_id: 用户 ID（预留多用户）
+        query: 可选的语义查询（为空时返回全部）
+        limit: 返回上限
+
+    Returns:
+        {memories: [{id, text, kind, created_at, updated_at}]}
+    """
+    from backend.service import get_memory_service
+
+    mem_service = get_memory_service()
+    if mem_service is None:
+        return {"memories": [], "message": "MemoryService 未初始化"}
+
+    memories = await mem_service.list_memories(
+        user_id=user_id,
+        query=query,
+        limit=min(limit, 500),
+    )
+    return {"memories": memories, "total": len(memories)}

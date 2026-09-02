@@ -9,7 +9,7 @@ from langgraph.types import Command
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import build_checkpointer, build_memory_manager
+from mult_agents.runtime import build_checkpointer
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 from mult_agents.research_logger import get_research_logger, close_research_logger
@@ -28,7 +28,6 @@ class WorkflowService:
         self._lock = Lock()
         self._initialized = False
         self._base_config: AppConfig | None = None
-        self._memory_manager = None
         self._app = None
         self._thread_repo: Optional[ThreadRepository] = None
         # P3: _cancel_flags 已删除，取消走 TaskRegistry
@@ -40,7 +39,6 @@ class WorkflowService:
             if self._initialized:
                 return
             base_config = AppConfig.from_file(self._config_path)
-            self._memory_manager = build_memory_manager(base_config)
             agents = build_agents(base_config.model, base_config.api_key, base_config)
             checkpointer = build_checkpointer(base_config)
             self._app = build_workflow_app(agents, checkpointer)
@@ -99,15 +97,7 @@ class WorkflowService:
             enable_memory=enable_memory,
             hitl_enabled=hitl_enabled,
         )
-        memory_context = ""
-        if self._memory_manager and runtime_config.enable_memory:
-            memory_context = self._memory_manager.build_personalized_prompt_context(
-                user_id=runtime_config.user_id,
-                thread_id=runtime_config.thread_id,
-                query=query,
-                tenant_id=runtime_config.tenant_id,
-                max_memories=runtime_config.memory_top_k,
-            )
+        memory_context = ""  # P5: 旧记忆系统已删除，新记忆走 MemoryService
         state = create_initial_state(
             query=query,
             max_iterations=runtime_config.max_iterations,
@@ -130,14 +120,7 @@ class WorkflowService:
         route = str(result.get("intent", "multiagent"))
         logger.info("[TRACE] _run_sync DONE | req=%s | thread=%s | route=%s | final_len=%d | elapsed=%.2fs",
                      req_id, runtime_config.thread_id, route, len(final), time.time() - t0)
-        if self._memory_manager and runtime_config.enable_memory and final:
-            self._memory_manager.persist_turn(
-                tenant_id=runtime_config.tenant_id,
-                user_id=runtime_config.user_id,
-                thread_id=runtime_config.thread_id,
-                query=query,
-                answer=final,
-            )
+        # P5: 旧记忆 persist_turn 已删除，新记忆走 MemoryService. background_extract
         return final, route
 
     @staticmethod
@@ -214,15 +197,7 @@ class WorkflowService:
             enable_memory=enable_memory,
             hitl_enabled=hitl_enabled,
         )
-        memory_context = ""
-        if self._memory_manager and runtime_config.enable_memory:
-            memory_context = self._memory_manager.build_personalized_prompt_context(
-                user_id=runtime_config.user_id,
-                thread_id=runtime_config.thread_id,
-                query=query,
-                tenant_id=runtime_config.tenant_id,
-                max_memories=runtime_config.memory_top_k,
-            )
+        memory_context = ""  # P5: 旧记忆系统已删除，新记忆走 MemoryService
         state = create_initial_state(
             query=query,
             max_iterations=runtime_config.max_iterations,
@@ -330,14 +305,7 @@ class WorkflowService:
                 result = self._app.invoke(state, config)
                 final = str(result.get("final", ""))
                 route = str(result.get("intent", route)).strip().lower()
-        if self._memory_manager and runtime_config.enable_memory and final:
-            self._memory_manager.persist_turn(
-                tenant_id=runtime_config.tenant_id,
-                user_id=runtime_config.user_id,
-                thread_id=runtime_config.thread_id,
-                query=query,
-                answer=final,
-            )
+        # P5: 旧记忆 persist_turn 已删除，新记忆走 MemoryService. background_extract
         return final, route
 
     def resume(

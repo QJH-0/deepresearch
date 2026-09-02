@@ -27,8 +27,7 @@ if __package__ is None or __package__ == "":
 
 logger = logging.getLogger("mult_agents")
 
-# 全局记忆管理器引用（CLI 模式使用）
-MEMORY_MANAGER: Optional["MemoryManager"] = None  # noqa: F821 — 前向引用，P5 将删除
+# P5: MEMORY_MANAGER 全局引用已删除，记忆由 MemoryService (langmem + PostgresStore) 管理
 CHECKPOINTER_CONTEXT = None
 
 
@@ -91,35 +90,6 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         direct_responder=build_agent(model, api_key, "direct_answer", 0.2, []),
         writer=build_agent(model, api_key, "write", 0.4, []),
     )
-
-
-def build_memory_manager(config: AppConfig) -> Optional["MemoryManager"]:  # noqa: F821
-    """构建记忆管理器（P5 将重写为 langmem，当前保持旧实现）。"""
-    if not config.enable_memory:
-        return None
-    try:
-        from .memory import MemoryManager  # noqa: F811 — 延迟导入避免循环
-
-        return MemoryManager(
-            short_term_ttl=config.short_term_ttl_seconds,
-            short_term_max_messages=config.short_term_max_messages,
-            short_term_summary_threshold=config.short_term_summary_threshold,
-            tenant_id=config.tenant_id,
-            short_term_backend=config.short_term_backend,
-            long_term_backend=config.long_term_backend,
-            long_term_scope=config.long_term_scope,
-            save_conversation_task=config.save_conversation_task,
-            enable_milvus=config.enable_milvus,
-            redis_url=config.redis_url,
-            postgres_dsn=config.postgres_dsn,
-            milvus_host=config.milvus_host,
-            milvus_port=config.milvus_port,
-            milvus_collection=config.milvus_collection,
-            embedding_api_key=config.api_key,
-        )
-    except Exception as exc:
-        logger.exception("初始化 MemoryManager 失败，已禁用外部记忆: %s", exc)
-        return None
 
 
 def build_checkpointer(config: AppConfig):

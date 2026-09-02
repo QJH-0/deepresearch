@@ -25,12 +25,13 @@ from langgraph.types import Command
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import build_checkpointer, build_memory_manager
+from mult_agents.runtime import build_checkpointer
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 from mult_agents.research_logger import get_research_logger, close_research_logger
 from backend.schemas.events import event, sse, EventEnvelope
 from backend.infra import ThreadRepository, generate_thread_title
+from backend.service.memory_service import get_memory_service
 
 logger = logging.getLogger("backend.research_service")
 
@@ -60,7 +61,6 @@ class ResearchService:
         self._lock = Lock()
         self._initialized = False
         self._base_config: AppConfig | None = None
-        self._memory_manager = None
         self._app = None
         self._thread_repo: Optional[ThreadRepository] = None
 
@@ -71,7 +71,6 @@ class ResearchService:
             if self._initialized:
                 return
             base_config = AppConfig.from_file(self._config_path)
-            self._memory_manager = build_memory_manager(base_config)
             agents = build_agents(base_config.model, base_config.api_key, base_config)
             checkpointer = build_checkpointer(base_config)
             self._app = build_workflow_app(agents, checkpointer)
@@ -110,16 +109,9 @@ class ResearchService:
         self,
         query: str,
         runtime_config: AppConfig,
+        memory_context: str = "",
     ) -> dict:
-        memory_context = ""
-        if self._memory_manager and runtime_config.enable_memory:
-            memory_context = self._memory_manager.build_personalized_prompt_context(
-                user_id=runtime_config.user_id,
-                thread_id=runtime_config.thread_id,
-                query=query,
-                tenant_id=runtime_config.tenant_id,
-                max_memories=runtime_config.memory_top_k,
-            )
+        """构建初始状态（memory_context 由调用方异步获取后传入）。"""
         return create_initial_state(
             query=query,
             max_iterations=runtime_config.max_iterations,
@@ -156,7 +148,28 @@ class ResearchService:
         runtime_config = self._build_runtime_config(
             user_id, thread_id, tenant_id, max_iterations, enable_memory, hitl_enabled
         )
-        input_state = self._build_initial_state(query, runtime_config)
+
+        # P5: 热路径检索 — 异步获取记忆注入 plan system prompt
+        memory_context = ""
+        if runtime_config.enable_memory:
+            mem_service = get_memory_service()
+            if mem_service is not None:
+                try:
+                    memory_context = await mem_service.hot_path_search(
+                        runtime_config.user_id, query
+                    )
+                except Exception as exc:
+                    logger.warning("热路径记忆检索失败: %s", exc)
+
+        input_state = create_initial_state(
+            query=query,
+            max_iterations=runtime_config.max_iterations,
+            user_id=runtime_config.user_id,
+            tenant_id=runtime_config.tenant_id,
+            memory_context=memory_context,
+            hitl_enabled=runtime_config.hitl_enabled,
+            hitl_config=runtime_config.hitl_config,
+        )
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
         # 落库会话记录
@@ -254,13 +267,15 @@ class ResearchService:
                             if value:
                                 final = str(value)
 
-            # 2. 正常结束：发 run.completed
+            # 2. 正常结束：发 run.completed + P5 后台记忆提取
             if final:
                 self._complete_thread(thread_id, intent=route)
                 close_research_logger(thread_id, route=route, final=final)
                 logger.info("[TRACE] stream_research DONE | run=%s | thread=%s | route=%s | final_len=%d | elapsed=%.2fs",
                              run_id, thread_id, route, len(final), time.time() - t0)
                 yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                # P5: 后台记忆提取（run.completed 后异步触发，不阻塞）
+                self._trigger_memory_extract(runtime_config, query, final, thread_id)
             else:
                 # 尝试从快照获取 final
                 snapshot = self._app.get_state(config)
@@ -269,6 +284,8 @@ class ResearchService:
                     self._complete_thread(thread_id, intent=route)
                     close_research_logger(thread_id, route=route, final=final)
                     yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                    # P5: 后台记忆提取
+                    self._trigger_memory_extract(runtime_config, query, final, thread_id)
                 else:
                     logger.warning("[TRACE] stream_research NO-FINAL | run=%s | thread=%s", run_id, thread_id)
                     yield sse(event("run.error", code="NoFinalOutput", message="研究链路未产生最终结果"))
@@ -310,7 +327,28 @@ class ResearchService:
         runtime_config = self._build_runtime_config(
             user_id, thread_id, tenant_id, max_iterations, enable_memory, hitl_enabled
         )
-        input_state = self._build_initial_state(query, runtime_config)
+
+        # P5: 热路径检索
+        memory_context = ""
+        if runtime_config.enable_memory:
+            mem_service = get_memory_service()
+            if mem_service is not None:
+                try:
+                    memory_context = await mem_service.hot_path_search(
+                        runtime_config.user_id, query
+                    )
+                except Exception as exc:
+                    logger.warning("热路径记忆检索失败: %s", exc)
+
+        input_state = create_initial_state(
+            query=query,
+            max_iterations=runtime_config.max_iterations,
+            user_id=runtime_config.user_id,
+            tenant_id=runtime_config.tenant_id,
+            memory_context=memory_context,
+            hitl_enabled=runtime_config.hitl_enabled,
+            hitl_config=runtime_config.hitl_config,
+        )
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
         try:
@@ -324,14 +362,9 @@ class ResearchService:
         logger.info("[TRACE] run DONE | req=%s | thread=%s | route=%s | final_len=%d | elapsed=%.2fs",
                      req_id, thread_id, route, len(final), time.time() - t0)
 
-        if self._memory_manager and runtime_config.enable_memory and final:
-            self._memory_manager.persist_turn(
-                tenant_id=runtime_config.tenant_id,
-                user_id=runtime_config.user_id,
-                thread_id=runtime_config.thread_id,
-                query=query,
-                answer=final,
-            )
+        # P5: 后台记忆提取
+        if runtime_config.enable_memory and final:
+            self._trigger_memory_extract(runtime_config, query, final, thread_id)
         return final
 
     async def run_with_route(
@@ -349,21 +382,37 @@ class ResearchService:
         runtime_config = self._build_runtime_config(
             user_id, thread_id, tenant_id, max_iterations, enable_memory, hitl_enabled
         )
-        input_state = self._build_initial_state(query, runtime_config)
+
+        # P5: 热路径检索
+        memory_context = ""
+        if runtime_config.enable_memory:
+            mem_service = get_memory_service()
+            if mem_service is not None:
+                try:
+                    memory_context = await mem_service.hot_path_search(
+                        runtime_config.user_id, query
+                    )
+                except Exception as exc:
+                    logger.warning("热路径记忆检索失败: %s", exc)
+
+        input_state = create_initial_state(
+            query=query,
+            max_iterations=runtime_config.max_iterations,
+            user_id=runtime_config.user_id,
+            tenant_id=runtime_config.tenant_id,
+            memory_context=memory_context,
+            hitl_enabled=runtime_config.hitl_enabled,
+            hitl_config=runtime_config.hitl_config,
+        )
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
         result = self._app.invoke(input_state, config)
         final = str(result.get("final", ""))
         route = str(result.get("intent", "multiagent")).strip().lower()
 
-        if self._memory_manager and runtime_config.enable_memory and final:
-            self._memory_manager.persist_turn(
-                tenant_id=runtime_config.tenant_id,
-                user_id=runtime_config.user_id,
-                thread_id=runtime_config.thread_id,
-                query=query,
-                answer=final,
-            )
+        # P5: 后台记忆提取
+        if runtime_config.enable_memory and final:
+            self._trigger_memory_extract(runtime_config, query, final, thread_id)
         return final, route
 
     # ── 会话元数据（从 workflow_service.py 迁移）─────────
@@ -383,6 +432,56 @@ class ResearchService:
             self._thread_repo.mark_completed(thread_id, intent=intent)
         except Exception as exc:
             logger.warning("会话完成标记失败 | thread_id=%s | %s", thread_id, exc)
+
+    def _trigger_memory_extract(
+        self,
+        runtime_config: AppConfig,
+        query: str,
+        final: str,
+        thread_id: str,
+    ) -> None:
+        """P5: 触发后台记忆提取（run.completed 后，不阻塞主流程）。"""
+        mem_service = get_memory_service()
+        if mem_service is None:
+            return
+        try:
+            messages = [HumanMessage(content=query)]
+            from langchain_core.messages import AIMessage
+            messages.append(AIMessage(content=final))
+            mem_service.trigger_background_extract(
+                user_id=runtime_config.user_id,
+                thread_id=thread_id,
+                messages=messages,
+            )
+        except Exception as exc:
+            logger.warning("后台记忆提取触发失败: %s", exc)
+
+    def _trigger_memory_extract_from_snapshot(
+        self,
+        thread_id: str,
+        final: str,
+        config: dict,
+    ) -> None:
+        """P5: 从快照中提取 query 后触发后台记忆提取（resume_stream 用）。"""
+        mem_service = get_memory_service()
+        if mem_service is None:
+            return
+        try:
+            snapshot = self._app.get_state(config)
+            query = str(snapshot.values.get("query", ""))
+            user_id = str(snapshot.values.get("user_id", "default_user"))
+            if not query:
+                return
+            messages = [HumanMessage(content=query)]
+            from langchain_core.messages import AIMessage
+            messages.append(AIMessage(content=final))
+            mem_service.trigger_background_extract(
+                user_id=user_id,
+                thread_id=thread_id,
+                messages=messages,
+            )
+        except Exception as exc:
+            logger.warning("后台记忆提取触发失败(resume): %s", exc)
 
     def list_threads(self, user_id: str, limit: int = 50, keyword: str = "") -> list[dict]:
         self._ensure_initialized()
@@ -663,6 +762,8 @@ class ResearchService:
                 logger.info("[TRACE] resume_stream DONE | run=%s | thread=%s | final_len=%d",
                              run_id, thread_id, len(final))
                 yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                # P5: 后台记忆提取
+                self._trigger_memory_extract_from_snapshot(thread_id, final, config)
             else:
                 snapshot = self._app.get_state(config)
                 final = str(snapshot.values.get("final", ""))
@@ -670,6 +771,8 @@ class ResearchService:
                     self._complete_thread(thread_id, intent="multiagent")
                     close_research_logger(thread_id, route="multiagent", final=final)
                     yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                    # P5: 后台记忆提取
+                    self._trigger_memory_extract_from_snapshot(thread_id, final, config)
                 else:
                     logger.warning("[TRACE] resume_stream NO-FINAL | run=%s | thread=%s", run_id, thread_id)
                     yield sse(event("run.error", code="NoFinalOutput", message="恢复完成但未获得最终结果"))
