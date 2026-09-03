@@ -62,7 +62,11 @@ async function doRollback(checkpointId: string) {
   }
 }
 
-onMounted(() => { void loadCheckpoints() })
+onMounted(() => {
+  if (props.threadId && !props.threadId.startsWith('welcome') && !props.threadId.startsWith('thread_')) {
+    void loadCheckpoints()
+  }
+})
 
 const options = computed(() =>
   checkpoints.value.map((cp) => ({

@@ -680,15 +680,18 @@ class ResearchService:
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
         history = []
-        for i, snapshot in enumerate(self._app.get_state_history(config)):
-            if i >= limit:
-                break
-            history.append({
-                "checkpoint_id": snapshot.config.get("configurable", {}).get("checkpoint_id", ""),
-                "next": list(snapshot.next) if snapshot.next else [],
-                "created_at": snapshot.created_at,
-                "interrupts_count": len(snapshot.interrupts) if snapshot.interrupts else 0,
-            })
+        try:
+            for i, snapshot in enumerate(self._app.get_state_history(config)):
+                if i >= limit:
+                    break
+                history.append({
+                    "checkpoint_id": snapshot.config.get("configurable", {}).get("checkpoint_id", ""),
+                    "next": list(snapshot.next) if snapshot.next else [],
+                    "created_at": snapshot.created_at,
+                    "interrupts_count": len(snapshot.interrupts) if snapshot.interrupts else 0,
+                })
+        except Exception as exc:
+            logger.warning("获取状态历史失败 | thread=%s | %s", thread_id, exc)
         return history
 
     def update_state(self, thread_id: str, values: dict, as_node: str | None = None) -> dict:

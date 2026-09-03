@@ -39,21 +39,21 @@ services:
   # ---------- MySQL (cloud_agent: 业务数据库) ----------
   # 复用本地镜像 mysql:8.4.8; 首次启动自动执行 init_mock_data.sql 建表+导数据
   # 宿主机 3306 被本机原生 MySQL80 服务占用, 故映射到 3307
-  mysql:
-    image: mysql:8.4.8                  # 复用本地镜像
-    container_name: middleware-mysql
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: root123456
-      MYSQL_DATABASE: cloud_platform
-    ports:
-      - "3307:3306"
-    volumes:
-      - D:\docker\data\llmdev\mysql:/var/lib/mysql
-      # 挂载初始化脚本: MySQL 容器首次启动时自动执行 /docker-entrypoint-initdb.d/ 下的 .sql
-      - ./cloud_agent/agent/database/init_mock_data.sql:/docker-entrypoint-initdb.d/init_mock_data.sql:ro
-    networks:
-      - middleware-net
+  # mysql:
+  #   image: mysql:8.4.8                  # 复用本地镜像
+  #   container_name: middleware-mysql
+  #   restart: unless-stopped
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: root123456
+  #     MYSQL_DATABASE: cloud_platform
+  #   ports:
+  #     - "3307:3306"
+  #   volumes:
+  #     - D:\docker\data\llmdev\mysql:/var/lib/mysql
+  #     # 挂载初始化脚本: MySQL 容器首次启动时自动执行 /docker-entrypoint-initdb.d/ 下的 .sql
+  #     - ./cloud_agent/agent/database/init_mock_data.sql:/docker-entrypoint-initdb.d/init_mock_data.sql:ro
+  #   networks:
+  #     - middleware-net
 
   # ---------- PostgreSQL + pgvector (deep_research: POSTGRES_DSN) ----------
   # 选型 B(已定): 镜像由 postgres:16-alpine 换成 pgvector/pgvector:pg16
@@ -87,20 +87,20 @@ services:
       start_period: 30s
 
   # ---------- Neo4j (cloud_agent: 知识图谱) ----------
-  neo4j:
-    image: neo4j:latest                # 复用本地镜像
-    container_name: middleware-neo4j
-    restart: unless-stopped
-    environment:
-      NEO4J_AUTH: neo4j/neo4j123        # 密码须 >= 8 位
-      NEO4J_PLUGINS: '["apoc"]'
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - D:\docker\data\llmdev\neo4j:/data
-    networks:
-      - middleware-net
+  # neo4j:
+  #   image: neo4j:latest                # 复用本地镜像
+  #   container_name: middleware-neo4j
+  #   restart: unless-stopped
+  #   environment:
+  #     NEO4J_AUTH: neo4j/neo4j123        # 密码须 >= 8 位
+  #     NEO4J_PLUGINS: '["apoc"]'
+  #   ports:
+  #     - "7474:7474"
+  #     - "7687:7687"
+  #   volumes:
+  #     - D:\docker\data\llmdev\neo4j:/data
+  #   networks:
+  #     - middleware-net
 
   # ---------- Milvus 依赖: etcd (元数据) ----------
   # 不映射宿主机端口: Windows 保留 2379, 且 Milvus 只经内部网络 etcd:2379 访问

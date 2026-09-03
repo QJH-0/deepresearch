@@ -17,10 +17,6 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# ── Windows asyncio 事件循环策略修复 ──
-# psycopg (async) 和 psycopg_pool 的 AsyncConnectionPool 依赖 SelectorEventLoop,
-# Windows 默认 ProactorEventLoop 不兼容, 会导致连接池初始化卡死 30s 后超时。
-# 必须在 uvicorn/任何 asyncio 代码运行前设置。
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -186,9 +182,29 @@ async def _init_task_registry_and_scan(config: AppConfig) -> None:
         logger.warning("崩溃恢复扫描失败（不阻塞启动）: %s", exc)
 
 
+def _ensure_selector_event_loop() -> None:
+    """确保当前运行中的事件循环是 SelectorEventLoop（Windows 兼容 psycopg async）。
+
+    uvicorn 启动时可能重置 asyncio policy 回 ProactorEventLoop，导致
+    AsyncConnectionPool 报 'cannot use ProactorEventLoop' 超时。
+    在 lifespan 中再次确认 policy 正确，是最可靠的守卫点。
+    """
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        loop = asyncio.get_running_loop()
+        if not isinstance(loop, asyncio.SelectorEventLoop):
+            logger.warning(
+                "当前事件循环为 %s（非 SelectorEventLoop），"
+                "psycopg async 可能无法正常工作",
+                type(loop).__name__,
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan: 启动和关闭钩子。"""
+    _ensure_selector_event_loop()
+
     # 启动
     _init_infra()
 

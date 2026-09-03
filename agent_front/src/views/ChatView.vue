@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** ChatView（重构版）— 只做布局组装。事件→useEventStream，状态→Pinia stores */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import MessageItem from '../components/chat/MessageItem.vue'
 import Composer from '../components/chat/Composer.vue'

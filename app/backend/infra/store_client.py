@@ -11,6 +11,7 @@
 """
 
 import logging
+import sys
 from typing import Optional
 
 from langgraph.store.postgres import AsyncPostgresStore
@@ -44,6 +45,10 @@ async def init_store(
 
     if _store_instance is not None:
         return _store_instance
+
+    if sys.platform == "win32":
+        import asyncio
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     # 构建 DashScope embedding 实例
     embeddings = DashScopeEmbeddings(
