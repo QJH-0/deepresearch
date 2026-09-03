@@ -9,12 +9,20 @@ DeepResearch FastAPI 应用入口。
 关闭时:
   1. 停止消费者线程
 """
+import asyncio
 import logging
 import logging.handlers
 import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# ── Windows asyncio 事件循环策略修复 ──
+# psycopg (async) 和 psycopg_pool 的 AsyncConnectionPool 依赖 SelectorEventLoop,
+# Windows 默认 ProactorEventLoop 不兼容, 会导致连接池初始化卡死 30s 后超时。
+# 必须在 uvicorn/任何 asyncio 代码运行前设置。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # ── 在任何库导入之前，禁用系统代理 ──
 # Windows 注册表中的代理设置 (ProxyEnable=1) 会导致 dashscope 连接失败
@@ -266,6 +274,7 @@ app = create_app()
 
 
 if __name__ == "__main__":
+    # uvicorn.run 内部会创建新事件循环, 但上面已设置 policy, SelectorEventLoop 会被使用
     runtime_settings = AppSettings()
     uvicorn.run(
         "app_main:app",
