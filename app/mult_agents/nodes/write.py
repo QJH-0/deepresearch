@@ -94,7 +94,15 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     
     # 校验并修正引用ID，移除非法引用
     content, used_citation_ids = _validate_and_fix_citations(content, valid_source_ids_set)
-    
+
+    # P7-2: 引用覆盖率统计 — 主要论断数 / 带角标论断数
+    sentences = re.split(r'[。.！!？?]\s*', content)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
+    cited = sum(1 for s in sentences if re.search(r'\[([A-Z]+\d+_\d+-\d+)\]', s))
+    coverage = cited / max(len(sentences), 1)
+    logger.info("[P7-2] 引用覆盖率 | 带角标论断=%d | 主要论断=%d | 覆盖率=%.1f%% | thread=%s",
+                cited, len(sentences), coverage * 100, state.get("thread_id", ""))
+
     final_content = _ensure_reference_section(content, state)
 
     # ── HITL: report_review（P4 改造：kind=report_review，支持 adopt/deepen） ──

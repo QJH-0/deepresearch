@@ -118,6 +118,20 @@ def web_search_node(state: AgentState, agent, agent_name: str, writer: StreamWri
     logger.info("[web_search_node] 节点完成 | 新增证据=%s | 累计证据=%s", len(evidence), len(existing_evidence) + len(evidence))
     if writer:
         writer({"node": "web_search", "message": f"Web检索完成：新增 {len(evidence)} 条证据，累计 {len(existing_evidence) + len(evidence)} 条"})
+        # P7-1: 发送 sources.found 事件（本轮新增来源）
+        new_sources = [
+            {
+                "url": item.get("url", ""),
+                "title": item.get("title", ""),
+                "snippet": str(item.get("snippet", ""))[:200],
+                "source_type": "web",
+                "chunk_id": None,
+            }
+            for item in evidence
+            if item.get("source_id")
+        ]
+        if new_sources:
+            writer({"type": "sources", "sources": new_sources})
     return {
         "web_search": payload.get("summary", content),
         "web_evidence": existing_evidence + evidence,

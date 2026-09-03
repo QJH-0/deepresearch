@@ -101,6 +101,21 @@ def local_rag_node(state: AgentState, agent, agent_name: str, writer: StreamWrit
     )
     
     existing_evidence = state.get("local_evidence", [])
+    if writer:
+        # P7-1: 发送 sources.found 事件（本轮新增来源）
+        new_sources = [
+            {
+                "url": None,
+                "title": item.get("title", "") or item.get("doc_id", ""),
+                "snippet": str(item.get("snippet", ""))[:200],
+                "source_type": "kb",
+                "chunk_id": item.get("doc_id", ""),
+            }
+            for item in evidence
+            if item.get("source_id")
+        ]
+        if new_sources:
+            writer({"type": "sources", "sources": new_sources})
     return {
         "local_rag": payload.get("summary", content),
         "local_evidence": existing_evidence + evidence,

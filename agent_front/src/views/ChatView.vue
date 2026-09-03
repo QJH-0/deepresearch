@@ -13,7 +13,7 @@ import { useChatStore } from '../stores/chat'
 import { useThreadsStore } from '../stores/threads'
 import { useInterruptStore } from '../stores/interrupt'
 import { useEventStream } from '../composables/useEventStream'
-import { fetchThreadMessages, toChatMessages, cancelResearch } from '../api/rest'
+import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdfUrl } from '../api/rest'
 import type { InterruptKind } from '../types/events.gen'
 
 const route = useRoute()
@@ -76,6 +76,13 @@ function handleNewChat() {
 
 function useStarter(prompt: string) { composer.value?.fill(prompt) }
 
+// P7-4: 导出报告为 PDF（或降级 HTML 打印）
+function exportPdfReport() {
+  const threadId = threads.currentThreadId
+  if (!threadId) return
+  window.open(exportPdfUrl(threadId), '_blank')
+}
+
 // ── watchers ────────────────────────────────────────
 watch(() => threads.currentThreadId, (id) => { if (id) void openThread(id) })
 watch(() => threads.newChatSignal, () => handleNewChat())
@@ -108,6 +115,7 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
       </div>
       <div class="header-right">
         <RollbackMenu v-if="threads.currentThreadId" :thread-id="threads.currentThreadId" />
+        <button v-if="threads.currentThreadId && !isEmpty" class="export-pdf-btn" @click="exportPdfReport">📥 导出</button>
         <label class="hitl-toggle">
           <input v-model="hitlEnabled" type="checkbox" />
           <span>人工干预模式</span>
@@ -166,3 +174,19 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
     />
   </main>
 </template>
+
+<style scoped>
+.export-pdf-btn {
+  padding: 4px 12px;
+  border: 1px solid #d9e3f9;
+  border-radius: 6px;
+  background: #f8faff;
+  color: #3f67d4;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.export-pdf-btn:hover {
+  background: #eef2fd;
+}
+</style>

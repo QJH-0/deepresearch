@@ -190,6 +190,27 @@ export function uploadDocument(
   })
 }
 
+// ── P7-4: 导出 ──────────────────────────────────────
+export function exportMarkdownUrl(threadId: string): string {
+  return `/api/v1/research/threads/${encodeURIComponent(threadId)}/export/md`
+}
+
+export function exportPdfUrl(threadId: string): string {
+  return `/api/v1/research/threads/${encodeURIComponent(threadId)}/export/pdf`
+}
+
+export async function exportMarkdown(threadId: string): Promise<Blob> {
+  const resp = await fetch(exportMarkdownUrl(threadId))
+  if (!resp.ok) throw new ApiError(`导出失败: ${resp.status}`, resp.status)
+  return resp.blob()
+}
+
+export async function exportPdf(threadId: string): Promise<Blob> {
+  const resp = await fetch(exportPdfUrl(threadId))
+  if (!resp.ok) throw new ApiError(`导出失败: ${resp.status}`, resp.status)
+  return resp.blob()
+}
+
 // ── 适配器 ────────────────────────────────────────────
 export function toChatMessages(
   threadId: string,

@@ -6,7 +6,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from backend.schemas import (
@@ -424,3 +424,108 @@ async def list_memories(
         limit=min(limit, 500),
     )
     return {"memories": memories, "total": len(memories)}
+
+
+# ── P7-4: 导出 API ────────────────────────────────────
+
+@router.get("/threads/{thread_id}/export/md")
+async def export_markdown(
+    thread_id: str,
+    research_service: ResearchService = Depends(get_research_service),
+):
+    """P7-4: 导出会话最终报告为 Markdown 文件。
+
+    返回 Content-Type: text/markdown，带 Content-Disposition 下载头。
+    """
+    messages = research_service.get_thread_messages(thread_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="会话无消息记录")
+
+    # 拼接对话为 Markdown
+    lines: list[str] = []
+    for msg in messages:
+        role_label = "用户" if msg.get("role") == "user" else "助手"
+        lines.append(f"### {role_label}\n")
+        lines.append(msg.get("content", ""))
+        lines.append("")
+
+    content = "\n".join(lines)
+    filename = f"report_{thread_id[:12]}.md"
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/threads/{thread_id}/export/pdf")
+async def export_pdf(
+    thread_id: str,
+    research_service: ResearchService = Depends(get_research_service),
+):
+    """P7-4: 导出会话最终报告为 PDF。
+
+    降级策略：
+    1. 尝试 weasyprint 渲染
+    2. 装不上 → 返回 HTML 打印页面（前端 window.print()）
+    """
+    messages = research_service.get_thread_messages(thread_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="会话无消息记录")
+
+    # 取最后一条 assistant 消息作为报告正文
+    report_content = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            report_content = msg.get("content", "")
+            break
+
+    if not report_content:
+        raise HTTPException(status_code=404, detail="无可导出的报告内容")
+
+    # 尝试 weasyprint
+    try:
+        from weasyprint import HTML
+
+        html_content = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+body {{ font-family: 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif; line-height: 1.7; max-width: 700px; margin: 40px auto; color: #333; }}
+h1, h2, h3 {{ color: #2c3e50; }}
+sup.citation-ref {{ color: #3f67d4; font-size: 0.75em; }}
+pre {{ background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #ddd; padding: 6px 12px; }}
+</style></head><body>
+{report_content.replace(chr(10), '<br>')}
+</body></html>"""
+        pdf_bytes = HTML(string=html_content).write_pdf()
+        filename = f"report_{thread_id[:12]}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except ImportError:
+        # 降级：返回 HTML 打印页面
+        html_content = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>研究报告导出</title>
+<style>
+body {{ font-family: 'Microsoft YaHei', sans-serif; line-height: 1.7; max-width: 700px; margin: 40px auto; color: #333; }}
+h1, h2, h3 {{ color: #2c3e50; }}
+pre {{ background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #ddd; padding: 6px 12px; }}
+@media print {{ .no-print {{ display: none; }} }}
+</style></head><body>
+<div class="no-print" style="text-align:center; margin-bottom: 20px;">
+<button onclick="window.print()" style="padding:8px 20px; font-size:14px; cursor:pointer;">🖨 打印为 PDF</button>
+</div>
+<pre style="white-space: pre-wrap; word-wrap: break-word;">{report_content}</pre>
+</body></html>"""
+        return Response(
+            content=html_content.encode("utf-8"),
+            media_type="text/html; charset=utf-8",
+        )
+    except Exception as exc:
+        logger.error("PDF 导出失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"PDF 导出失败: {exc}")

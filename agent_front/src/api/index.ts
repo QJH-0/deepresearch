@@ -25,5 +25,9 @@ export {
   retryDocument,
   uploadDocument,
   toChatMessages,
+  exportMarkdown,
+  exportPdf,
+  exportMarkdownUrl,
+  exportPdfUrl,
 } from './rest'
 export type { DocumentItem } from '../types'

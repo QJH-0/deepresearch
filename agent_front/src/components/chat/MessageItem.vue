@@ -2,8 +2,10 @@
 /**
  * MessageItem — 消息气泡（重构版）。
  *
- * thinking 和 sources 挂在消息上（消息级），不是全局块。
- * 使用 MarkdownRender 替代旧版手写 markdownToHtml。
+ * P7 增强：
+ * - MarkdownRender 接收 sources prop，支持角标 tooltip
+ * - 导出 MD 按钮（报告消息）
+ * - SourceList 侧栏视图
  */
 import { computed } from 'vue'
 import MarkdownRender from './MarkdownRender.vue'
@@ -25,6 +27,37 @@ const hasThinking = computed(() => {
   return (props.message.thinkingLogs && props.message.thinkingLogs.length > 0) ||
     (props.message.thinking && props.message.thinking.length > 0)
 })
+
+const hasSources = computed(() => {
+  return props.message.sources && props.message.sources.length > 0
+})
+
+const isReport = computed(() => {
+  return props.message.role === 'assistant' && props.message.status === 'done' && (props.message.content || '').length > 200
+})
+
+// P7-4: 导出 Markdown
+function exportMarkdown(): void {
+  if (!props.message.content) return
+  const sources = props.message.sources || []
+  const refs = sources.length > 0
+    ? sources.map((s, i) => {
+        const locator = s.source_type === 'kb'
+          ? `知识库 ${s.chunk_id || ''}`
+          : s.url || ''
+        return `[${i + 1}] ${s.title || '未知来源'} — ${locator}`
+      }).join('\n')
+    : ''
+  const title = '研究报告'
+  const content = props.message.content + (refs ? `\n\n## 参考文献\n${refs}` : '')
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${title}.md`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 </script>
 
 <template>
@@ -38,9 +71,14 @@ const hasThinking = computed(() => {
         :thinking="message.thinking"
       />
       <div v-if="message.content" class="bubble">
-        <MarkdownRender :content="message.content" />
+        <MarkdownRender
+          :content="message.content"
+          :sources="message.sources"
+          :show-export="isReport"
+          @export-markdown="exportMarkdown"
+        />
       </div>
-      <SourceList v-if="message.sources" :sources="message.sources" />
+      <SourceList v-if="hasSources" :sources="message.sources || []" />
     </div>
   </div>
 </template>
