@@ -202,27 +202,33 @@ def test_appconfig_from_file_delegates_to_settings():
 
 
 def test_no_mult_agents_main_imports():
-    """全局 grep mult_agents.main / codegen_node 零命中。"""
+    """app/ 源码中 mult_agents.main / codegen_node 零命中（排除测试文件和文档）。"""
     import subprocess
 
     result = subprocess.run(
-        ["git", "grep", "-r", "-l", "mult_agents.main\|codegen_node"],
+        ["git", "grep", "-r", "-l", r"mult_agents.main\|codegen_node", "--", "app/"],
         capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
     )
-    # git grep 在没有匹配时返回 1
-    assert result.returncode != 0 or result.stdout.strip() == "", \
-        f"仍有残留引用: {result.stdout}"
+    # 排除测试文件自身（测试函数名包含搜索关键词）
+    lines = [
+        l for l in result.stdout.strip().split("\n")
+        if l and "test_" not in l
+    ]
+    assert len(lines) == 0, f"仍有残留引用: {lines}"
 
 
 def test_no_bocha_references_in_python():
-    """app/ 下 Python 文件中 bocha 引用零命中（注释除外）。"""
+    """app/ 源码 Python 文件中 bocha 引用零命中（排除测试文件和注释）。"""
     import subprocess
 
     result = subprocess.run(
-        ["git", "grep", "-r", "-i", "bocha", "--", "*.py"],
+        ["git", "grep", "-r", "-i", "bocha", "--", "app/"],
         capture_output=True, text=True, cwd=str(_PROJECT_ROOT),
     )
-    # 允许注释中的说明行（tools.py:7 的"Bocha 搜索已删除"）
+    # 排除测试文件自身和注释说明行
     lines = [l for l in result.stdout.strip().split("\n") if l]
-    code_refs = [l for l in lines if "已删除" not in l and "已删" not in l]
+    code_refs = [
+        l for l in lines
+        if "test_" not in l and "已删除" not in l and "已删" not in l
+    ]
     assert len(code_refs) == 0, f"仍有 bocha 代码引用: {code_refs}"

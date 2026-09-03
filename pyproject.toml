@@ -1,0 +1,28 @@
+[project]
+name = "deepresearch"
+version = "1.0.0"
+description = "DeepResearch — 多智能体深度研报助手"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["app"]
+testpaths = ["app/test"]
+asyncio_mode = "auto"
+markers = [
+    "llm: 需要真实 LLM API 的集成测试（CI 默认跳过）",
+    "slow: 耗时较长的测试（CI 可选跳过）",
+    "offline: 纯离线测试，无外部依赖",
+]
+addopts = [
+    "-v",
+    "--tb=short",
+    "-m", "not llm and not slow",
+]
+
+[tool.coverage.run]
+source = ["backend", "mult_agents"]
+omit = ["*/test/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80

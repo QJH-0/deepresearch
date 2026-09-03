@@ -1,0 +1,105 @@
+# ──────────────────────────────────────────────
+# DeepResearch 应用编排
+# 与 middleware compose 分离：先起中间件，再起应用
+#
+# 使用方式:
+#   1. 先起中间件:
+#      docker compose -f docs_konwledge/docker-compose.middleware.yml up -d
+#   2. 再起应用:
+#      docker compose -f docker-compose.app.yml up -d --build
+#
+# 注意:
+#   - .env 文件需在项目根目录，包含 DASHSCOPE_API_KEY 等
+#   - 中间件地址用服务名（postgres/redis/milvus/minio）
+#   - RabbitMQ 在本 compose 中自带（middleware compose 未包含）
+#   - duckduckgo-search 是纯 pip 依赖，无搜索服务容器
+# ──────────────────────────────────────────────
+
+name: deepresearch-app
+
+networks:
+  middleware-net:
+    external: true
+    name: middleware_middleware-net
+
+services:
+  # ────────────── RabbitMQ（文档向量化消息队列）──────────────
+  # middleware compose 中未包含，在此补充
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    container_name: deepresearch-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123456
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - D:\docker\data\llmdev\rabbitmq:/var/lib/rabbitmq
+    networks:
+      - middleware-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ────────────── 后端 ──────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deepresearch-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # 中间件地址用服务名（同 network 内可解析）
+      - REDIS_URL=redis://:redis123456@redis:6379
+      - POSTGRES_DSN=postgresql://root:postgres123@postgres:5432/mydb
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
+      - MINIO_ENDPOINT=minio:9000
+      - RABBITMQ_URL=amqp://admin:admin123456@rabbitmq:5672/
+    volumes:
+      # 知识库文档挂载（只读）
+      - ./data/knowledge:/app/data/knowledge:ro
+      # 日志输出
+      - ./output/logs:/app/output/logs
+      # 生成文档输出
+      - ./data/gen_docs:/app/app/data/gen_docs
+    networks:
+      - middleware-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://127.0.0.1:8000/health/live'); exit(0 if r.status_code==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ────────────── 前端 ──────────────
+  frontend:
+    build:
+      context: ./agent_front
+      dockerfile: Dockerfile
+    container_name: deepresearch-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    networks:
+      - middleware-net
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

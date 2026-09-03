@@ -1,0 +1,54 @@
+# DeepResearch .dockerignore
+# 减少构建上下文体积，加速构建
+
+# Git
+.git
+.gitignore
+
+# 文档
+docs/
+docs_konwledge/
+*.md
+
+# 参考项目（不需要打包进镜像）
+参考项目/
+
+# 测试
+app/test/
+**/__pycache__/
+**/.pytest_cache/
+
+# 前端 node_modules（多阶段构建中会重新安装）
+agent_front/node_modules/
+agent_front/dist/
+
+# 环境文件（通过 compose env_file 注入）
+.env
+.env.*
+
+# 日志
+output/
+*.log
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+.claude/
+.workbuddy/
+
+# Python 缓存
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+
+# Docker 自身
+Dockerfile
+docker-compose*.yml
+.dockerignore

@@ -1,0 +1,9 @@
+# DeepResearch 前端 .dockerignore
+node_modules/
+dist/
+.git/
+*.log
+.env*
+.vscode/
+.idea/
+test/

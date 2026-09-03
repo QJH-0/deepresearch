@@ -8,17 +8,17 @@
 
 ## 一、文档索引
 
-| Phase | 文档 | 主题 | 工期估算 | 关键交付物 |
-|-------|------|------|----------|-----------|
-| 0 | [Phase0_地基与止血.md](Phase0_地基与止血.md) | 死代码删除、配置统一、事件协议定义、分支策略 | 0.5～1 天 | `schemas/events.py`、`event-protocol.json`、pydantic-settings |
-| 1 | [Phase1_State与图重构.md](Phase1_State与图重构.md) | State 分组重写、nodes 拆包、模型工厂、DuckDuckGo 接入 | 2～3 天 | `state.py`（分组+reducer）、`nodes/` 包、`models.py`、`SearchProvider` |
-| 2 | [Phase2_流式输出重写.md](Phase2_流式输出重写.md) | token 级流式、async generator、异常兜底 | 2 天 | `research_service.py` 重写（删 Thread+Queue 桥接） |
-| 3 | [Phase3_取消恢复断点续研.md](Phase3_取消恢复断点续研.md) | TaskRegistry、崩溃恢复扫描、/resume 语义修正 | 2～3 天 | `task_registry.py`、lifespan 恢复扫描、状态 API |
-| 4 | [Phase4_HITL.md](Phase4_HITL.md) | clarify / plan_approval / report_review 三个 interrupt 点 | 2～3 天 | 三个 interrupt 节点、结构化 /resume、interrupt 状态 API |
-| 5 | [Phase5_记忆重写.md](Phase5_记忆重写.md) | PostgresStore + langmem 双通道、删哈希伪向量 | 1.5～2 天 | `memory_service.py`、/memories API |
-| 6 | [Phase6_前端重构.md](Phase6_前端重构.md) | Pinia + Naive UI、useEventStream、HITL 卡片、标题生成、回滚入口 | 4～5 天 | stores 三件套、统一事件 reducer、ChatView 瘦身 |
-| 7 | [Phase7_引用溯源与报告导出.md](Phase7_引用溯源与报告导出.md) | Source 结构化、[n] 角标、SourceList、MD/PDF 导出 | 1.5～2 天 | 统一 Source 链路、报告模板改造、导出功能 |
-| 8 | [Phase8_收尾.md](Phase8_收尾.md) | 测试补全、容器化、文档更新（可选，不阻塞） | 另计 | 单测补全、应用 Dockerfile |
+| Phase | 文档 | 主题 | 工期估算 | 关键交付物 | 状态 |
+|-------|------|------|----------|-----------|------|
+| 0 | [Phase0_地基与止血.md](Phase0_地基与止血.md) | 死代码删除、配置统一、事件协议定义、分支策略 | 0.5～1 天 | `schemas/events.py`、`event-protocol.json`、pydantic-settings | ✅ |
+| 1 | [Phase1_State与图重构.md](Phase1_State与图重构.md) | State 分组重写、nodes 拆包、模型工厂、DuckDuckGo 接入 | 2～3 天 | `state.py`（分组+reducer）、`nodes/` 包、`models.py`、`SearchProvider` | ✅ |
+| 2 | [Phase2_流式输出重写.md](Phase2_流式输出重写.md) | token 级流式、async generator、异常兜底 | 2 天 | `research_service.py` 重写（删 Thread+Queue 桥接） | ✅ |
+| 3 | [Phase3_取消恢复断点续研.md](Phase3_取消恢复断点续研.md) | TaskRegistry、崩溃恢复扫描、/resume 语义修正 | 2～3 天 | `task_registry.py`、lifespan 恢复扫描、状态 API | ✅ |
+| 4 | [Phase4_HITL.md](Phase4_HITL.md) | clarify / plan_approval / report_review 三个 interrupt 点 | 2～3 天 | 三个 interrupt 节点、结构化 /resume、interrupt 状态 API | ✅ |
+| 5 | [Phase5_记忆重写.md](Phase5_记忆重写.md) | PostgresStore + langmem 双通道、删哈希伪向量 | 1.5～2 天 | `memory_service.py`、/memories API | ✅ |
+| 6 | [Phase6_前端重构.md](Phase6_前端重构.md) | Pinia + Naive UI、useEventStream、HITL 卡片、标题生成、回滚入口 | 4～5 天 | stores 三件套、统一事件 reducer、ChatView 瘦身 | ✅ |
+| 7 | [Phase7_引用溯源与报告导出.md](Phase7_引用溯源与报告导出.md) | Source 结构化、[n] 角标、SourceList、MD/PDF 导出 | 1.5～2 天 | 统一 Source 链路、报告模板改造、导出功能 | ✅ |
+| 8 | [Phase8_收尾.md](Phase8_收尾.md) | 测试补全、容器化、文档更新（可选，不阻塞） | 另计 | 单测补全、应用 Dockerfile | ✅ |
 
 ## 二、执行纪律（所有 Phase 通用）
 
