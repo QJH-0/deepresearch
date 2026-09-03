@@ -1,30 +1,25 @@
 <script setup lang="ts">
 /**
- * 会话历史列表。
- *
- * 相比旧版做了这些修正：
- *  1. 会话列表不再是「有内容才显示」，空态也给出明确提示
- *  2. 按 置顶 / 今天 / 昨天 / 近 7 天 / 更早 分组，而不是按 thread_id 字符串排序
- *  3. 支持搜索、重命名（内联编辑）、置顶、删除（二次确认）
- *  4. 当前会话高亮，新建会话不会把历史顶掉
+ * 会话历史列表（重构版）— 接 threads store（Pinia）。
+ * 按 置顶 / 今天 / 昨天 / 近 7 天 / 更早 分组。
  */
 import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
 import type { ThreadItem } from '../types'
 import { groupThreadsByDate, formatThreadTime } from '../utils/datetime'
-import { useSession } from '../stores/session'
+import { useThreadsStore } from '../stores/threads'
 
 const emit = defineEmits<{ (e: 'select', threadId: string): void }>()
 
 const {
   threads,
   currentThreadId,
-  threadsLoading,
-  threadsError,
-  loadThreads,
+  loading: threadsLoading,
+  error: threadsError,
+  load,
   renameThread,
   togglePin,
   removeThread,
-} = useSession()
+} = useThreadsStore()
 
 const keyword = ref('')
 const editingId = ref('')
@@ -33,19 +28,12 @@ const menuOpenId = ref('')
 const pendingDeleteId = ref('')
 const editInput = ref<HTMLInputElement | null>(null)
 
-/**
- * 用函数 ref 而不是字符串 ref。
- *
- * 这个 input 在 v-for 内部，字符串 ref 会被 Vue 收集成数组，
- * 直接 .focus() 会炸；函数 ref 拿到的就是当前那一个元素。
- */
 function setEditInput(el: Element | ComponentPublicInstance | null): void {
   editInput.value = el as HTMLInputElement | null
 }
 
-const groups = computed(() => groupThreadsByDate(threads.value))
+const groups = computed(() => groupThreadsByDate(threads))
 
-// 前端二次过滤：后端已支持 keyword，但输入框是即时的，本地过滤更跟手
 const visibleGroups = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   if (!kw) return groups.value
@@ -60,7 +48,7 @@ const visibleGroups = computed(() => {
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => void loadThreads(keyword.value), 250)
+  searchTimer = setTimeout(() => void load(keyword.value), 250)
 }
 
 async function onSelect(thread: ThreadItem) {
@@ -71,10 +59,7 @@ async function onSelect(thread: ThreadItem) {
 function openMenu(threadId: string) {
   menuOpenId.value = menuOpenId.value === threadId ? '' : threadId
 }
-
-function closeMenu() {
-  menuOpenId.value = ''
-}
+function closeMenu() { menuOpenId.value = '' }
 
 async function startRename(thread: ThreadItem) {
   closeMenu()
@@ -93,9 +78,7 @@ async function commitRename(thread: ThreadItem) {
   await renameThread(id, title)
 }
 
-function cancelRename() {
-  editingId.value = ''
-}
+function cancelRename() { editingId.value = '' }
 
 function askDelete(threadId: string) {
   closeMenu()
@@ -115,8 +98,7 @@ async function onTogglePin(thread: ThreadItem) {
 }
 
 function statusIcon(thread: ThreadItem): string {
-  if (!thread.completed) return '⋯'
-  return '✓'
+  return thread.completed ? '✓' : '⋯'
 }
 </script>
 
@@ -136,7 +118,7 @@ function statusIcon(thread: ThreadItem): string {
         placeholder="搜索会话标题"
         @input="onSearchInput"
       />
-      <button v-if="keyword" class="search-clear" title="清空" @click="keyword = ''; loadThreads('')">✕</button>
+      <button v-if="keyword" class="search-clear" title="清空" @click="keyword = ''; load('')">✕</button>
     </div>
 
     <p v-if="threadsError" class="history-error">{{ threadsError }}</p>
@@ -152,13 +134,10 @@ function statusIcon(thread: ThreadItem): string {
           v-for="thread in group.threads"
           :key="thread.thread_id"
           class="thread-item"
-          :class="{
-            active: thread.thread_id === currentThreadId,
-            pinned: thread.pinned,
-          }"
+          :class="{ active: thread.thread_id === currentThreadId, pinned: thread.pinned }"
           @click="onSelect(thread)"
         >
-          <span class="thread-status" :class="thread.completed ? 'done' : 'pending'" :title="thread.completed ? '已产出结论' : '进行中'">
+          <span class="thread-status" :class="thread.completed ? 'done' : 'pending'">
             {{ statusIcon(thread) }}
           </span>
 
@@ -178,9 +157,7 @@ function statusIcon(thread: ThreadItem): string {
               <span v-if="thread.message_count" class="thread-count">{{ thread.message_count }}</span>
               <span class="thread-time">{{ formatThreadTime(thread.updated_at || thread.created_at) }}</span>
             </span>
-
             <button class="thread-menu-btn" title="更多操作" @click.stop="openMenu(thread.thread_id)">⋮</button>
-
             <div v-if="menuOpenId === thread.thread_id" class="thread-menu" @click.stop>
               <button @click="onTogglePin(thread)">{{ thread.pinned ? '取消置顶' : '置顶会话' }}</button>
               <button @click="startRename(thread)">重命名</button>
@@ -191,7 +168,6 @@ function statusIcon(thread: ThreadItem): string {
       </div>
     </div>
 
-    <!-- 删除二次确认：破坏性操作必须有确认，避免误删历史 -->
     <div v-if="pendingDeleteId" class="confirm-mask" @click="pendingDeleteId = ''">
       <div class="confirm-card" @click.stop>
         <p class="confirm-title">删除这个会话？</p>

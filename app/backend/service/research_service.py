@@ -33,6 +33,34 @@ from backend.schemas.events import event, sse, EventEnvelope
 from backend.infra import ThreadRepository, generate_thread_title
 from backend.service.memory_service import get_memory_service
 
+# ── P6-6: 会话标题 LLM 自动生成 ───────────────────────────────────
+import asyncio as _asyncio
+
+_title_gen_lock = _asyncio.Lock()
+
+
+async def _generate_llm_title(query: str, report_summary: str, api_key: str) -> str:
+    """P6-6: 用 qwen-turbo 从用户问题+报告摘要生成 ≤20 字标题。"""
+    from langchain_community.chat_models import ChatTongyi
+    from langchain_core.messages import HumanMessage as _HM
+
+    llm = ChatTongyi(model="qwen-turbo", temperature=0.1, dashscope_api_key=api_key)
+    prompt = (
+        f"请根据以下用户提问和研究报告摘要，生成一个不超过20个字的简洁中文标题。\n"
+        f"只输出标题文字，不要引号、不要标点。\n\n"
+        f"用户提问：{query[:200]}\n"
+        f"报告摘要：{report_summary[:500]}"
+    )
+    try:
+        resp = await llm.ainvoke([_HM(content=prompt)])
+        title = resp.content.strip().strip('"\'').strip()
+        if title and len(title) <= 30:
+            return title
+        return ""
+    except Exception as exc:
+        logger.warning("LLM 标题生成失败: %s", exc)
+        return ""
+
 logger = logging.getLogger("backend.research_service")
 
 # 节点中文标签
@@ -276,6 +304,8 @@ class ResearchService:
                 yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
                 # P5: 后台记忆提取（run.completed 后异步触发，不阻塞）
                 self._trigger_memory_extract(runtime_config, query, final, thread_id)
+                # P6-6: LLM 标题生成（run.completed 后异步，不阻塞）
+                self._trigger_title_gen(runtime_config, query, final, thread_id)
             else:
                 # 尝试从快照获取 final
                 snapshot = self._app.get_state(config)
@@ -286,6 +316,8 @@ class ResearchService:
                     yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
                     # P5: 后台记忆提取
                     self._trigger_memory_extract(runtime_config, query, final, thread_id)
+                    # P6-6: LLM 标题生成
+                    self._trigger_title_gen(runtime_config, query, final, thread_id)
                 else:
                     logger.warning("[TRACE] stream_research NO-FINAL | run=%s | thread=%s", run_id, thread_id)
                     yield sse(event("run.error", code="NoFinalOutput", message="研究链路未产生最终结果"))
@@ -482,6 +514,35 @@ class ResearchService:
             )
         except Exception as exc:
             logger.warning("后台记忆提取触发失败(resume): %s", exc)
+
+    def _trigger_title_gen(
+        self,
+        runtime_config: AppConfig,
+        query: str,
+        final: str,
+        thread_id: str,
+    ) -> None:
+        """P6-6: run.completed 后异步用 LLM 生成标题（不阻塞主流程）。"""
+        api_key = runtime_config.api_key
+        if not api_key:
+            return
+        user_id = runtime_config.user_id
+        repo = self._thread_repo
+
+        async def _do_title():
+            title = await _generate_llm_title(query, final[:500], api_key)
+            if title and repo is not None:
+                try:
+                    repo.rename_thread(thread_id, title, user_id)
+                    logger.info("[P6-6] LLM 标题生成完成 | thread=%s | title=%s", thread_id, title)
+                except Exception as exc:
+                    logger.warning("LLM 标题落库失败: %s", exc)
+
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(_do_title())
+        except Exception as exc:
+            logger.warning("LLM 标题生成触发失败: %s", exc)
 
     def list_threads(self, user_id: str, limit: int = 50, keyword: str = "") -> list[dict]:
         self._ensure_initialized()

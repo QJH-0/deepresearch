@@ -1,27 +1,25 @@
 <script setup lang="ts">
 /**
- * 应用侧边栏：品牌 + 新建会话 + 页面导航 + 会话历史 + 设置。
- *
- * 知识库上传区已从侧边栏移除（旧版塞在侧栏底部，把会话历史挤没了），
- * 改为 /knowledge 独立页面，这里只保留导航入口。
+ * 应用侧边栏（重构版）— 品牌 + 新建会话 + 页面导航 + 会话历史 + 设置。
+ * 接 threads store（Pinia），不再用模块级单例。
  */
 import { ref } from 'vue'
 import ThreadHistory from './ThreadHistory.vue'
-import { useSession } from '../stores/session'
+import { useThreadsStore } from '../stores/threads'
 
 const emit = defineEmits<{
   (e: 'new-chat'): void
   (e: 'select-thread', threadId: string): void
 }>()
 
-const { userId, changeUserId, loadThreads } = useSession()
+const { userId, changeUserId, load } = useThreadsStore()
 
 const navItems = [
   { to: '/chat', label: '研究对话', icon: '💬' },
   { to: '/knowledge', label: '知识库', icon: '📚' },
 ]
 
-const userIdDraft = ref(userId.value)
+const userIdDraft = ref(userId)
 
 function commitUserId() {
   changeUserId(userIdDraft.value)
@@ -55,7 +53,7 @@ function commitUserId() {
 
     <ThreadHistory
       class="sidebar-history"
-      @select="(id) => emit('select-thread', id)"
+      @select="(id: string) => emit('select-thread', id)"
     />
 
     <div class="sidebar-footer">
@@ -72,7 +70,7 @@ function commitUserId() {
           />
           <p class="hint-text">切换用户会重新加载其会话与知识库</p>
         </div>
-        <button class="refresh-btn" @click="loadThreads()">刷新会话列表</button>
+        <button class="refresh-btn" @click="load()">刷新会话列表</button>
       </details>
     </div>
   </aside>

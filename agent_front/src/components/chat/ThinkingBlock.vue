@@ -1,15 +1,13 @@
 <script setup lang="ts">
 /**
- * 思考块（Thinking Block）
+ * ThinkingBlock（重构）— 消息级、可折叠、流式追加动画。
  *
- * 类似 DeepSeek / 豆包的思考模式：
- * - 执行过程中显示一个独立的思考区域，默认折叠
- * - 点击可展开查看完整过程日志
- * - 思考块与用户消息关联，只在当前轮次有效
- * - 任务结束后切走再回来不显示思考块，只显示最终结果
+ * 重构要点：
+ * - 挂在消息上（通过 props.logs），不是全局块
+ * - 可折叠/展开，折叠时只显示最后 2 条预览
+ * - 流式追加时有渐入动画
  */
 import { computed, ref } from 'vue'
-import { markdownToHtml } from '../../utils/markdown'
 
 export interface ThinkingLog {
   node: string
@@ -22,6 +20,7 @@ export type ThinkingState = 'thinking' | 'done' | 'cancelled'
 const props = defineProps<{
   state: ThinkingState
   logs: ThinkingLog[]
+  thinking?: string
 }>()
 
 const expanded = ref(false)
@@ -30,7 +29,6 @@ const hasLogs = computed(() => props.logs.length > 0)
 
 const previewLogs = computed(() => {
   if (!hasLogs.value || expanded.value) return []
-  // 折叠态只显示最后 2 条
   return props.logs.slice(-2)
 })
 
@@ -47,20 +45,6 @@ const stateIcon = computed(() => {
   if (props.state === 'thinking') return '💭'
   return '✅'
 })
-
-const logsHtml = computed(() => {
-  const content = props.logs
-    .map((log) => `- ${log.time} ${log.node ? `[${log.node}] ` : ''}${log.message}`)
-    .join('\n')
-  return markdownToHtml(content)
-})
-
-const previewHtml = computed(() => {
-  const content = previewLogs.value
-    .map((log) => `- ${log.time} ${log.node ? `[${log.node}] ` : ''}${log.message}`)
-    .join('\n')
-  return markdownToHtml(content)
-})
 </script>
 
 <template>
@@ -74,11 +58,24 @@ const previewHtml = computed(() => {
       <span class="thinking-toggle-icon">{{ expanded ? '▼' : '▶' }}</span>
     </div>
 
-    <div v-if="hasLogs && !expanded" class="thinking-preview markdown-body" v-html="previewHtml" />
+    <div v-if="hasLogs && !expanded" class="thinking-preview">
+      <div v-for="log in previewLogs" :key="log.time + log.message" class="preview-line">
+        <span class="log-time">{{ log.time }}</span>
+        <span v-if="log.node" class="log-node">[{{ log.node }}]</span>
+        <span class="log-msg">{{ log.message }}</span>
+      </div>
+      <p v-if="hiddenCount > 0" class="hidden-hint">还有 {{ hiddenCount }} 条记录…</p>
+    </div>
 
     <div v-if="hasLogs && expanded" class="thinking-body">
-      <div class="thinking-logs markdown-body" v-html="logsHtml" />
-      <button class="thinking-collapse-btn" @click="expanded = false">
+      <div class="thinking-logs">
+        <div v-for="(log, idx) in logs" :key="idx" class="log-line">
+          <span class="log-time">{{ log.time }}</span>
+          <span v-if="log.node" class="log-node">[{{ log.node }}]</span>
+          <span class="log-msg">{{ log.message }}</span>
+        </div>
+      </div>
+      <button class="thinking-collapse-btn" @click.stop="expanded = false">
         收起过程记录
       </button>
     </div>
@@ -93,17 +90,14 @@ const previewHtml = computed(() => {
   margin-top: 8px;
   overflow: hidden;
 }
-
 .thinking-block.state-thinking {
   border-color: #d5def4;
   background: linear-gradient(180deg, #f8faff 0%, #f4f7ff 100%);
 }
-
 .thinking-block.state-cancelled {
   border-color: #f4cdc8;
   background: #fff7f6;
 }
-
 .thinking-header {
   display: flex;
   align-items: center;
@@ -113,29 +107,13 @@ const previewHtml = computed(() => {
   user-select: none;
   transition: background 0.15s;
 }
-
 .thinking-header:hover {
   background: rgba(63, 103, 212, 0.04);
 }
-
-.thinking-icon {
-  font-size: 14px;
-}
-
-.thinking-label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #5c6f98;
-}
-
-.state-thinking .thinking-label {
-  color: #3f67d4;
-}
-
-.state-cancelled .thinking-label {
-  color: #c0392b;
-}
-
+.thinking-icon { font-size: 14px; }
+.thinking-label { font-size: 13px; font-weight: 500; color: #5c6f98; }
+.state-thinking .thinking-label { color: #3f67d4; }
+.state-cancelled .thinking-label { color: #c0392b; }
 .thinking-count {
   font-size: 11.5px;
   color: #8b9bc0;
@@ -143,37 +121,41 @@ const previewHtml = computed(() => {
   border-radius: 999px;
   padding: 1px 8px;
 }
-
 .thinking-toggle-icon {
   margin-left: auto;
   font-size: 10px;
   color: #a0aecd;
 }
-
 .thinking-preview {
   padding: 0 14px 10px;
+}
+.preview-line, .log-line {
+  display: flex;
+  gap: 4px;
   font-size: 12px;
   color: #6d7fa8;
   line-height: 1.6;
-  position: relative;
-  max-height: 60px;
-  overflow: hidden;
+  align-items: baseline;
 }
-
-.thinking-preview::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 20px;
-  background: linear-gradient(180deg, transparent 0%, #f8faff 100%);
+.log-time {
+  font-size: 11px;
+  color: #a0aecd;
+  flex-shrink: 0;
 }
-
+.log-node {
+  color: #3f67d4;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.log-msg { flex: 1; }
+.hidden-hint {
+  font-size: 11px;
+  color: #a0aecd;
+  margin-top: 4px;
+}
 .thinking-body {
   padding: 0 14px 10px;
 }
-
 .thinking-logs {
   font-size: 12px;
   color: #5f719b;
@@ -185,7 +167,6 @@ const previewHtml = computed(() => {
   border-radius: 8px;
   border: 1px solid #eef2fb;
 }
-
 .thinking-collapse-btn {
   display: block;
   width: 100%;
@@ -199,22 +180,14 @@ const previewHtml = computed(() => {
   cursor: pointer;
   transition: background 0.15s;
 }
-
 .thinking-collapse-btn:hover {
   background: #f4f7ff;
 }
-
-/* 思考中的动画 */
 .state-thinking .thinking-icon {
   animation: pulse 1.5s ease-in-out infinite;
 }
-
 @keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 </style>

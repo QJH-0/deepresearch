@@ -1,43 +1,28 @@
 /**
- * 全局类型定义。
+ * 全局类型定义（重构版）。
  *
- * 与后端 backend/schemas/*.py 一一对应，改后端字段时这里要同步。
+ * 事件类型从 events.gen.ts 统一导出。
+ * 旧代码的 import type { StreamEvent } from '../types' 仍可工作。
+ * 消息类型从 stores/chat.ts 统一导出。
  */
 
-// ── 对话流事件（SSE） ────────────────────────────────────────────────
-export type StreamEventType =
-  | 'status'
-  | 'phase'
-  | 'route'
-  | 'final'
-  | 'error'
-  | 'interrupt'
-  | 'interrupted'
-  | 'cancelled'
+// ── 兼容导出：旧事件类型（新代码请用 types/events.gen.ts） ──────────
+import type { EventEnvelope, EventType } from './types/events.gen'
 
-export interface StreamEvent {
-  type: StreamEventType
-  message?: string
-  final?: string
-  node?: string
-  interrupt_id?: string
-  value?: Record<string, unknown> | null
-  thread_id?: string
-  resumable?: boolean
-}
+export type StreamEventType = EventType
+export type StreamEvent = EventEnvelope
 
-// ── 消息 ─────────────────────────────────────────────────────────────
+// ── 消息（兼容旧代码，新代码用 stores/chat.ts 的 ChatMessage） ────────
 export type MessageRole = 'user' | 'assistant' | 'status'
 
 export interface ChatMessage {
   id: string
   role: MessageRole
   content: string
-  /** status 消息可折叠，避免长过程日志淹没正文 */
   collapsed?: boolean
 }
 
-// ── 会话历史 ─────────────────────────────────────────────────────────
+// ── 会话历史 ──────────────────────────────────────────
 export interface ThreadItem {
   thread_id: string
   title: string
@@ -50,8 +35,7 @@ export interface ThreadItem {
   updated_at: string
 }
 
-// ── 知识库文档 ───────────────────────────────────────────────────────
-/** 文档级向量化状态：空 / 处理中 / 已入向量库 / 部分失败 / 全部失败 */
+// ── 知识库文档 ────────────────────────────────────────
 export type VectorState = 'empty' | 'processing' | 'indexed' | 'partial' | 'failed'
 
 export interface DocumentItem {
@@ -68,7 +52,6 @@ export interface DocumentItem {
   indexed_chunks: number
   pending_chunks: number
   failed_chunks: number
-  /** 0-100，切片级索引进度 */
   progress: number
   vector_state: VectorState
 }
@@ -97,21 +80,13 @@ export interface UploadLimits {
   max_files_per_batch: number
 }
 
-/** 单个文件的分阶段上传状态（RAG 是多阶段流水线，不是单条进度条） */
-export type UploadStage =
-  | 'queued'
-  | 'uploading'
-  | 'parsing'
-  | 'embedding'
-  | 'done'
-  | 'failed'
+export type UploadStage = 'queued' | 'uploading' | 'parsing' | 'embedding' | 'done' | 'failed'
 
 export interface UploadTask {
   id: string
   filename: string
   size: number
   stage: UploadStage
-  /** 上传字节进度 0-100，仅 uploading 阶段有意义 */
   percent: number
   chunkCount: number
   indexedChunks: number
