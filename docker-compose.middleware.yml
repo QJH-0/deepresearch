@@ -1,0 +1,246 @@
+# 中间件一键拉起 (cloud_agent + deep_research 所需的数据库/中间件)
+# 复用本地已有镜像: redis:7-alpine, neo4j:latest, minio/minio:latest,
+#                   mysql:8.4.8, rabbitmq:4-management
+# 需新拉取: milvusdb/milvus:latest, pgvector/pgvector:pg16 (postgres 服务已改用此镜像),
+#           阿里云 k8s etcd(quay.io 不可达且 daocloud 屏蔽 bitnami)
+# 启动命令: docker compose -f docker-compose.middleware.yml up -d
+# 停止命令: docker compose -f docker-compose.middleware.yml down
+#
+# 存储职责划分(选型 B · 详见 docs/dev/存储与消息中间件选型.md):
+#   Milvus           -> 知识库/文档的 ANNS 向量检索 (海量、批量写入、只读为主)
+#   PostgreSQL (5432) -> 镜像 pgvector/pgvector:pg16, 提供 vector + pg_trgm 扩展;
+#                        checkpointer / 业务表 / langmem 记忆 Store 共库分 schema
+#   RabbitMQ         -> 文档 chunk 异步向量化 (exchange chunk-sync -> Milvus)
+#   Milvus 与 PG 的向量能力不是重复建设: 前者管"知识", 后者管"记忆", 不做合并
+
+# 数据卷统一挂载到 D:\docker\data\llmdev\ 目录下 (bind mount)
+# 迁移自原 named volumes, 不影响 D:\docker\data 下其他项目的数据
+
+name: middleware
+
+networks:
+  middleware-net:
+    driver: bridge
+
+services:
+  # ---------- Redis (两项目共用: 短期记忆) ----------
+  redis:
+    image: redis:7-alpine              # 复用本地镜像
+    container_name: middleware-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "redis123456"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - D:\docker\data\llmdev\redis:/data
+    networks:
+      - middleware-net
+
+  # ---------- MySQL (cloud_agent: 业务数据库) ----------
+  # 复用本地镜像 mysql:8.4.8; 首次启动自动执行 init_mock_data.sql 建表+导数据
+  # 宿主机 3306 被本机原生 MySQL80 服务占用, 故映射到 3307
+  mysql:
+    image: mysql:8.4.8                  # 复用本地镜像
+    container_name: middleware-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: cloud_platform
+    ports:
+      - "3307:3306"
+    volumes:
+      - D:\docker\data\llmdev\mysql:/var/lib/mysql
+      # 挂载初始化脚本: MySQL 容器首次启动时自动执行 /docker-entrypoint-initdb.d/ 下的 .sql
+      - ./cloud_agent/agent/database/init_mock_data.sql:/docker-entrypoint-initdb.d/init_mock_data.sql:ro
+    networks:
+      - middleware-net
+
+  # ---------- PostgreSQL + pgvector (deep_research: POSTGRES_DSN) ----------
+  # 选型 B(已定): 镜像由 postgres:16-alpine 换成 pgvector/pgvector:pg16
+  #   原因: PostgresStore.setup() 首条迁移即 CREATE EXTENSION vector,
+  #         而官方 postgres 镜像(含 alpine 版)不含该扩展文件, 必失败;
+  #         换镜像后 checkpointer / 业务表 / langmem 记忆 Store 共库分 schema, 代码零改动。
+  #   依据: docs/dev/存储与消息中间件选型.md 第 5 节
+  # 注意: 旧 PGDATA 为 alpine(musl) 构建, 与 debian 镜像不兼容, 首次启动前数据目录须为空
+  #       (旧目录已备份为 D:\docker\data\llmdev\postgres.bak-20260903, 确认无误后可删)
+  postgres:
+    image: pgvector/pgvector:pg16      # 本地无, 需 docker pull
+    container_name: middleware-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_DB: mydb
+    ports:
+      - "5432:5432"
+    volumes:
+      - D:\docker\data\llmdev\postgres:/var/lib/postgresql/data
+      # 首次初始化自动建 vector + pg_trgm 扩展(幂等, 见 scripts/init_pgvector.sql)
+      - ./scripts/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
+    networks:
+      - middleware-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d mydb"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------- Neo4j (cloud_agent: 知识图谱) ----------
+  neo4j:
+    image: neo4j:latest                # 复用本地镜像
+    container_name: middleware-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/neo4j123        # 密码须 >= 8 位
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - D:\docker\data\llmdev\neo4j:/data
+    networks:
+      - middleware-net
+
+  # ---------- Milvus 依赖: etcd (元数据) ----------
+  # 不映射宿主机端口: Windows 保留 2379, 且 Milvus 只经内部网络 etcd:2379 访问
+  # 注意: 阿里云 k8s 版 etcd 镜像在容器 restart 时内部 migrate 脚本会丢失 --name 命令行参数,
+  #        导致 etcd 回退到默认名 "default", 与 --initial-cluster 中的成员名不匹配而 fatal exit。
+  #        解决: 用环境变量 ETCD_NAME 兜底 + initial-cluster 中也用 default, 并用 env 传全部参数,
+  #        这样无论走 command 还是 migrate 脚本路径, name 始终是 default, 三者一致。
+  etcd:
+    image: registry.cn-hangzhou.aliyuncs.com/google_containers/etcd:3.5.14-0
+    container_name: middleware-etcd
+    restart: unless-stopped
+    # 该镜像无 ENTRYPOINT/CMD, 必须用 command 指定可执行文件 etcd
+    # 配置全部走环境变量: 避免容器 restart 时内部 migrate 脚本丢失命令行 --name 参数
+    command: ["etcd"]
+    environment:
+      ETCD_NAME: default
+      ETCD_DATA_DIR: /etcd-data
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
+      ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: http://etcd:2380
+      ETCD_INITIAL_CLUSTER: default=http://etcd:2380
+      ETCD_INITIAL_CLUSTER_TOKEN: etcd-cluster
+      ETCD_INITIAL_CLUSTER_STATE: new
+      ETCD_AUTO_COMPACTION_MODE: periodic
+      ETCD_AUTO_COMPACTION_RETENTION: "1h"
+      ETCD_QUOTA_BACKEND_BYTES: "2147483648"
+    volumes:
+      - D:\docker\data\llmdev\etcd:/etcd-data
+    networks:
+      - middleware-net
+
+  # ---------- Milvus 依赖: MinIO (对象存储, 复用本地镜像) ----------
+  minio:
+    image: minio/minio:latest          # 复用本地镜像
+    container_name: middleware-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: ["server", "/minio_data", "--console-address", ":9001"]
+    # 宿主机 9000-9387 被 Windows 保留 (excludedportrange), 故映射到 9900/9901
+    ports:
+      - "9900:9000"
+      - "9901:9001"
+    volumes:
+      - D:\docker\data\llmdev\minio:/minio_data
+    networks:
+      - middleware-net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ---------- Milvus standalone (知识库/文档向量库) ----------
+  # 职责: 文档 chunk 的 ANNS 向量检索, 海量、批量写入、只读为主
+  # 注意: langmem 长期记忆不走这里, 走 postgres 服务(已换 pgvector 镜像, 见文件头"存储职责划分")
+  milvus:
+    image: milvusdb/milvus:latest      # 本地无, 需拉取
+    container_name: middleware-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    # 宿主机 9088-9887 大段被 Windows excludedportrange 保留, 故 Metrics 映射到 9991
+    ports:
+      - "19530:19530"
+      - "9991:9091"
+    volumes:
+      - D:\docker\data\llmdev\milvus:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+    networks:
+      - middleware-net
+
+  # ---------- RabbitMQ (文档 chunk 异步向量化 MQ) ----------
+  # 链路: document_service 切片 -> Topic exchange "chunk-sync"
+  #       -> ChunkSyncConsumer 消费 "chunk-sync.queue" -> embedding -> 写入 Milvus
+  # 代码锚点: 生产者 backend/infra/mq_client.py, 消费者 backend/infra/chunk_consumer.py:204
+  # 账号须与 MiddlewareSettings.rabbitmq_url 默认值一致:
+  #   app/backend/config/settings.py:31 -> amqp://admin:admin123456@localhost:5672/
+  # 端口 5672(AMQP) / 15672(管理 UI), 均不在 Windows 动态保留段内
+  rabbitmq:
+    image: rabbitmq:4-management       # 含管理插件与 Web UI
+    container_name: middleware-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123456       # 与 settings.py:31 默认值对齐
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "5672:5672"                    # AMQP 协议
+      - "15672:15672"                  # 管理 UI: http://localhost:15672
+    volumes:
+      - D:\docker\data\llmdev\rabbitmq:/var/lib/rabbitmq
+    networks:
+      - middleware-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s                # RabbitMQ 4.x 首次启动较慢, 给足引导时间
+
+  # ---------- [方案 A 备用 · 当前未启用] pgvector 独立容器 ----------
+  # 选型已定为 B(合并共库): 上方 postgres 服务已换成 pgvector/pgvector:pg16,
+  #   checkpointer / 业务表 / langmem 记忆 Store 共库分 schema, 代码零改动。
+  #   本服务因此下线; 整段保留仅为便于日后回滚到方案 A, 确认不回滚后可整体删除。
+  #   镜像选型依据(若回滚仍适用): 主版本 16 与 postgres 服务一致, 避免 15/16 混用;
+  #   LangGraph 官方集成测试即使用 pgvector/pgvector:pg16;
+  #   对照: 本地已有的 ankane/pgvector:latest 为 PG 15.4 + vector 0.5.1, 不作首选。
+  #
+  # 若改回方案 A(独立容器), 除取消下方注释外, 还必须:
+  #   1) 把上方 postgres 服务的 image 改回 postgres:16-alpine
+  #   2) 新增 store_dsn 配置, 并把 app_main.py:205-206 的
+  #      init_store(postgres_dsn=...) 改传 store_dsn
+  #      —— 否则记忆仍连 5432 的无扩展库, 问题依旧
+  # 详见 docs/dev/存储与消息中间件选型.md 第 5 节
+  #
+  # pgvector:
+  #   image: pgvector/pgvector:pg16
+  #   container_name: middleware-pgvector
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: langmem
+  #     POSTGRES_PASSWORD: langmem123
+  #     POSTGRES_DB: langmem_store
+  #   ports:
+  #     - "5433:5432"
+  #   volumes:
+  #     - D:\docker\data\llmdev\pgvector:/var/lib/postgresql/data
+  #     - ./scripts/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
+  #   networks:
+  #     - middleware-net
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U langmem -d langmem_store"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+  #     start_period: 30s
