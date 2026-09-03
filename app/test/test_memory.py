@@ -36,10 +36,9 @@ def _can_import_memory_service():
         from fastapi import APIRouter  # noqa: F401
         if not callable(APIRouter):
             return False
-        # memory_service 可导入（conftest mock 了下级依赖）
         from backend.service.memory_service import MemoryService  # noqa: F401
         return True
-    except (ImportError, TypeError, ModuleNotFoundError):
+    except (ImportError, TypeError, ModuleNotFoundError, AttributeError):
         return False
 
 

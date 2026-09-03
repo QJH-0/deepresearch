@@ -384,7 +384,7 @@ class ResearchService:
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
         try:
-            result = self._app.invoke(input_state, config)
+            result = await self._app.ainvoke(input_state, config)
         except Exception as exc:
             logger.error("[TRACE] run ERROR | req=%s | thread=%s | error=%s", req_id, thread_id, exc, exc_info=True)
             raise
@@ -438,7 +438,7 @@ class ResearchService:
         )
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
-        result = self._app.invoke(input_state, config)
+        result = await self._app.ainvoke(input_state, config)
         final = str(result.get("final", ""))
         route = str(result.get("intent", "multiagent")).strip().lower()
 

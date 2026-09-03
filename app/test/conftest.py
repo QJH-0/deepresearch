@@ -48,33 +48,45 @@ class _WildcardMockFinder(importlib.abc.MetaPathFinder):
 
     仅对白名单前缀生效，不影响 stdlib 和已安装的包。
     仅对不在 sys.modules 中的包生效（已注册的不覆盖）。
+    若包已真实安装（标准 finder 能找到），则返回 None 让标准 finder 处理。
     """
 
     _PREFIXES = (
-        "langchain",
         "dashscope",
         "pymilvus",
         "faiss",
         "firecrawl",
         "searxng",
-        "langmem",
-        "langgraph",
         "trustcall",
         "dydantic",
         # 基础设施包（测试环境可不安装）
         "minio",
         "pika",
-        "psycopg",
-        "psycopg2",
         "redis",
         "sse_starlette",
         "starlette",
     )
 
+    def __init__(self):
+        pass
+
+    def _is_real_installed(self, name):
+        """检查包是否真实安装（不触发 _WildcardMockFinder 自身）。
+
+        直接使用 PathFinder（标准 sys.path 搜索器），绕过自定义 meta path finder。
+        """
+        try:
+            spec = importlib.machinery.PathFinder.find_spec(name)
+            return spec is not None
+        except (ImportError, ValueError, ModuleNotFoundError):
+            return False
+
     def find_spec(self, name, path, target=None):
         for p in self._PREFIXES:
             if name == p or name.startswith(p + ".") or name.startswith(p + "_"):
                 if name not in sys.modules:
+                    if self._is_real_installed(name):
+                        return None
                     return importlib.machinery.ModuleSpec(
                         name, _MockLoader(), is_package=True
                     )
@@ -112,6 +124,75 @@ def _register_langgraph_mocks():
     if "langgraph.graph" not in sys.modules:
         lgg = types.ModuleType("langgraph.graph")
         lgg.__path__ = []
+
+        START = "__start__"
+        END = "__end__"
+
+        class _CompiledGraph:
+            """Mock compiled graph: 支持 invoke / astream / get_graph / get_state 等。"""
+            def __init__(self, nodes, edges):
+                self._nodes = nodes
+                self._edges = edges
+
+            class _GraphView:
+                def __init__(self, nodes):
+                    self.nodes = {k: MagicMock() for k in nodes}
+                    self.nodes["__start__"] = MagicMock()
+                    self.nodes["__end__"] = MagicMock()
+
+            def get_graph(self):
+                return self._GraphView(self._nodes)
+
+            def invoke(self, input_state, config=None):
+                result = dict(input_state) if isinstance(input_state, dict) else {}
+                result.setdefault("final", "mocked research report output")
+                result.setdefault("intent", "multiagent")
+                return result
+
+            async def astream(self, input_state, config=None, stream_mode=None):
+                yield ("updates", {k: MagicMock() for k in self._nodes})
+
+            def get_state(self, config=None):
+                snap = MagicMock()
+                snap.values = {}
+                snap.next = ()
+                snap.interrupts = []
+                snap.parent_config = None
+                snap.tasks = ()
+                snap.created_at = None
+                snap.config = {"configurable": {}}
+                return snap
+
+            async def aget_state(self, config=None):
+                return self.get_state(config)
+
+            def update_state(self, config, values, as_node=None):
+                pass
+
+            def get_state_history(self, config=None):
+                return iter([])
+
+        class _StateGraph:
+            def __init__(self, state_schema=None):
+                self._nodes = {}
+                self._edges = {}
+                self._conditional = {}
+
+            def add_node(self, name, fn):
+                self._nodes[name] = fn
+
+            def add_edge(self, src, dst):
+                self._edges.setdefault(src, []).append(dst)
+
+            def add_conditional_edges(self, src, fn, mapping=None):
+                self._conditional[src] = (fn, mapping or {})
+
+            def compile(self, checkpointer=None):
+                return _CompiledGraph(self._nodes, self._edges)
+
+        lgg.StateGraph = _StateGraph
+        lgg.START = START
+        lgg.END = END
         sys.modules["langgraph.graph"] = lgg
         lg.graph = lgg
 
@@ -180,6 +261,8 @@ def _register_langchain_community_mocks():
         lcmm = types.ModuleType("langchain_community")
         lcmm.__path__ = []
         sys.modules["langchain_community"] = lcmm
+    else:
+        lcmm = sys.modules["langchain_community"]
 
     if "langchain_community.embeddings" not in sys.modules:
         lcmm_e = types.ModuleType("langchain_community.embeddings")
@@ -195,6 +278,14 @@ def _register_langchain_community_mocks():
         lcmm_v.Milvus = type("Milvus", (), {})
         sys.modules["langchain_community.vectorstores"] = lcmm_v
         lcmm.vectorstores = lcmm_v
+
+    if "langchain_community.chat_models" not in sys.modules:
+        lcmm_cm = types.ModuleType("langchain_community.chat_models")
+        lcmm_cm.ChatTongyi = type(
+            "ChatTongyi", (), {"__init__": lambda self, **kw: None}
+        )
+        sys.modules["langchain_community.chat_models"] = lcmm_cm
+        lcmm.chat_models = lcmm_cm
 
 
 def _register_typing_extensions():
@@ -228,6 +319,28 @@ except ImportError:
     _register_langchain_community_mocks()
 
 _register_typing_extensions()
+
+
+def _register_langchain_mocks():
+    """注册 langchain 顶层包及其 agents 子模块的具体 mock。"""
+    if "langchain" not in sys.modules:
+        lc = types.ModuleType("langchain")
+        lc.__path__ = []
+        sys.modules["langchain"] = lc
+    else:
+        lc = sys.modules["langchain"]
+
+    if "langchain.agents" not in sys.modules:
+        lc_ag = types.ModuleType("langchain.agents")
+        lc_ag.create_agent = lambda **kw: MagicMock()
+        sys.modules["langchain.agents"] = lc_ag
+        lc.agents = lc_ag
+
+
+try:
+    import langchain  # noqa: F401
+except ImportError:
+    _register_langchain_mocks()
 
 # 注册 fastapi mock（含 APIRouter 等具体类）
 def _register_fastapi_mocks():

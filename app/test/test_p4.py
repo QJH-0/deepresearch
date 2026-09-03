@@ -149,6 +149,8 @@ def _setup_mocks():
         lcmm = types.ModuleType("langchain_community")
         lcmm.__path__ = []
         sys.modules["langchain_community"] = lcmm
+    else:
+        lcmm = sys.modules["langchain_community"]
 
     if "langchain_community.embeddings" not in sys.modules:
         lcmm_e = types.ModuleType("langchain_community.embeddings")

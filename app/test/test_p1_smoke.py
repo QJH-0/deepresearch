@@ -11,6 +11,7 @@ Run:
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +23,35 @@ sys.path.insert(0, str(_PROJECT_ROOT / "app"))
 
 from dotenv import load_dotenv  # noqa: E402
 load_dotenv(_PROJECT_ROOT / ".env")
+
+_DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
+
+_LANGGRAPH_AVAILABLE = False
+try:
+    import importlib.util as _ilu
+    _LANGGRAPH_AVAILABLE = _ilu.find_spec("langgraph") is not None
+except Exception:
+    pass
+
+_PG_REACHABLE = False
+try:
+    import socket as _sock
+    _sock.setdefaulttimeout(2)
+    _pg_host = os.getenv("POSTGRES_DSN", "")
+    if ":@" in _pg_host:
+        _pg_addr = _pg_host.split("@")[-1].split("/")[0]
+        _pg_h, _pg_p = _pg_addr.rsplit(":", 1)
+        _s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+        _s.connect((_pg_h, int(_pg_p)))
+        _s.close()
+        _PG_REACHABLE = True
+except Exception:
+    pass
+
+pytestmark = pytest.mark.skipif(
+    not _DASHSCOPE_API_KEY or not _LANGGRAPH_AVAILABLE or not _PG_REACHABLE,
+    reason="需要 DASHSCOPE_API_KEY + langgraph 安装 + PostgreSQL 可连接才能运行完整链路冒烟测试",
+)
 
 
 @pytest.fixture(scope="module")
