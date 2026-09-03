@@ -103,15 +103,24 @@ export function cancelResearch(threadId: string): Promise<unknown> {
 }
 
 // ── 历史回滚 ──────────────────────────────────────────
-export function fetchHistory(threadId: string): Promise<{ checkpoints: { id: string; ts: string; parent_id: string | null }[] }> {
+// P0-4 修复：适配后端返回 {history:[{checkpoint_id, next, created_at, interrupts_count}]}
+export interface CheckpointItem {
+  checkpoint_id: string
+  next: string[]
+  created_at: string
+  interrupts_count: number
+}
+
+export function fetchHistory(threadId: string): Promise<{ thread_id: string; history: CheckpointItem[] }> {
   return request(`/api/v1/research/history/${encodeURIComponent(threadId)}`)
 }
 
+// P0-4 修复：后端 RollbackRequest 要求 {thread_id, values, as_node?}
 export function rollbackThread(threadId: string, checkpointId: string): Promise<unknown> {
   return request('/api/v1/research/rollback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ thread_id: threadId, checkpoint_id: checkpointId }),
+    body: JSON.stringify({ thread_id: threadId, values: { checkpoint_id: checkpointId } }),
   })
 }
 

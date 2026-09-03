@@ -9,13 +9,14 @@
 import { ref, onMounted, computed } from 'vue'
 import { NButton, NPopselect, NSpin } from 'naive-ui'
 import { fetchHistory, rollbackThread, cancelResearch } from '../../api/rest'
+import type { CheckpointItem } from '../../api/rest'
 import { useChatStore } from '../../stores/chat'
 import { fetchThreadMessages, toChatMessages } from '../../api/rest'
 
 const props = defineProps<{ threadId: string }>()
 const emit = defineEmits<{ (e: 'rolled'): void }>()
 
-const checkpoints = ref<{ id: string; ts: string; parent_id: string | null }[]>([])
+const checkpoints = ref<CheckpointItem[]>([])
 const loading = ref(false)
 const rolling = ref(false)
 const error = ref('')
@@ -28,7 +29,7 @@ async function loadCheckpoints() {
   error.value = ''
   try {
     const result = await fetchHistory(props.threadId)
-    checkpoints.value = result.checkpoints || []
+    checkpoints.value = result.history || []
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载历史快照失败'
   } finally {
@@ -65,8 +66,8 @@ onMounted(() => { void loadCheckpoints() })
 
 const options = computed(() =>
   checkpoints.value.map((cp) => ({
-    label: new Date(cp.ts).toLocaleString('zh-CN'),
-    value: cp.id,
+    label: cp.created_at ? new Date(cp.created_at).toLocaleString('zh-CN') : cp.checkpoint_id,
+    value: cp.checkpoint_id,
   })),
 )
 </script>

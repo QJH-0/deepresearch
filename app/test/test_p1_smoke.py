@@ -25,19 +25,19 @@ load_dotenv(_PROJECT_ROOT / ".env")
 
 
 @pytest.fixture(scope="module")
-def workflow_service():
-    """Initialize WorkflowService, skipping RAG init if Milvus unavailable."""
-    from backend.service import WorkflowService
+def research_service():
+    """Initialize ResearchService, skipping RAG init if Milvus unavailable."""
+    from backend.service import ResearchService
     with patch("mult_agents.models.init_rag_system", return_value=None):
         config_path = str(_PROJECT_ROOT / "app" / "config.json")
-        svc = WorkflowService(config_path=config_path)
+        svc = ResearchService(config_path=config_path)
         svc._ensure_initialized()
     return svc
 
 
-def test_t1_8_research_full_chain(workflow_service):
+def test_t1_8_research_full_chain(research_service):
     """T1-8: Research query full chain produces a report."""
-    final, route = asyncio.run(workflow_service.run_with_route(
+    final, route = asyncio.run(research_service.run_with_route(
         query="Please conduct a research on the latest trends in quantum computing and provide a detailed analysis.",
         user_id="test_p1",
         thread_id="test_p1_smoke_research_v3",
@@ -51,9 +51,9 @@ def test_t1_8_research_full_chain(workflow_service):
     assert len(final) > 50, f"Report too short, possibly not generated: len={len(final)}"
 
 
-def test_t1_8_direct_answer_chain(workflow_service):
+def test_t1_8_direct_answer_chain(research_service):
     """T1-8: Simple question goes through direct_answer branch."""
-    final, route = asyncio.run(workflow_service.run_with_route(
+    final, route = asyncio.run(research_service.run_with_route(
         query="What is 1+1?",
         user_id="test_p1",
         thread_id="test_p1_smoke_direct_v3",

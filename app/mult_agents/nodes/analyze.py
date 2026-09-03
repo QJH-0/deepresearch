@@ -6,10 +6,10 @@ import json
 import logging
 
 from langchain_core.messages import HumanMessage
-from langgraph.types import interrupt, StreamWriter
+from langgraph.types import StreamWriter
 
 from ..state import AgentState
-from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs
+from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs, raise_interrupt
 from ._parsing import _invoke_json_agent
 from ._fallbacks import _fallback_analysis, _check_evidence_sufficiency
 
@@ -47,8 +47,8 @@ def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter
         and state.get("hitl_enabled", False)
         and state.get("hitl_config", {}).get("analyze_clarify", True)
     ):
-        interrupt_value = {
-            "type": "analyze_clarify",
+        # P0-2 修复：使用 _shared.raise_interrupt 统一封装，payload 携带 kind=clarification
+        interrupt_payload = {
             "node": "analyze",
             "missing_gaps": missing_gaps,
             "analysis_summary": analysis_summary,
@@ -59,7 +59,7 @@ def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter
                 "3. {\"action\": \"skip\"} → 跳过缺口直接出报告"
             ),
         }
-        user_feedback = interrupt(interrupt_value)
+        user_feedback = raise_interrupt("clarification", interrupt_payload)
 
         action = user_feedback.get("action", "auto_search") if isinstance(user_feedback, dict) else "auto_search"
         if action == "user_supply":

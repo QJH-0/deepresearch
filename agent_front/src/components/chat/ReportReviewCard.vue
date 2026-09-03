@@ -20,20 +20,18 @@ const showDeepen = ref(false)
 const deepenText = ref('')
 
 function accept() {
-  emit('resume', { action: 'accept' })
+  emit('resume', { kind: 'report_review', action: 'adopt' })
 }
 function deepen() {
   showDeepen.value = true
 }
 function submitDeepen() {
   const subs = deepenText.value.split('\n').map((s) => s.trim()).filter(Boolean)
-  emit('resume', { action: 'deepen', extra_sub_questions: subs })
+  emit('resume', { kind: 'report_review', action: 'deepen', extra_sub_questions: subs })
   showDeepen.value = false
   deepenText.value = ''
 }
-function reject() {
-  emit('resume', { action: 'reject' })
-}
+// P1-4: reject 在后端 schema 中未定义，已删除
 </script>
 
 <template>
@@ -65,7 +63,6 @@ function reject() {
       <div v-else class="card-actions">
         <NButton type="primary" @click="accept">采纳</NButton>
         <NButton @click="deepen">再深入</NButton>
-        <NButton type="error" ghost @click="reject">驳回</NButton>
       </div>
     </div>
   </div>

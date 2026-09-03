@@ -25,18 +25,18 @@ const subQuestions = computed(() => (props.payload.sub_questions as string[] | u
 const revisionCount = computed(() => Number(props.payload.revision_count || 0))
 
 function approve() {
-  emit('resume', { action: 'approve' })
+  emit('resume', { kind: 'plan_approval', action: 'approve' })
 }
 function requestRevision() {
   showFeedback.value = true
 }
 function submitRevision() {
-  emit('resume', { action: 'revise', reason: feedback.value })
+  emit('resume', { kind: 'plan_approval', action: 'revise', reason: feedback.value })
   showFeedback.value = false
   feedback.value = ''
 }
 function reject() {
-  emit('resume', { action: 'reject' })
+  emit('resume', { kind: 'plan_approval', action: 'reject' })
 }
 </script>
 

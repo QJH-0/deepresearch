@@ -23,11 +23,11 @@ const answers = ref<Record<number, string>>({})
 
 function submit() {
   const answerList = questions.value.map((_, idx) => answers.value[idx] || '')
-  emit('resume', { answers: answerList })
+  emit('resume', { kind: 'clarification', answers: answerList })
 }
 
 function skip() {
-  emit('resume', { action: 'skip' })
+  emit('resume', { kind: 'clarification', answers: [''] })
 }
 </script>
 

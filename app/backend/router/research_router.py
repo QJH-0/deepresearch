@@ -23,7 +23,6 @@ from backend.schemas import (
     PlanApprovalResumePayload,
     ReportReviewResumePayload,
 )
-from backend.service import WorkflowService, get_workflow_service
 from backend.service import ResearchService, get_research_service
 from backend.service import get_task_registry, ConcurrentRunError
 from backend.service.task_registry import RunningTask
@@ -80,10 +79,10 @@ async def _stream_with_registry(
 @router.post("/run", response_model=ResearchResponse)
 async def run_research(
     payload: ResearchRequest,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ) -> ResearchResponse:
     logger.info("[ROUTE] /run | user=%s | thread=%s | query=%s", payload.user_id, payload.thread_id, payload.query[:80])
-    final = await workflow_service.run(
+    final = await research_service.run(
         query=payload.query,
         user_id=payload.user_id,
         thread_id=payload.thread_id,
@@ -246,7 +245,7 @@ async def list_threads(
     user_id: str = "default_user",
     limit: int = 50,
     keyword: str = "",
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ) -> ThreadListResponse:
     """
     列出用户的所有会话历史。
@@ -254,7 +253,7 @@ async def list_threads(
     返回顺序：置顶优先，其余按最近活跃时间倒序（新会话在最上面）。
     keyword 用于按标题搜索，会话数超过 ~20 条后这是刚需。
     """
-    threads = workflow_service.list_threads(user_id, limit, keyword=keyword)
+    threads = research_service.list_threads(user_id, limit, keyword=keyword)
     return ThreadListResponse(
         threads=[ThreadItem(**t) for t in threads],
         total=len(threads),
@@ -267,15 +266,15 @@ async def list_threads(
 async def rename_thread(
     thread_id: str,
     payload: ThreadRenameRequest,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ):
     """重命名会话（自动生成的标题往往不够描述性，允许手动改）。"""
-    workflow_service.rename_thread(
+    research_service.rename_thread(
         thread_id=thread_id,
         title=payload.title,
         user_id=payload.user_id or "default_user",
     )
-    threads = workflow_service.list_threads(payload.user_id or "default_user", 200)
+    threads = research_service.list_threads(payload.user_id or "default_user", 200)
     matched = next((t for t in threads if t["thread_id"] == thread_id), None)
     return ThreadItem(**matched) if matched else None
 
@@ -284,15 +283,15 @@ async def rename_thread(
 async def pin_thread(
     thread_id: str,
     payload: ThreadPinRequest,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ):
     """置顶 / 取消置顶会话（置顶项固定在列表顶部）。"""
-    workflow_service.set_thread_pinned(
+    research_service.set_thread_pinned(
         thread_id=thread_id,
         pinned=payload.pinned,
         user_id=payload.user_id or "default_user",
     )
-    threads = workflow_service.list_threads(payload.user_id or "default_user", 200)
+    threads = research_service.list_threads(payload.user_id or "default_user", 200)
     matched = next((t for t in threads if t["thread_id"] == thread_id), None)
     return ThreadItem(**matched) if matched else None
 
@@ -301,10 +300,10 @@ async def pin_thread(
 async def delete_thread(
     thread_id: str,
     user_id: str = "default_user",
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ) -> ThreadDeleteResponse:
     """删除会话（只删侧边栏记录，LangGraph checkpoint 保留以免影响可恢复状态）。"""
-    deleted = workflow_service.delete_thread(thread_id, user_id)
+    deleted = research_service.delete_thread(thread_id, user_id)
     return ThreadDeleteResponse(
         deleted=deleted,
         thread_id=thread_id,
@@ -315,10 +314,10 @@ async def delete_thread(
 @router.get("/threads/{thread_id}/messages")
 async def get_thread_messages(
     thread_id: str,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ):
     """获取某个会话的完整对话历史。"""
-    return {"thread_id": thread_id, "messages": workflow_service.get_thread_messages(thread_id)}
+    return {"thread_id": thread_id, "messages": research_service.get_thread_messages(thread_id)}
 
 
 @router.get("/state/{thread_id}")
@@ -377,19 +376,19 @@ async def get_interrupt(
 async def get_history(
     thread_id: str,
     limit: int = 20,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ):
     """获取任务历史快照列表。"""
-    return {"thread_id": thread_id, "history": workflow_service.get_state_history(thread_id, limit)}
+    return {"thread_id": thread_id, "history": research_service.get_state_history(thread_id, limit)}
 
 
 @router.post("/rollback")
 async def rollback(
     payload: RollbackRequest,
-    workflow_service: WorkflowService = Depends(get_workflow_service),
+    research_service: ResearchService = Depends(get_research_service),
 ):
     """回滚/更新任务状态到指定值。"""
-    return workflow_service.update_state(
+    return research_service.update_state(
         payload.thread_id, payload.values, as_node=payload.as_node
     )
 
