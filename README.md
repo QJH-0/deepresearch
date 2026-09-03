@@ -104,9 +104,61 @@ deepresearch/
 
 ### 1. 环境准备
 
+#### 方式 A: conda 环境安装（推荐）
+
+项目使用 conda 环境 `llmdev`，Python 3.11 + 全量依赖：
+
 ```bash
-# 创建 .env 文件
-echo "DASHSCOPE_API_KEY=sk-your-api-key" > .env
+# 创建 conda 环境
+conda create -n llmdev python=3.11 -y
+conda activate llmdev
+
+# 安装后端依赖
+cd D:\Code\LLMdev\deepresearch
+pip install -r requirements.txt
+
+# 安装前端依赖
+cd agent_front
+npm install
+```
+
+#### 方式 B: 最小环境
+
+如果只运行后端测试，`conftest.py` 会自动 mock 未安装的第三方包，无需安装 `langgraph`、`langchain` 等重依赖：
+
+```bash
+pip install fastapi uvicorn pydantic pydantic-settings pytest pytest-asyncio python-dotenv duckduckgo-search
+```
+
+#### 配置 .env 文件
+
+在项目根目录创建 `.env`：
+
+```ini
+# 阿里云百炼 API Key（必需）
+DASHSCOPE_API_KEY=sk-your-api-key
+
+# 模型配置
+MODEL=qwen-plus
+USER_ID=default_user
+TENANT_ID=default_tenant
+MAX_ITERATIONS=3
+
+# PostgreSQL (记忆 + Checkpoint)
+POSTGRES_DSN=postgresql://root:postgres123@localhost:5432/mydb
+
+# Redis
+REDIS_URL=redis://:redis123456@localhost:6379
+
+# Milvus (向量检索)
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
+MILVUS_COLLECTION=mult_agent_memory
+
+# 记忆系统
+ENABLE_MEMORY=true
+CHECKPOINTER_BACKEND=postgres
+ENABLE_MILVUS=true
 ```
 
 ### 2. 启动中间件
@@ -141,17 +193,51 @@ cd agent_front && npm install && npm run dev
 
 ## 测试
 
-```bash
-# 全量测试（排除 LLM 集成测试）
-python -m pytest app/test/ -v
+### 后端单元测试
 
-# 仅离线测试
-python -m pytest app/test/ -v -m "offline"
+```bash
+# 确保 conda 环境激活
+conda activate llmdev
+
+# 全量测试（llmdev 环境：269 passed, 2 skipped）
+cd D:\Code\LLMdev\deepresearch
+python -m pytest app/test/ -v --tb=short
+
+# 也可以用 conda run 直接执行
+conda run -n llmdev python -m pytest app/test/ -v --tb=short
+
+# 单独运行某个测试文件
+python -m pytest app/test/test_p1.py -v
+python -m pytest app/test/test_p5.py -v
 
 # 含覆盖率报告
 python -m pytest app/test/ --cov=backend --cov=mult_agents --cov-report=term-missing
+```
 
-# 前端测试
+#### 测试结果汇总
+
+| 环境 | 结果 | 说明 |
+|------|------|------|
+| **conda llmdev** (Python 3.11 + 全量依赖) | **269 passed, 2 skipped** | langgraph/psycopg 等真实安装 |
+| **base conda** (Python 3.14 + 仅基础包) | **267 passed, 4 skipped** | conftest.py 自动 mock 未安装的包 |
+
+**跳过的测试**：
+- `test_p1_smoke.py` (2 tests): 端到端冒烟测试，需要 `langgraph` 真实安装 + `DASHSCOPE_API_KEY` + PostgreSQL 可连接
+
+#### Mock 策略
+
+`conftest.py` 使用 `_WildcardMockFinder` 自动 mock 未安装的第三方包：
+
+| 环境 | langgraph | psycopg | langchain | mock 策略 |
+|------|-----------|---------|-----------|-----------|
+| llmdev | ✅ 真实 | ✅ 真实 | ✅ 真实 | 不 mock，使用真实包 |
+| base | ❌ 未安装 | ❌ 未安装 | ❌ 未安装 | 自动 mock，注册具体 mock 类 |
+
+> `_WildcardMockFinder` 会先用 `PathFinder.find_spec` 检查包是否真实安装，仅在未安装时返回 mock。这确保在 `llmdev` 环境下不会误 mock 真实包的子模块（如 `psycopg_c.pq`）。
+
+### 前端测试
+
+```bash
 cd agent_front && npx vitest
 ```
 
