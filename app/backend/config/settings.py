@@ -65,6 +65,10 @@ class BusinessSettings(BaseSettings):
         "analyze_clarify": True,
         "write_review": False,
     }
+    # ── 对话摘要压缩 ──
+    summary_threshold: int = 20
+    summary_keep_recent: int = 6
+    summary_model: str = "qwen-turbo"
 
     @model_validator(mode="before")
     @classmethod

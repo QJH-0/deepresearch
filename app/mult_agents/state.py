@@ -18,6 +18,7 @@ from langgraph.graph.message import add_messages
 class ConversationState(TypedDict):
     messages: Annotated[list, add_messages]
     clarifications: Annotated[list, operator.add]  # P4 启用，先占位
+    conversation_summary: str  # 对话摘要文本（消息超阈值时 LLM 压缩生成）
 
 
 # ── 研究数据 ──
@@ -104,6 +105,7 @@ def create_initial_state(
         # ConversationState
         "messages": [],
         "clarifications": [],
+        "conversation_summary": "",
         # ResearchState
         "query": query,
         "user_id": user_id,

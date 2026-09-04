@@ -36,7 +36,7 @@ import uvicorn
 
 from backend.config import AppSettings
 from backend.router import health_router, research_router, document_router
-from backend.service import init_task_registry, get_task_registry, init_memory_service, get_memory_service
+from backend.service import init_task_registry, get_task_registry, init_memory_service, get_memory_service, init_summary_service
 from backend.infra import init_store, close_store, get_store
 from mult_agents.config import AppConfig
 from mult_agents.rag.core import RAGConfig
@@ -228,6 +228,16 @@ async def lifespan(app: FastAPI):
         logger.info("P5 记忆系统初始化完成 (PostgresStore + langmem)")
     except Exception as exc:
         logger.warning("P5 记忆系统初始化失败（不阻塞启动）: %s", exc)
+
+    # 对话摘要压缩服务初始化
+    init_summary_service(
+        api_key=config.api_key,
+        model=config.summary_model,
+        threshold=config.summary_threshold,
+        keep_recent=config.summary_keep_recent,
+    )
+    logger.info("对话摘要服务初始化完成 (threshold=%d, keep_recent=%d)",
+                config.summary_threshold, config.summary_keep_recent)
 
     yield
     # 关闭

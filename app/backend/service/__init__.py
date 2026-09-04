@@ -4,6 +4,7 @@ from backend.config import AppSettings
 from .research_service import ResearchService, get_research_service
 from .task_registry import TaskRegistry, ConcurrentRunError, get_task_registry, init_task_registry
 from .memory_service import MemoryService, get_memory_service, init_memory_service
+from .summary_service import SummaryService, get_summary_service, init_summary_service
 
 
 __all__ = [
@@ -16,4 +17,7 @@ __all__ = [
     "MemoryService",
     "get_memory_service",
     "init_memory_service",
+    "SummaryService",
+    "get_summary_service",
+    "init_summary_service",
 ]

@@ -139,7 +139,7 @@
 # conda llmdev 环境（Python 3.11 + 全量依赖）
 cd D:\Code\LLMdev\deepresearch
 conda run -n llmdev python -m pytest app/test/ -v --tb=short
-# 结果：269 passed, 2 skipped, 0 failed, 0 errors in 6.70s
+# 结果：269 passed, 2 skipped, 0 failed, 0 errors in 6.64s
 
 # base conda 环境（Python 3.14 + 仅基础包，conftest mock 第三方依赖）
 python -m pytest app/test/ -v --tb=short

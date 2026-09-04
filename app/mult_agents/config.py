@@ -64,6 +64,10 @@ class AppConfig:
         "analyze_clarify": True,
         "write_review": False,
     })
+    # ── 对话摘要压缩 ──
+    summary_threshold: int = 20
+    summary_keep_recent: int = 6
+    summary_model: str = "qwen-turbo"
 
     def with_overrides(self, **kwargs) -> "AppConfig":
         cleaned = {k: v for k, v in kwargs.items() if v is not None}
@@ -138,6 +142,9 @@ class AppConfig:
             rabbitmq_chunk_sync_exchange=_env_str("RABBITMQ_CHUNK_SYNC_EXCHANGE", biz.rabbitmq_chunk_sync_exchange),
             hitl_enabled=_env_bool("HITL_ENABLED", biz.hitl_enabled),
             hitl_config=biz.hitl_config,
+            summary_threshold=_env_int("SUMMARY_THRESHOLD", biz.summary_threshold),
+            summary_keep_recent=_env_int("SUMMARY_KEEP_RECENT", biz.summary_keep_recent),
+            summary_model=_env_str("SUMMARY_MODEL", biz.summary_model),
         )
 
     @staticmethod

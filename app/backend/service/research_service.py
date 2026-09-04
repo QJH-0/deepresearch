@@ -32,6 +32,7 @@ from mult_agents.research_logger import get_research_logger, close_research_logg
 from backend.schemas.events import event, sse, EventEnvelope
 from backend.infra import ThreadRepository, generate_thread_title
 from backend.service.memory_service import get_memory_service
+from backend.service.summary_service import get_summary_service
 
 # ── P6-6: 会话标题 LLM 自动生成 ───────────────────────────────────
 import asyncio as _asyncio
@@ -199,6 +200,11 @@ class ResearchService:
             hitl_config=runtime_config.hitl_config,
         )
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
+
+        # 对话摘要压缩：从 checkpoint 获取已有消息 + 新 query 合并判断
+        input_state = await self._apply_summary_if_needed(
+            input_state, config, runtime_config
+        )
 
         # 落库会话记录
         self._record_thread(thread_id, user_id, title=generate_thread_title(query))
@@ -383,6 +389,11 @@ class ResearchService:
         )
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
+        # 对话摘要压缩
+        input_state = await self._apply_summary_if_needed(
+            input_state, config, runtime_config
+        )
+
         try:
             result = await self._app.ainvoke(input_state, config)
         except Exception as exc:
@@ -437,6 +448,11 @@ class ResearchService:
             hitl_config=runtime_config.hitl_config,
         )
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
+
+        # 对话摘要压缩
+        input_state = await self._apply_summary_if_needed(
+            input_state, config, runtime_config
+        )
 
         result = await self._app.ainvoke(input_state, config)
         final = str(result.get("final", ""))
@@ -570,6 +586,86 @@ class ResearchService:
         if self._thread_repo is None:
             return False
         return self._thread_repo.delete_thread(thread_id, user_id)
+
+    async def _apply_summary_if_needed(
+        self,
+        input_state: dict,
+        config: dict,
+        runtime_config: AppConfig,
+    ) -> dict:
+        """在 graph 执行前对已有消息执行摘要压缩。
+
+        从 checkpoint 获取已有 messages，加上 input_state 中的新 query，
+        如果总数超过阈值则触发摘要压缩，将压缩后的 messages 写回 input_state。
+        """
+        summary_service = get_summary_service()
+        if summary_service is None:
+            return input_state
+
+        try:
+            snapshot = self._app.get_state(config)
+            existing_msgs = list(snapshot.values.get("messages", []))
+            existing_summary = str(snapshot.values.get("conversation_summary", ""))
+        except Exception:
+            existing_msgs = []
+            existing_summary = ""
+
+        new_msg = HumanMessage(content=input_state.get("query", ""))
+        all_msgs = existing_msgs + [new_msg]
+
+        if len(all_msgs) <= summary_service._threshold:
+            input_state["conversation_summary"] = existing_summary
+            return input_state
+
+        compressed_msgs, new_summary = await summary_service.summarize_if_needed(
+            all_msgs, existing_summary
+        )
+
+        # 压缩后：input_state 的 messages 改为压缩列表减去已有消息（只保留新增部分）
+        # LangGraph add_messages reducer 会合并 input_state messages 到 checkpoint
+        # 所以 input_state 只需要放入新增消息（即新 query），但摘要消息需要通过 update_state 写入
+        input_state["conversation_summary"] = new_summary
+
+        # 如果触发了摘要，通过 update_state 将压缩后的 messages 写入 checkpoint
+        # 这样 astream(input_state) 时 add_messages 会基于已压缩的消息列表追加新 query
+        self._app.update_state(config, {
+            "messages": compressed_msgs,
+            "conversation_summary": new_summary,
+        })
+
+        return input_state
+
+    async def _apply_summary_to_checkpoint(self, config: dict) -> None:
+        """对 checkpoint 中已有消息执行摘要压缩（resume_stream 用）。
+
+        直接从 checkpoint 读取 messages，如超阈值则压缩并写回。
+        """
+        summary_service = get_summary_service()
+        if summary_service is None:
+            return
+
+        try:
+            snapshot = self._app.get_state(config)
+            existing_msgs = list(snapshot.values.get("messages", []))
+            existing_summary = str(snapshot.values.get("conversation_summary", ""))
+        except Exception:
+            return
+
+        if len(existing_msgs) <= summary_service._threshold:
+            return
+
+        compressed_msgs, new_summary = await summary_service.summarize_if_needed(
+            existing_msgs, existing_summary
+        )
+
+        self._app.update_state(config, {
+            "messages": compressed_msgs,
+            "conversation_summary": new_summary,
+        })
+        logger.info(
+            "[summary] resume_stream 摘要压缩完成 | msgs %d -> %d",
+            len(existing_msgs), len(compressed_msgs),
+        )
 
     def get_state(self, thread_id: str) -> dict:
         """获取任务当前状态快照（P3 增强）。
@@ -754,6 +850,9 @@ class ResearchService:
         config = {"configurable": {"thread_id": thread_id}}
         run_id = uuid.uuid4().hex[:12]
         final = ""
+
+        # 对话摘要压缩：恢复前检查 checkpoint 中已有消息
+        await self._apply_summary_to_checkpoint(config)
 
         logger.info("[TRACE] resume_stream START | run=%s | thread=%s | mode=%s", run_id, thread_id, mode)
 
