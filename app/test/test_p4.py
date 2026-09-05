@@ -499,6 +499,39 @@ class TestReportReview:
 
 
 # ──────────────────────────────────────────────
+# T4-8 证据不足时的流式输出
+# ──────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not HAS_WRITE_NODE, reason="write_node 依赖加载失败")
+class TestWriteInsufficientEvidenceStream:
+    """T4-8: 证据不足时 write_node 必须 emit token，前端才能收到提示（修复「无输出」）。"""
+
+    @pytest.mark.asyncio
+    async def test_insufficient_evidence_emits_token(self):
+        """证据池为空 → writer 收到 token 事件，且 final 非空。"""
+        writer = MagicMock()
+        state = {
+            "query": "测试查询",
+            "web_evidence": [],
+            "local_evidence": [],
+            "web_retrieval_stats": {},
+            "local_retrieval_stats": {},
+        }
+
+        result = await write_node(state, MagicMock(), "writer", writer=writer)
+
+        token_calls = [
+            c.args[0] for c in writer.call_args_list
+            if c.args and isinstance(c.args[0], dict) and c.args[0].get("type") == "token"
+        ]
+        assert token_calls, "证据不足时应 emit token 事件，否则前端无输出"
+        assert "证据严重不足" in token_calls[0]["text"]
+        assert token_calls[0]["node"] == "write"
+        assert result["final"] == token_calls[0]["text"]
+
+
+# ──────────────────────────────────────────────
 # T4-7 payload 校验测试
 # ──────────────────────────────────────────────
 

@@ -70,8 +70,9 @@ async function openThread(threadId: string) {
 
 function handleNewChat() {
   if (loading.value) return
+  // P0-2：不再主动调用 requestNewChat() — startNewThread() 已通过 currentThreadId 变更触发下方 watcher 加载空消息；
+  // 手动 requestNewChat() 会让 watcher(newChatSignal) 再次触发自身 → 递归爆栈。
   threads.startNewThread()
-  threads.requestNewChat()
 }
 
 function useStarter(prompt: string) { composer.value?.fill(prompt) }

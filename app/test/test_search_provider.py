@@ -1,9 +1,10 @@
-"""Phase 1/8 测试：搜索降级——DDG 正常/429 注入/缓存命中。
+"""Phase 1/8 测试：搜索降级——DDG 正常/429 注入/缓存命中/降级链。
 
 覆盖用例:
     T1-5 DDG 正常搜索返回标准结构
     T1-6 DDG 429 注入 → 返回空列表不抛异常
     T1-7 Redis 缓存命中 → 不触发 DDGS().text
+    T1-9 web_search_records 降级链（DDG 失败 → SearXNG 兜底）
 
 运行方式:
     cd D:\\Code\\LLMdev\\deepresearch
@@ -183,3 +184,55 @@ class TestDDGCacheHit:
         result = asyncio.run(provider.search("no cache", max_results=5))
         assert len(result) == 1
         assert mock_ddgs.text.call_count == 1
+
+
+# ──────────────────────────────────────────────
+# T1-9 web_search_records 降级链（DDG 失败 → SearXNG 兜底）
+# ──────────────────────────────────────────────
+
+
+class TestWebSearchFallback:
+    """web_search_records 多源降级测试。"""
+
+    def test_ddg_success_skips_searxng(self, monkeypatch):
+        """DDG 返回结果时不调用 SearXNG。"""
+        import mult_agents.tools as tools
+
+        monkeypatch.setattr(
+            tools, "_ddg_search_records",
+            lambda query, count=5: [{"title": "ddg", "url": "https://ddg.com", "snippet": "", "source_type": "web"}],
+        )
+
+        def _searxng_spy(query, count=5):
+            _searxng_spy.calls += 1
+            return []
+
+        _searxng_spy.calls = 0
+        monkeypatch.setattr(tools, "_searxng_search_records", _searxng_spy)
+
+        records = tools.web_search_records("test", count=4)
+        assert len(records) == 1
+        assert _searxng_spy.calls == 0, "DDG 成功时不应调用 SearXNG"
+
+    def test_ddg_empty_falls_back_to_searxng(self, monkeypatch):
+        """DDG 空结果时降级到 SearXNG。"""
+        import mult_agents.tools as tools
+
+        monkeypatch.setattr(tools, "_ddg_search_records", lambda query, count=5: [])
+        monkeypatch.setattr(
+            tools, "_searxng_search_records",
+            lambda query, count=5: [{"title": "searxng", "url": "https://searxng.local", "snippet": "", "source_type": "web"}],
+        )
+
+        records = tools.web_search_records("test", count=4)
+        assert len(records) == 1
+        assert records[0]["title"] == "searxng"
+
+    def test_all_sources_empty_returns_empty(self, monkeypatch):
+        """所有源都为空 → 返回空列表。"""
+        import mult_agents.tools as tools
+
+        monkeypatch.setattr(tools, "_ddg_search_records", lambda query, count=5: [])
+        monkeypatch.setattr(tools, "_searxng_search_records", lambda query, count=5: [])
+
+        assert tools.web_search_records("test", count=4) == []

@@ -110,7 +110,7 @@ function nodeEntries(node: string): TimelineEntry[] {
             <span class="timeline-time">{{ formatTime(entry.ts) }}</span>
           </div>
           <span
-            v-if="(entry.phase === 'done' || entry.phase === 'completed') && nodeStepCount[entry.node] > 1"
+            v-if="(entry.phase === 'done' || entry.phase === 'completed') && (nodeStepCount[entry.node] ?? 0) > 1"
             class="timeline-expand"
           >
             {{ isNodeExpanded(entry.node) ? '▼' : '▶' }}

@@ -428,3 +428,35 @@ class TestMemoriesAPI:
         memories_routes = [r for r in routes if "/memories" in r.path]
         assert len(memories_routes) > 0, "GET /memories route should exist"
         assert memories_routes[0].methods == {"GET"}
+
+
+# ── T5-8: langmem API 签名回归 ─────────────────────
+
+class TestT58LangmemSignature:
+    """T5-8: create_memory_store_manager 按 langmem 0.0.30 新签名调用（仅 1 个位置参数）。"""
+
+    def test_ensure_manager_uses_keyword_args(self):
+        """_ensure_manager 以 keyword 方式传 namespace/store/enable_inserts，不再传第二个位置参数。"""
+        from backend.service import memory_service
+        from backend.infra import store_client
+
+        mock_store = MagicMock()
+        store_client._store_instance = mock_store
+
+        fake_manager = MagicMock()
+        with patch.object(memory_service, "create_memory_store_manager", return_value=fake_manager) as mock_factory, \
+             patch.object(memory_service, "ChatTongyi") as mock_llm_cls:
+            mock_llm_cls.return_value = MagicMock()
+            svc = memory_service.MemoryService(api_key="test-key")
+            manager = svc._ensure_manager()
+
+            assert manager is fake_manager
+            mock_factory.assert_called_once()
+            args, kwargs = mock_factory.call_args
+            # 只允许 1 个位置参数（llm），其余必须 keyword
+            assert len(args) == 1, f"期望 1 个位置参数，实际 {len(args)}"
+            assert kwargs.get("namespace") == ("memories", "{user_id}")
+            assert kwargs.get("store") is mock_store
+            assert kwargs.get("enable_inserts") is True
+
+        store_client._store_instance = None
