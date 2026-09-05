@@ -68,6 +68,8 @@ class _WildcardMockFinder(importlib.abc.MetaPathFinder):
         # langchain 扩展包（测试环境可不安装）
         "langchain_text_splitters",
         "langchain_experimental",
+        "langchain_openai",
+        "langchain_milvus",
     )
 
     def __init__(self):

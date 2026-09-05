@@ -69,6 +69,8 @@ class BusinessSettings(BaseSettings):
     summary_threshold: int = 20
     summary_keep_recent: int = 6
     summary_model: str = "qwen-turbo"
+    # ── Web 搜索 Provider 链 ──
+    search_providers: list = ["ddgs", "searxng"]
 
     @model_validator(mode="before")
     @classmethod

@@ -1,10 +1,8 @@
 """工具模块：封装 Web 检索、本地 RAG 查询与通用辅助工具函数。
 
-Web 检索采用多源降级策略（参考 gpt-researcher 项目）：
-1. DuckDuckGo（duckduckgo-search >=7.0，免费、无需 API Key）
-2. SearXNG（自建实例，环境变量 SEARX_URL 配置；DDG 在国内网络常超时，配置后可作稳定备选）
-
-SearchProvider 抽象层落位后，后续换 Tavily/Bocha/SearXNG 只新增一个 Provider。
+Web 检索采用可配置的 Provider 链式降级策略（参考 gpt-researcher 项目）：
+按 config.json 的 search_providers 顺序依次尝试，任一 Provider 成功即返回。
+内置 ddgs / tavily / searxng 三个 Provider，可通过配置调整顺序与启停。
 """
 
 from datetime import datetime
@@ -31,24 +29,41 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class SearchProvider(Protocol):
-    """搜索提供者抽象层。后续换 Tavily/Bocha/SearXNG 只新增一个 Provider。"""
+    """搜索提供者抽象层。后续换 Tavily/SearXNG 只新增一个 Provider。"""
 
     async def search(self, query: str, max_results: int = 6) -> list[dict]:
         """返回标准化的搜索结果记录列表。"""
         ...
 
 
+def _normalize_web_record(title: str, url: str, snippet: str) -> dict:
+    """将各搜索源的原始结果归一化为标准记录结构。"""
+    return {
+        "source_id": "",
+        "title": title,
+        "url": url,
+        "snippet": snippet,
+        "domain": urllib.parse.urlparse(url).netloc if url else "",
+        "source_type": "web",
+        "published_at": "",
+    }
+
+
 class DuckDuckGoProvider:
     """DuckDuckGo 搜索（duckduckgo-search >=7.0）。
 
-    三道限流防线（计划 5.5 节硬性要求）：
+    三道限流防线：
     1. max_results=5~8（默认 6），单次检索量收敛
     2. Redis 结果缓存 TTL 1h（key: ddg:{query}）—— 如有 Redis 则启用
     3. 任何异常（含 202/429 限流响应）→ 返回空列表 + 记 warning，绝不抛异常、绝不阻塞主流程
     """
 
     def __init__(self, redis_client=None):
-        self._redis = redis_client  # 可选，无则跳过缓存
+        self._redis = redis_client
+
+    @property
+    def available(self) -> bool:
+        return True
 
     def _ddgs(self):
         try:
@@ -59,31 +74,23 @@ class DuckDuckGoProvider:
 
     async def search(self, query: str, max_results: int = 6) -> list[dict]:
         cache_key = f"ddg:{query}"
-        # ② Redis 缓存 TTL 1h
         if self._redis:
             try:
                 cached = await self._redis.get(cache_key)
                 if cached:
                     return json.loads(cached)
             except Exception:
-                pass  # 缓存读取失败不阻塞
+                pass
 
         try:
             raw = await asyncio.to_thread(
                 lambda: self._ddgs().text(query, max_results=max_results)
             )
-            sources = [
-                {
-                    "source_id": "",
-                    "title": r.get("title", ""),
-                    "url": r.get("href", ""),
-                    "snippet": r.get("body", ""),
-                    "domain": urllib.parse.urlparse(r.get("href", "")).netloc if r.get("href") else "",
-                    "source_type": "web",
-                    "published_at": "",
-                }
-                for r in raw
-            ]
+            sources = [_normalize_web_record(
+                title=r.get("title", ""),
+                url=r.get("href", ""),
+                snippet=r.get("body", ""),
+            ) for r in raw]
             if self._redis:
                 try:
                     await self._redis.setex(cache_key, 3600, json.dumps(sources, ensure_ascii=False))
@@ -92,7 +99,6 @@ class DuckDuckGoProvider:
             logger.info("[ddg_search] 搜索完成 | query=%s | 记录数=%s", query, len(sources))
             return sources
         except Exception as e:
-            # ③ 失败降级：空结果不阻塞
             logger.warning("[ddg_search] 搜索失败，降级为空结果 | query=%s | error=%s", query, e)
             return []
 
@@ -128,47 +134,185 @@ def _ddg_search_records(query: str, count: int = 6) -> list[dict]:
 # ── SearXNG 搜索（参考 gpt-researcher/retrievers/searx）──
 
 
-def _searxng_search_records(query: str, count: int = 5) -> list[dict]:
-    """使用 SearXNG 实例进行搜索（自建免费搜索引擎）。
+class SearXNGProvider:
+    """SearXNG 自建搜索引擎 Provider（urllib 同步实现，asyncio.to_thread 转异步）。"""
 
-    参考: gpt-researcher/gpt_researcher/retrievers/searx/searx.py
-    """
-    searx_url = os.getenv("SEARX_URL", "").strip()
-    if not searx_url:
-        return []
-    if not searx_url.endswith("/"):
-        searx_url += "/"
-    search_url = urllib.parse.urljoin(searx_url, "search")
-    params = {"q": query, "format": "json"}
-    try:
+    def __init__(self, base_url: str | None = None, timeout: float = 15.0):
+        self._base_url = (base_url or os.getenv("SEARX_URL", "")).strip()
+        self._timeout = timeout
+
+    @property
+    def available(self) -> bool:
+        return bool(self._base_url)
+
+    def _search_sync(self, query: str, max_results: int) -> list[dict]:
+        searx_url = self._base_url
+        if not searx_url.endswith("/"):
+            searx_url += "/"
+        search_url = urllib.parse.urljoin(searx_url, "search")
+        params = {"q": query, "format": "json"}
         url_with_params = f"{search_url}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(
             url_with_params,
             headers={"Accept": "application/json", "User-Agent": "DeepResearch/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=self._timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
-    except Exception as e:
-        logger.error("[searxng_search] 请求失败 | error=%s", e)
+
+        return [_normalize_web_record(
+            title=item.get("title", ""),
+            url=item.get("url", ""),
+            snippet=item.get("content", "")[:200],
+        ) for item in (result.get("results") or [])[:max_results]]
+
+    async def search(self, query: str, max_results: int = 6) -> list[dict]:
+        if not self.available:
+            return []
+        try:
+            records = await asyncio.to_thread(self._search_sync, query, max_results)
+            logger.info("[searxng_search] 搜索完成 | 返回记录数=%s", len(records))
+            return records
+        except Exception as e:
+            logger.warning("[searxng_search] 请求失败 | error=%s", e)
+            return []
+
+
+def _searxng_search_records(query: str, count: int = 5) -> list[dict]:
+    """同步包装 SearXNG 搜索（兼容旧测试调用方）。"""
+    provider = SearXNGProvider()
+    if not provider.available:
+        return []
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                lambda: asyncio.run(provider.search(query, max_results=count))
+            ).result()
+    return asyncio.run(provider.search(query, max_results=count))
+
+
+# ── Tavily 商用搜索兜底 ──
+
+
+class TavilyProvider:
+    """Tavily 商用搜索兜底（API Key 缺失时自禁用）。"""
+
+    def __init__(self, api_key: str | None = None, timeout: float = 10.0):
+        self._api_key = (api_key or os.getenv("TAVILY_API_KEY", "")).strip()
+        self._timeout = timeout
+
+    @property
+    def available(self) -> bool:
+        return bool(self._api_key)
+
+    async def search(self, query: str, max_results: int = 6) -> list[dict]:
+        if not self.available:
+            return []
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": self._api_key,
+                        "query": query,
+                        "max_results": max_results,
+                        "search_depth": "basic",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as exc:
+            logger.warning("[tavily] 搜索失败 | query=%s | error=%s", query, exc)
+            return []
+        return [_normalize_web_record(
+            title=r.get("title", ""),
+            url=r.get("url", ""),
+            snippet=r.get("content", ""),
+        ) for r in (data.get("results") or [])[:max_results]]
+
+
+# ── Provider 链式降级管理器 ──
+
+
+_VALID_PROVIDER_NAMES = {"ddgs", "tavily", "searxng"}
+
+
+class SearchProviderChain:
+    """按注册顺序链式降级：任一 Provider 返回非空结果即短路返回。"""
+
+    def __init__(self, providers: list):
+        self._providers = [p for p in providers if getattr(p, "available", True)]
+
+    async def search(self, query: str, max_results: int = 6) -> list[dict]:
+        for provider in self._providers:
+            try:
+                records = await provider.search(query, max_results=max_results)
+            except Exception as exc:
+                logger.warning("[search-chain] %s 异常 | query=%s | error=%s",
+                               type(provider).__name__, query, exc)
+                records = []
+            if records:
+                return records
+            logger.info("[search-chain] %s 无结果，尝试下一 Provider", type(provider).__name__)
+        logger.warning("[search-chain] 所有搜索源均未返回结果 | query=%s", query)
         return []
 
-    records: list[dict] = []
-    for item in (result.get("results") or [])[:count]:
-        url = item.get("url", "")
-        domain = ""
-        if url.startswith("http"):
-            domain = urllib.parse.urlparse(url).netloc
-        records.append({
-            "source_id": "",
-            "title": item.get("title", ""),
-            "url": url,
-            "snippet": item.get("content", "")[:200],
-            "domain": domain,
-            "source_type": "web",
-            "published_at": "",
-        })
-    logger.info("[searxng_search] 搜索完成 | 返回记录数=%s", len(records))
-    return records
+
+_PROVIDER_CHAIN: SearchProviderChain | None = None
+_CHAIN_LOOP = None
+
+
+def _get_chain_loop():
+    """专用后台事件循环线程，用于同步上下文调用异步 Provider 链。"""
+    global _CHAIN_LOOP
+    if _CHAIN_LOOP is not None and not _CHAIN_LOOP.is_closed():
+        return _CHAIN_LOOP
+    import threading
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    _CHAIN_LOOP = loop
+    return _CHAIN_LOOP
+
+
+def _load_search_provider_order() -> list[str]:
+    """从 config.json 读取 search_providers 配置，非法值自动剔除。"""
+    try:
+        from backend.config.settings import BusinessSettings
+        order = BusinessSettings().search_providers
+    except Exception:
+        order = ["ddgs", "searxng"]
+    valid = [name for name in order if name in _VALID_PROVIDER_NAMES]
+    if not valid:
+        valid = ["ddgs", "searxng"]
+    return valid
+
+
+def _get_provider_chain() -> SearchProviderChain:
+    """按 config.json 的 search_providers 顺序构建全局链（惰性单例）。"""
+    global _PROVIDER_CHAIN
+    if _PROVIDER_CHAIN is None:
+        order = _load_search_provider_order()
+        factories = {
+            "ddgs": lambda: _get_ddg_provider(),
+            "tavily": lambda: TavilyProvider(),
+            "searxng": lambda: SearXNGProvider(os.getenv("SEARX_URL", "").strip()),
+        }
+        providers = [factories[name]() for name in order if name in factories]
+        _PROVIDER_CHAIN = SearchProviderChain(providers)
+    return _PROVIDER_CHAIN
+
+
+def _reset_provider_chain():
+    """重置全局链单例（供测试使用）。"""
+    global _PROVIDER_CHAIN
+    _PROVIDER_CHAIN = None
+
 
 # 全局 RAG 系统实例
 _RAG_SYSTEM: Optional[RAGSystem] = None
@@ -198,33 +342,26 @@ def search_knowledge_base_records(query: str, limit: int = 5) -> list[dict]:
 
 
 def web_search_records(query: str, count: int = 5) -> list[dict]:
-    """统一的 Web 搜索入口，采用多源降级策略（参考 gpt-researcher）。
+    """统一的 Web 搜索入口，采用可配置的 Provider 链式降级策略。
 
-    搜索顺序：
-    1. DuckDuckGo（免费、无需 API Key）
-    2. SearXNG（如果配置了 SEARX_URL）
-
-    Args:
-        query: 搜索关键词
-        count: 期望返回的结果数量
-
-    Returns:
-        标准化的搜索结果记录列表
+    按 config.json 的 search_providers 顺序依次尝试，任一 Provider 成功即返回。
+    保持同步签名（调用方 web_search_node 为同步函数），内部通过专用后台事件循环
+    线程运行异步 Provider 链。
     """
-    # 策略1: DuckDuckGo（首选）
-    records = _ddg_search_records(query, count=count)
-    if records:
-        logger.info("[web_search] 使用 DuckDuckGo 成功 | 记录数=%s", len(records))
-        return records
+    chain = _get_provider_chain()
+    try:
+        asyncio.get_running_loop()
+        in_loop = True
+    except RuntimeError:
+        in_loop = False
 
-    # 策略2: SearXNG（自建实例）
-    records = _searxng_search_records(query, count=count)
-    if records:
-        logger.info("[web_search] 使用 SearXNG 成功 | 记录数=%s", len(records))
-        return records
-
-    logger.warning("[web_search] 所有搜索源均未返回结果 | query=%s", query)
-    return []
+    if in_loop:
+        loop = _get_chain_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            chain.search(query, max_results=count), loop
+        )
+        return future.result(timeout=60)
+    return asyncio.run(chain.search(query, max_results=count))
 
 
 @tool

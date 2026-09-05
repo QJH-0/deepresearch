@@ -29,5 +29,6 @@
     "plan_review": true,
     "analyze_clarify": true,
     "write_review": false
-  }
+  },
+  "search_providers": ["ddgs", "tavily", "searxng"]
 }
