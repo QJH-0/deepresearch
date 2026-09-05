@@ -21,7 +21,7 @@ from ._evidence import _default_plan, _derive_search_plan
 logger = logging.getLogger("mult_agents")
 
 
-def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState | Command:
+def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState | Command:
     logger.info("%s 开始 | agent=%s", colorize("[plan]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "plan", "message": "正在生成研究计划..."})

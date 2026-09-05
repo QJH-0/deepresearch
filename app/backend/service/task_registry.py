@@ -186,7 +186,7 @@ class TaskRegistry:
                 if graph_app is not None:
                     try:
                         config = {"configurable": {"thread_id": thread_id}}
-                        snapshot = graph_app.get_state(config)
+                        snapshot = await graph_app.aget_state(config)
                         if snapshot and snapshot.next:
                             has_checkpoint = True
                     except Exception:

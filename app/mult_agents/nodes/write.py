@@ -22,7 +22,7 @@ from ._fallbacks import (
 logger = logging.getLogger("mult_agents")
 
 
-async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[write]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "write", "message": "正在撰写最终报告..."})
@@ -46,6 +46,9 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
             f"2. 上传与您问题相关的本地文档后再试\n"
             f"3. 检查网络连接或配置 SearXNG/博查搜索 API Key"
         )
+        # 流式输出提示，确保前端能收到消息内容（避免「无输出」）
+        if writer:
+            writer({"type": "token", "node": "write", "text": hint})
         return {"draft": hint, "final": hint, "messages": []}
 
     valid_source_ids = [str(item.get("source_id", "")).strip() for item in state.get("source_index", []) if item.get("source_id")]
@@ -73,17 +76,18 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     if writer:
         writer({"node": "write", "message": "正在调用写作模型生成报告正文..."})
     # P2: 使用 astream 实现 token 级流式
+    # P0-1：累加与 writer 推送解耦 — writer 注入失败（被 Optional 阻断）时仍保留 token 内容。
     content = ""
     async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
         if isinstance(chunk, tuple) and len(chunk) == 2:
             msg_chunk, metadata = chunk
             text = getattr(msg_chunk, "content", "")
-            if text and writer:
-                writer({"type": "token", "node": "write", "text": text})
+            if text:
                 content += text
+                if writer:
+                    writer({"type": "token", "node": "write", "text": text})
     if not content:
-        # 降级：astream 未产出内容时回退到 invoke
-        result = agent.invoke({"messages": [human]})
+        result = await agent.ainvoke({"messages": [human]})
         content = _last_content(result)
     
     # 强制清理可能的错误 JSON 代码块

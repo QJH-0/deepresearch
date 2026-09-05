@@ -65,10 +65,9 @@ class MemoryService:
         llm = ChatTongyi(model=self._model, temperature=0.1, dashscope_api_key=self._api_key)
 
         self._manager = create_memory_store_manager(
-            "deep-researcher",
-            model=llm,
+            llm,
             namespace=("memories", "{user_id}"),
-            # enable_inserts=True: 每次提取生成新记忆条目
+            store=store,
             enable_inserts=True,
         )
         logger.info("langmem memory_store_manager 构建完成 | model=%s", self._model)

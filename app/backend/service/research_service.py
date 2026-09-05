@@ -25,7 +25,7 @@ from langgraph.types import Command
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import build_checkpointer
+from mult_agents.runtime import build_checkpointer, get_checkpointer
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 from mult_agents.research_logger import get_research_logger, close_research_logger
@@ -101,7 +101,9 @@ class ResearchService:
                 return
             base_config = AppConfig.from_file(self._config_path)
             agents = build_agents(base_config.model, base_config.api_key, base_config)
-            checkpointer = build_checkpointer(base_config)
+            # P2-2: 优先复用 lifespan 初始化的异步 checkpointer（AsyncPostgresSaver），
+            # 未初始化（测试/独立调用）则降级到同步工厂（内存）。
+            checkpointer = get_checkpointer() or build_checkpointer(base_config)
             self._app = build_workflow_app(agents, checkpointer)
             self._base_config = base_config
             if base_config.postgres_dsn:
@@ -314,7 +316,7 @@ class ResearchService:
                 self._trigger_title_gen(runtime_config, query, final, thread_id)
             else:
                 # 尝试从快照获取 final
-                snapshot = self._app.get_state(config)
+                snapshot = await self._app.aget_state(config)
                 final = str(snapshot.values.get("final", ""))
                 if final:
                     self._complete_thread(thread_id, intent=route)
@@ -504,7 +506,7 @@ class ResearchService:
         except Exception as exc:
             logger.warning("后台记忆提取触发失败: %s", exc)
 
-    def _trigger_memory_extract_from_snapshot(
+    async def _trigger_memory_extract_from_snapshot(
         self,
         thread_id: str,
         final: str,
@@ -515,7 +517,7 @@ class ResearchService:
         if mem_service is None:
             return
         try:
-            snapshot = self._app.get_state(config)
+            snapshot = await self._app.aget_state(config)
             query = str(snapshot.values.get("query", ""))
             user_id = str(snapshot.values.get("user_id", "default_user"))
             if not query:
@@ -603,7 +605,7 @@ class ResearchService:
             return input_state
 
         try:
-            snapshot = self._app.get_state(config)
+            snapshot = await self._app.aget_state(config)
             existing_msgs = list(snapshot.values.get("messages", []))
             existing_summary = str(snapshot.values.get("conversation_summary", ""))
         except Exception:
@@ -628,7 +630,7 @@ class ResearchService:
 
         # 如果触发了摘要，通过 update_state 将压缩后的 messages 写入 checkpoint
         # 这样 astream(input_state) 时 add_messages 会基于已压缩的消息列表追加新 query
-        self._app.update_state(config, {
+        await self._app.aupdate_state(config, {
             "messages": compressed_msgs,
             "conversation_summary": new_summary,
         })
@@ -645,7 +647,7 @@ class ResearchService:
             return
 
         try:
-            snapshot = self._app.get_state(config)
+            snapshot = await self._app.aget_state(config)
             existing_msgs = list(snapshot.values.get("messages", []))
             existing_summary = str(snapshot.values.get("conversation_summary", ""))
         except Exception:
@@ -658,7 +660,7 @@ class ResearchService:
             existing_msgs, existing_summary
         )
 
-        self._app.update_state(config, {
+        await self._app.aupdate_state(config, {
             "messages": compressed_msgs,
             "conversation_summary": new_summary,
         })
@@ -667,7 +669,7 @@ class ResearchService:
             len(existing_msgs), len(compressed_msgs),
         )
 
-    def get_state(self, thread_id: str) -> dict:
+    async def get_state(self, thread_id: str) -> dict:
         """获取任务当前状态快照（P3 增强）。
 
         返回字段：
@@ -683,7 +685,7 @@ class ResearchService:
         """
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
-        snapshot = self._app.get_state(config)
+        snapshot = await self._app.aget_state(config)
 
         # 判断状态
         from backend.service import get_task_registry
@@ -698,17 +700,8 @@ class ResearchService:
         elif has_interrupts:
             status = "awaiting_input"
         elif has_next:
-            # 有待执行节点但不在运行 → 可能是崩溃中断
-            # 检查 Redis interrupted_by_restart 标记
-            import asyncio as _asyncio
-            try:
-                loop = _asyncio.get_event_loop()
-                if loop.is_running():
-                    # 异步上下文，但这里是同步方法，用安全方式检查
-                    pass
-            except Exception:
-                pass
-            status = "idle"  # 默认 idle，router 层异步检查 interrupted_by_restart
+            # 有待执行节点但不在运行 → 可能是崩溃中断，router 层异步检查 interrupted_by_restart
+            status = "idle"
         else:
             status = "idle"
 
@@ -748,11 +741,7 @@ class ResearchService:
         """
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
-        try:
-            snapshot = await self._app.aget_state(config)
-        except Exception:
-            # aget_state 不可用时回退到同步
-            snapshot = self._app.get_state(config)
+        snapshot = await self._app.aget_state(config)
 
         if not snapshot.next or not snapshot.tasks:
             return {"active": False, "thread_id": thread_id}
@@ -772,14 +761,12 @@ class ResearchService:
 
         return {"active": False, "thread_id": thread_id}
 
-    def get_state_history(self, thread_id: str, limit: int = 20) -> list[dict]:
+    async def get_state_history(self, thread_id: str, limit: int = 20) -> list[dict]:
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
         history = []
         try:
-            for i, snapshot in enumerate(self._app.get_state_history(config)):
-                if i >= limit:
-                    break
+            async for snapshot in self._app.aget_state_history(config, limit=limit):
                 history.append({
                     "checkpoint_id": snapshot.config.get("configurable", {}).get("checkpoint_id", ""),
                     "next": list(snapshot.next) if snapshot.next else [],
@@ -790,18 +777,18 @@ class ResearchService:
             logger.warning("获取状态历史失败 | thread=%s | %s", thread_id, exc)
         return history
 
-    def update_state(self, thread_id: str, values: dict, as_node: str | None = None) -> dict:
+    async def update_state(self, thread_id: str, values: dict, as_node: str | None = None) -> dict:
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
-        self._app.update_state(config, values, as_node=as_node)
+        await self._app.aupdate_state(config, values, as_node=as_node)
         return {"thread_id": thread_id, "updated": True}
 
-    def get_thread_messages(self, thread_id: str, limit: int = 100) -> list[dict]:
+    async def get_thread_messages(self, thread_id: str, limit: int = 100) -> list[dict]:
         self._ensure_initialized()
         messages = []
         try:
             config = {"configurable": {"thread_id": thread_id}}
-            snapshot = self._app.get_state(config)
+            snapshot = await self._app.aget_state(config)
             if not snapshot or not snapshot.values:
                 return []
             state_msgs = snapshot.values.get("messages", [])
@@ -926,16 +913,16 @@ class ResearchService:
                              run_id, thread_id, len(final))
                 yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
                 # P5: 后台记忆提取
-                self._trigger_memory_extract_from_snapshot(thread_id, final, config)
+                await self._trigger_memory_extract_from_snapshot(thread_id, final, config)
             else:
-                snapshot = self._app.get_state(config)
+                snapshot = await self._app.aget_state(config)
                 final = str(snapshot.values.get("final", ""))
                 if final:
                     self._complete_thread(thread_id, intent="multiagent")
                     close_research_logger(thread_id, route="multiagent", final=final)
                     yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
                     # P5: 后台记忆提取
-                    self._trigger_memory_extract_from_snapshot(thread_id, final, config)
+                    await self._trigger_memory_extract_from_snapshot(thread_id, final, config)
                 else:
                     logger.warning("[TRACE] resume_stream NO-FINAL | run=%s | thread=%s", run_id, thread_id)
                     yield sse(event("run.error", code="NoFinalOutput", message="恢复完成但未获得最终结果"))

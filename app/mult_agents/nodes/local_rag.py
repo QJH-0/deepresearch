@@ -22,7 +22,7 @@ from ._evidence import (
 logger = logging.getLogger("mult_agents")
 
 
-def local_rag_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+def local_rag_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[local_rag]", "cyan"), colorize(agent_name, "magenta"))
     queries = _build_queries(state, "local")
     if writer:

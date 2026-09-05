@@ -4,7 +4,6 @@
 P0 阶段保持行为不变，仅迁移位置。
 """
 
-import importlib
 import logging
 import os
 import sys
@@ -28,7 +27,9 @@ if __package__ is None or __package__ == "":
 logger = logging.getLogger("mult_agents")
 
 # P5: MEMORY_MANAGER 全局引用已删除，记忆由 MemoryService (langmem + PostgresStore) 管理
-CHECKPOINTER_CONTEXT = None
+# P2-2: checkpointer 异步单例（lifespan 初始化，生产 astream/ainvoke 路径复用）
+_checkpointer_instance = None
+_checkpointer_context = None
 
 
 def colorize(text: str, color: str) -> str:
@@ -92,65 +93,104 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
     )
 
 
+async def init_checkpointer(config: AppConfig):
+    """异步初始化 checkpointer（生产 astream/ainvoke 路径，lifespan 调用）。
+
+    降级链：Postgres → Redis → 内存。
+    生产执行链是 astream（异步），必须用 AsyncPostgresSaver / AsyncRedisSaver；
+    sync PostgresSaver 无 aget_tuple/aput 方法，graph.astream 会落到基类 stub 抛
+    NotImplementedError。
+    """
+    global _checkpointer_instance, _checkpointer_context
+    if _checkpointer_instance is not None:
+        return _checkpointer_instance
+
+    backend = config.checkpointer_backend
+
+    if backend in {"postgres", "auto"} and config.enable_memory and config.postgres_dsn:
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            _checkpointer_context = AsyncPostgresSaver.from_conn_string(config.postgres_dsn)
+            _checkpointer_instance = await _checkpointer_context.__aenter__()
+            await _checkpointer_instance.setup()
+            logger.info("%s 使用 PostgreSQL checkpointer（异步）", colorize("[memory]", "green"))
+            return _checkpointer_instance
+        except Exception as exc:
+            logger.warning("%s AsyncPostgresSaver 初始化失败，尝试下一级: %s",
+                           colorize("[memory]", "yellow"), exc)
+            _checkpointer_instance = None
+            _checkpointer_context = None
+
+    if backend in {"redis", "auto"} and config.enable_memory and config.redis_url:
+        try:
+            from langgraph.checkpoint.redis import AsyncRedisSaver
+
+            _checkpointer_context = AsyncRedisSaver.from_conn_string(config.redis_url)
+            _checkpointer_instance = await _checkpointer_context.__aenter__()
+            await _checkpointer_instance.setup()
+            logger.info("%s 使用 Redis checkpointer（异步）", colorize("[memory]", "green"))
+            return _checkpointer_instance
+        except Exception as exc:
+            logger.warning("%s AsyncRedisSaver 初始化失败，降级内存: %s",
+                           colorize("[memory]", "yellow"), exc)
+            _checkpointer_instance = None
+            _checkpointer_context = None
+
+    logger.info("%s 使用内存 checkpointer", colorize("[memory]", "green"))
+    _checkpointer_instance = InMemorySaver()
+    return _checkpointer_instance
+
+
+async def close_checkpointer() -> None:
+    """关闭 checkpointer 连接（lifespan shutdown 调用）。"""
+    global _checkpointer_instance, _checkpointer_context
+    if _checkpointer_context is not None:
+        try:
+            await _checkpointer_context.__aexit__(None, None, None)
+            logger.info("%s checkpointer 连接已关闭", colorize("[memory]", "cyan"))
+        except Exception as exc:
+            logger.warning("%s checkpointer 关闭失败: %s", colorize("[memory]", "yellow"), exc)
+    _checkpointer_instance = None
+    _checkpointer_context = None
+
+
+def get_checkpointer():
+    """获取已初始化的 checkpointer 单例（未初始化返回 None）。"""
+    return _checkpointer_instance
+
+
 def build_checkpointer(config: AppConfig):
-    """构建 checkpointer（PG → Redis → 内存 降级链）。"""
-    global CHECKPOINTER_CONTEXT
+    """同步 checkpointer 工厂（供 sync 执行场景，如 eval_metrics 的 graph.invoke）。
+
+    生产 astream/ainvoke 路径请用 init_checkpointer()；本函数只服务同步 invoke 场景，
+    因此选用 sync PostgresSaver / RedisSaver（无需 async 方法）。
+    """
     backend = config.checkpointer_backend
     if backend in {"postgres", "auto"} and config.enable_memory and config.postgres_dsn:
-        postgres_saver = None
-        postgres_import_error = ""
         try:
-            module = importlib.import_module("langgraph.checkpoint.postgres")
-            postgres_saver = getattr(module, "PostgresSaver", None)
-        except Exception as exc:
-            postgres_import_error = str(exc)
-        if postgres_saver is None:
-            try:
-                module = importlib.import_module("langgraph_checkpoint_postgres")
-                postgres_saver = getattr(module, "PostgresSaver", None)
-            except Exception as exc:
-                postgres_import_error = postgres_import_error or str(exc)
-        if postgres_saver is None:
-            message = (
-                "PostgreSQL checkpointer 模块不可用。请安装: pip install langgraph-checkpoint-postgres "
-                f"| import_error={postgres_import_error or 'unknown'}"
-            )
-            if backend == "postgres":
-                logger.warning("%s %s", colorize("[memory]", "yellow"), message)
-            else:
-                logger.info("%s %s", colorize("[memory]", "cyan"), message)
-        else:
-            try:
-                CHECKPOINTER_CONTEXT = postgres_saver.from_conn_string(config.postgres_dsn)
-                checkpointer = CHECKPOINTER_CONTEXT.__enter__()
-                checkpointer.setup()
-                logger.info("%s 使用 PostgreSQL checkpointer", colorize("[memory]", "green"))
-                return checkpointer
-            except Exception as exc:
-                logger.warning("%s PostgreSQL checkpointer 初始化失败: %s", colorize("[memory]", "yellow"), exc)
-    if backend in {"redis", "auto"} and config.enable_memory and config.redis_url:
-        from langgraph.checkpoint.redis import RedisSaver
+            from langgraph.checkpoint.postgres import PostgresSaver
 
-        candidate_urls = [config.redis_url]
-        if "redis://root:" in config.redis_url:
-            candidate_urls.append(config.redis_url.replace("redis://root:", "redis://:"))
-        last_exc = None
-        for url in candidate_urls:
-            try:
-                CHECKPOINTER_CONTEXT = RedisSaver.from_conn_string(url)
-                checkpointer = CHECKPOINTER_CONTEXT.__enter__()
-                checkpointer.setup()
-                logger.info("%s 使用 Redis checkpointer", colorize("[memory]", "green"))
-                return checkpointer
-            except Exception as exc:
-                last_exc = exc
-        if last_exc and "FT._LIST" in str(last_exc):
-            logger.warning(
-                "%s Redis checkpointer 依赖 RediSearch(FT._LIST)。当前 Redis 非 Redis Stack，已降级。",
-                colorize("[memory]", "yellow"),
-            )
-        else:
-            logger.warning("%s Redis checkpointer 初始化失败，降级内存: %s", colorize("[memory]", "yellow"), last_exc)
+            ctx = PostgresSaver.from_conn_string(config.postgres_dsn)
+            checkpointer = ctx.__enter__()
+            checkpointer.setup()
+            logger.info("%s 使用 PostgreSQL checkpointer（同步）", colorize("[memory]", "green"))
+            return checkpointer
+        except Exception as exc:
+            logger.warning("%s 同步 PostgresSaver 初始化失败，尝试下一级: %s",
+                           colorize("[memory]", "yellow"), exc)
+    if backend in {"redis", "auto"} and config.enable_memory and config.redis_url:
+        try:
+            from langgraph.checkpoint.redis import RedisSaver
+
+            ctx = RedisSaver.from_conn_string(config.redis_url)
+            checkpointer = ctx.__enter__()
+            checkpointer.setup()
+            logger.info("%s 使用 Redis checkpointer（同步）", colorize("[memory]", "green"))
+            return checkpointer
+        except Exception as exc:
+            logger.warning("%s 同步 RedisSaver 初始化失败，降级内存: %s",
+                           colorize("[memory]", "yellow"), exc)
     if backend == "memory":
         logger.info("%s 使用内存 checkpointer", colorize("[memory]", "green"))
     return InMemorySaver()

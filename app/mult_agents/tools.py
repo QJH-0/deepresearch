@@ -2,22 +2,18 @@
 
 Web 检索采用多源降级策略（参考 gpt-researcher 项目）：
 1. DuckDuckGo（duckduckgo-search >=7.0，免费、无需 API Key）
-2. Bing HTML（国内可直连的降级备选）
-3. SearXNG（自建实例，环境变量 SEARX_URL 配置）
+2. SearXNG（自建实例，环境变量 SEARX_URL 配置；DDG 在国内网络常超时，配置后可作稳定备选）
 
-SearchProvider 抽象层落位后，后续换 Tavily/Bing/SearXNG 只新增一个 Provider。
+SearchProvider 抽象层落位后，后续换 Tavily/Bocha/SearXNG 只新增一个 Provider。
 """
 
 from datetime import datetime
 import ast
-import html as html_mod
 import json
 import logging
 import operator
 import os
-import re
 from pathlib import Path
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -35,7 +31,7 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class SearchProvider(Protocol):
-    """搜索提供者抽象层。后续换 Tavily/Bing/SearXNG 只新增一个 Provider。"""
+    """搜索提供者抽象层。后续换 Tavily/Bocha/SearXNG 只新增一个 Provider。"""
 
     async def search(self, query: str, max_results: int = 6) -> list[dict]:
         """返回标准化的搜索结果记录列表。"""
@@ -55,7 +51,10 @@ class DuckDuckGoProvider:
         self._redis = redis_client  # 可选，无则跳过缓存
 
     def _ddgs(self):
-        from duckduckgo_search import DDGS
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
         return DDGS()
 
     async def search(self, query: str, max_results: int = 6) -> list[dict]:
@@ -124,75 +123,6 @@ def _ddg_search_records(query: str, count: int = 6) -> list[dict]:
     except RuntimeError:
         pass
     return _asyncio.run(_get_ddg_provider().search(query, max_results=count))
-
-
-# ── Bing 搜索（降级备选）──
-
-
-def _bing_search_records(query: str, count: int = 5) -> list[dict]:
-    """使用 Bing 搜索引擎进行免费搜索（无需 API Key，国内可直连）。
-
-    参考: gpt-researcher/gpt_researcher/retrievers/duckduckgo/duckduckgo.py
-    改用 Bing HTML 接口，解析 <li class="b_algo"> 结构。
-    """
-    logger.info("[bing_search] 开始搜索 | query=%s | count=%s", query, count)
-    url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}&count={count * 2}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        logger.error("[bing_search] 请求失败 | error=%s", e)
-        return []
-
-    # Bing 搜索结果结构: <li class="b_algo"> 包含每个结果
-    blocks = re.findall(r'<li[^>]*class="b_algo"[^>]*>(.*?)</li>', raw, re.DOTALL)
-    records: list[dict] = []
-    for block in blocks[:count * 2]:
-        # 提取链接和标题: <h2><a href="...">title</a></h2>
-        link_match = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
-        if not link_match:
-            continue
-        url_val = link_match.group(1)
-        title = re.sub(r"<[^>]+>", "", link_match.group(2)).strip()
-        title = html_mod.unescape(title)
-        # Bing 有时把域名放在标题前，去掉它
-        if title.startswith("http"):
-            parts = title.split(" ", 1)
-            if len(parts) > 1:
-                title = parts[1]
-
-        # 提取摘要: <p>...</p> 或 b_caption
-        snippet = ""
-        snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
-        if snippet_match:
-            snippet = re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip()
-            snippet = html_mod.unescape(snippet)
-
-        domain = urllib.parse.urlparse(url_val).netloc if url_val.startswith("http") else ""
-
-        if title and url_val:
-            records.append({
-                "source_id": "",
-                "title": title[:200],
-                "url": url_val,
-                "snippet": snippet[:500],
-                "domain": domain,
-                "source_type": "web",
-                "published_at": "",
-            })
-        if len(records) >= count:
-            break
-
-    logger.info("[bing_search] 搜索完成 | 返回记录数=%s", len(records))
-    return records
 
 
 # ── SearXNG 搜索（参考 gpt-researcher/retrievers/searx）──
@@ -271,9 +201,8 @@ def web_search_records(query: str, count: int = 5) -> list[dict]:
     """统一的 Web 搜索入口，采用多源降级策略（参考 gpt-researcher）。
 
     搜索顺序：
-    1. DuckDuckGo（首选，免费、无需 API Key）
-    2. Bing（国内可直连的降级备选）
-    3. SearXNG（如果配置了 SEARX_URL）
+    1. DuckDuckGo（免费、无需 API Key）
+    2. SearXNG（如果配置了 SEARX_URL）
 
     Args:
         query: 搜索关键词
@@ -288,13 +217,7 @@ def web_search_records(query: str, count: int = 5) -> list[dict]:
         logger.info("[web_search] 使用 DuckDuckGo 成功 | 记录数=%s", len(records))
         return records
 
-    # 策略2: Bing（国内可直连）
-    records = _bing_search_records(query, count=count)
-    if records:
-        logger.info("[web_search] 使用 Bing 成功 | 记录数=%s", len(records))
-        return records
-
-    # 策略3: SearXNG（自建实例）
+    # 策略2: SearXNG（自建实例）
     records = _searxng_search_records(query, count=count)
     if records:
         logger.info("[web_search] 使用 SearXNG 成功 | 记录数=%s", len(records))
@@ -400,7 +323,7 @@ def dedupe_lines(text: str) -> str:
 
 @tool
 def web_search_stub(query: str) -> str:
-    """网络检索接口（Bing / SearXNG 多源降级）。"""
+    """网络检索接口（DuckDuckGo / SearXNG 多源降级）。"""
     records = web_search_records(query, count=5)
     if not records:
         return "网络检索未返回结果，请检查网络连接或配置 SEARX_URL。"

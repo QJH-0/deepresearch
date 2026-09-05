@@ -16,7 +16,7 @@ from ._evidence import _score_evidence, _dedupe_sources
 logger = logging.getLogger("mult_agents")
 
 
-def deep_dive_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+def deep_dive_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[deep_dive]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "deep_dive", "message": "正在对证据进行评分和审计..."})

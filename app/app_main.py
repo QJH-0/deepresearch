@@ -53,34 +53,43 @@ _log_dir.mkdir(parents=True, exist_ok=True)
 _root_logger = logging.getLogger()
 _root_logger.setLevel(logging.INFO)
 
-# 控制台 handler
-_console_handler = logging.StreamHandler(sys.stdout)
-_console_handler.setLevel(logging.INFO)
-_console_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
-_root_logger.addHandler(_console_handler)
+# 幂等守卫：以 `python app_main.py` 启动时，本模块先以 __main__ 身份执行一次，
+# uvicorn.run("app_main:app") 又以 app_main 身份导入一次——模块级代码在同一进程
+# 执行两遍，不加守卫 root logger 会被挂上两套 handler，所有应用日志都会重复输出
+if not any(getattr(h, "_deepresearch_root", False) for h in _root_logger.handlers):
+    # 控制台 handler
+    _console_handler = logging.StreamHandler(sys.stdout)
+    _console_handler.setLevel(logging.INFO)
+    _console_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
+    _console_handler._deepresearch_root = True
+    _root_logger.addHandler(_console_handler)
 
-# 文件 handler — 按大小轮转（10MB × 5 个备份）
-_file_handler = logging.handlers.RotatingFileHandler(
-    filename=_log_dir / "deepresearch.log",
-    maxBytes=10 * 1024 * 1024,
-    backupCount=5,
-    encoding="utf-8",
-)
-_file_handler.setLevel(logging.INFO)
-_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
-_root_logger.addHandler(_file_handler)
+    # 文件 handler — 按大小轮转（10MB × 5 个备份）
+    _file_handler = logging.handlers.RotatingFileHandler(
+        filename=_log_dir / "deepresearch.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    _file_handler.setLevel(logging.INFO)
+    _file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
+    _file_handler._deepresearch_root = True
+    _root_logger.addHandler(_file_handler)
 
-# TRACE 级别关键日志单独落到一个文件，方便排障
-_trace_file_handler = logging.handlers.RotatingFileHandler(
-    filename=_log_dir / "trace.log",
-    maxBytes=10 * 1024 * 1024,
-    backupCount=3,
-    encoding="utf-8",
-)
-_trace_file_handler.setLevel(logging.INFO)
-_trace_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
-_trace_file_handler.addFilter(lambda record: "[TRACE]" in record.getMessage())
-_root_logger.addHandler(_trace_file_handler)
+    # TRACE 级别关键日志单独落到一个文件，方便排障
+    _trace_file_handler = logging.handlers.RotatingFileHandler(
+        filename=_log_dir / "trace.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    _trace_file_handler.setLevel(logging.INFO)
+    _trace_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
+    _trace_file_handler.addFilter(lambda record: "[TRACE]" in record.getMessage())
+    _trace_file_handler._deepresearch_root = True
+    _root_logger.addHandler(_trace_file_handler)
+
+    logging.getLogger("app_main").info("日志已初始化 ➜ %s", _log_dir)
 
 logging.getLogger("mult_agents").setLevel(logging.INFO)
 logging.getLogger("backend").setLevel(logging.INFO)
@@ -89,7 +98,6 @@ logging.getLogger("uvicorn").setLevel(logging.INFO)
 logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 
 logger = logging.getLogger("app_main")
-logger.info("日志已初始化 ➜ %s", _log_dir)
 
 # 全局消费者引用（用于 shutdown）
 _chunk_consumer = None
@@ -167,10 +175,10 @@ async def _init_task_registry_and_scan(config: AppConfig) -> None:
     try:
         from mult_agents.models import build_agents
         from mult_agents.graph import build_app as build_workflow_app
-        from mult_agents.runtime import build_checkpointer
+        from mult_agents.runtime import build_checkpointer, get_checkpointer
 
         agents = build_agents(config.model, config.api_key, config)
-        checkpointer = build_checkpointer(config)
+        checkpointer = get_checkpointer() or build_checkpointer(config)
         graph_app = build_workflow_app(agents, checkpointer)
 
         orphaned = await registry.scan_orphans(graph_app=graph_app)
@@ -208,9 +216,14 @@ async def lifespan(app: FastAPI):
     # 启动
     _init_infra()
 
-    # P3-2: 初始化 TaskRegistry + 崩溃恢复扫描
     settings = AppSettings()
     config = AppConfig.from_file(settings.config_path)
+
+    # P2-2: 异步初始化 checkpointer（须在崩溃恢复扫描之前，二者复用同一单例）
+    from mult_agents.runtime import init_checkpointer
+    await init_checkpointer(config)
+
+    # P3-2: 初始化 TaskRegistry + 崩溃恢复扫描
     await _init_task_registry_and_scan(config)
 
     # P5: 初始化 PostgresStore + MemoryService
@@ -250,6 +263,13 @@ async def lifespan(app: FastAPI):
             pass
     try:
         await close_store()
+    except Exception:
+        pass
+
+    # P2-2: 关闭 checkpointer 连接
+    try:
+        from mult_agents.runtime import close_checkpointer
+        await close_checkpointer()
     except Exception:
         pass
 

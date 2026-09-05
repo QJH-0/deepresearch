@@ -17,7 +17,7 @@ from ._shared import raise_interrupt, colorize
 logger = logging.getLogger("mult_agents")
 
 
-def clarify_node(state: AgentState, writer: StreamWriter | None = None) -> Command[Literal["plan", "clarify", "__end__"]] | dict:
+def clarify_node(state: AgentState, writer: StreamWriter = None) -> Command[Literal["plan", "clarify", "__end__"]] | dict:
     """澄清节点：P4 启用 interrupt。
 
     流程：

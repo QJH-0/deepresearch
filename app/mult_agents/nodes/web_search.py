@@ -22,7 +22,7 @@ from ._evidence import (
 logger = logging.getLogger("mult_agents")
 
 
-def web_search_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+def web_search_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[web_search]", "cyan"), colorize(agent_name, "magenta"))
     queries = _build_queries(state, "web")
     logger.info("[web_search_node] 构建查询 | 查询数量=%s | queries=%s", len(queries), [q.get("query", "") for q in queries])

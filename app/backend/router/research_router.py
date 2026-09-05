@@ -317,7 +317,7 @@ async def get_thread_messages(
     research_service: ResearchService = Depends(get_research_service),
 ):
     """获取某个会话的完整对话历史。"""
-    return {"thread_id": thread_id, "messages": research_service.get_thread_messages(thread_id)}
+    return {"thread_id": thread_id, "messages": await research_service.get_thread_messages(thread_id)}
 
 
 @router.get("/state/{thread_id}")
@@ -326,7 +326,7 @@ async def get_state(
     research_service: ResearchService = Depends(get_research_service),
 ):
     """获取任务当前状态快照（P3 增强）。"""
-    state = research_service.get_state(thread_id)
+    state = await research_service.get_state(thread_id)
 
     # 异步补充 interrupted_by_restart 标记
     registry = get_task_registry()
@@ -379,7 +379,7 @@ async def get_history(
     research_service: ResearchService = Depends(get_research_service),
 ):
     """获取任务历史快照列表。"""
-    return {"thread_id": thread_id, "history": research_service.get_state_history(thread_id, limit)}
+    return {"thread_id": thread_id, "history": await research_service.get_state_history(thread_id, limit)}
 
 
 @router.post("/rollback")
@@ -388,7 +388,7 @@ async def rollback(
     research_service: ResearchService = Depends(get_research_service),
 ):
     """回滚/更新任务状态到指定值。"""
-    return research_service.update_state(
+    return await research_service.update_state(
         payload.thread_id, payload.values, as_node=payload.as_node
     )
 
@@ -436,7 +436,7 @@ async def export_markdown(
 
     返回 Content-Type: text/markdown，带 Content-Disposition 下载头。
     """
-    messages = research_service.get_thread_messages(thread_id)
+    messages = await research_service.get_thread_messages(thread_id)
     if not messages:
         raise HTTPException(status_code=404, detail="会话无消息记录")
 
@@ -468,7 +468,7 @@ async def export_pdf(
     1. 尝试 weasyprint 渲染
     2. 装不上 → 返回 HTML 打印页面（前端 window.print()）
     """
-    messages = research_service.get_thread_messages(thread_id)
+    messages = await research_service.get_thread_messages(thread_id)
     if not messages:
         raise HTTPException(status_code=404, detail="会话无消息记录")
 

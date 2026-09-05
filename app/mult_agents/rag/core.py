@@ -45,7 +45,7 @@ class RAGConfig:
     milvus_port: int = 19530
     collection_name: str = "mult_agent_knowledge"
     parent_collection_name: str = "mult_agent_knowledge_parent"
-    embedding_model: str = "text-embedding-v1"
+    embedding_model: str = "text-embedding-v3"
 
     # 子块参数（精确检索）
     chunk_size: int = 512

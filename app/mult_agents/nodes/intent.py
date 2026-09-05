@@ -15,7 +15,7 @@ from ._parsing import _last_content, _invoke_json_agent
 logger = logging.getLogger("mult_agents")
 
 
-def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[intent]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "intent", "message": "正在判断问题意图..."})
@@ -44,24 +44,25 @@ def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter 
 
 
 
-async def direct_answer_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+async def direct_answer_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[direct_answer]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "direct_answer", "message": "正在生成直接回答..."})
     prompt = f"用户问题：{state['query']}"
     human = HumanMessage(content=with_memory_context(state, prompt))
     # P2: 使用 astream 实现 token 级流式
+    # P0-1：累加与 writer 推送解耦 — writer 注入失败（被 Optional 阻断）时仍保留 token 内容。
     full_content = ""
     async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
         if isinstance(chunk, tuple) and len(chunk) == 2:
             msg_chunk, metadata = chunk
             text = getattr(msg_chunk, "content", "")
-            if text and writer:
-                writer({"type": "token", "node": "direct_answer", "text": text})
+            if text:
                 full_content += text
+                if writer:
+                    writer({"type": "token", "node": "direct_answer", "text": text})
     if not full_content:
-        # 降级：astream 未产出内容时回退到 invoke
-        result = agent.invoke({"messages": [human]})
+        result = await agent.ainvoke({"messages": [human]})
         full_content = _last_content(result).strip()
     content = full_content
     emit("direct_answer", content)

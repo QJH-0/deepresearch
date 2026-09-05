@@ -16,7 +16,7 @@ from ._fallbacks import _fallback_analysis, _check_evidence_sufficiency
 logger = logging.getLogger("mult_agents")
 
 
-def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[analyze]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "analyze", "message": "正在分析证据并生成结论..."})
@@ -83,7 +83,7 @@ def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter
 
 
 
-def reflect_node(state: AgentState, agent, agent_name: str, writer: StreamWriter | None = None) -> AgentState:
+def reflect_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[reflect]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "reflect", "message": "正在生成补搜计划..."})

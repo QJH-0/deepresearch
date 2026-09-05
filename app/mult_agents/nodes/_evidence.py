@@ -34,22 +34,61 @@ def _default_plan(state: AgentState) -> dict:
 
 
 
+# 句首指令性敬语/动词，剥离后避免被误当作检索实体（如「请调研」「帮我分析」）
+_INSTRUCTION_PREFIXES = (
+    "请帮我", "请帮", "麻烦帮我", "麻烦", "请", "帮我", "想要", "我想", "需要",
+)
+_INSTRUCTION_VERBS = (
+    "调研", "分析", "梳理", "总结", "介绍", "解释", "研究", "评估",
+    "对比", "比较", "盘点", "调查", "归纳", "整理", "阐述", "说明",
+)
+# 中文停用词（指令残留 + 泛化疑问词），不作为检索实体
+_CN_STOPWORDS = {
+    "帮我", "调查", "最新", "使用趋势", "是什么", "多少", "情况",
+    "请调研", "调研", "请分析", "分析", "请梳理", "梳理", "请总结", "总结",
+    "请介绍", "介绍", "请解释", "解释", "请研究", "研究", "请评估", "评估",
+    "请对比", "对比", "请比较", "比较", "告诉我", "如何", "怎么", "为什么",
+    "有哪些", "哪些", "能否", "一下",
+}
+# 动词后的语气助词（「介绍一下X」「分析一下X」），剥离后露出实体主体
+_VERB_PARTICLES = ("一下",)
+
+
+def _strip_instruction(query: str) -> str:
+    """剥离句首指令性敬语与动词（「请」「帮我」「请调研」等），返回实体主体。"""
+    stripped = query.strip()
+    for prefix in _INSTRUCTION_PREFIXES:
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix):].lstrip("，,：: 　")
+            break
+    for verb in _INSTRUCTION_VERBS:
+        if stripped.startswith(verb):
+            stripped = stripped[len(verb):].lstrip("，,：: 　")
+            break
+    for particle in _VERB_PARTICLES:
+        if stripped.startswith(particle):
+            stripped = stripped[len(particle):].lstrip("，,：: 　")
+            break
+    return stripped
+
+
 def _guess_primary_entity(query: str) -> str:
-    lowered = query.lower()
+    base = _strip_instruction(query)
+    lowered = base.lower()
     ascii_terms = re.findall(r"[a-z][a-z0-9_-]{2,}", lowered)
     for term in ascii_terms:
         if term not in {"latest", "trend", "news", "agent", "open", "using"}:
             return term
-    chinese_terms = re.findall(r"[\u4e00-\u9fff]{2,}", query)
+    chinese_terms = re.findall(r"[\u4e00-\u9fff]{2,}", base)
     for term in chinese_terms:
-        if term not in {"帮我", "调查", "最新", "使用趋势", "是什么", "多少", "情况"}:
+        if term not in _CN_STOPWORDS:
             return term
     return ""
 
 
 
 def _derive_direct_search_queries(query: str) -> list[str]:
-    base_query = query.strip()
+    base_query = _strip_instruction(query.strip())
     if not base_query:
         return []
     entity = _guess_primary_entity(base_query)
@@ -95,6 +134,18 @@ def _is_query_grounded(candidate: str, user_query: str) -> bool:
 
 def _derive_search_plan(outline: list[dict], sub_questions: list[str], _research_questions: list[str], query: str) -> list[dict]:
     plan: list[dict] = []
+    # 规划子问题优先：planner 拆解的检索意图比原始 query 更适合检索（已剥离疑问语气词）
+    for sub_question in sub_questions or []:
+        text = str(sub_question).strip().rstrip("？?。.!！")
+        if text:
+            plan.append(
+                {
+                    "section_id": "sub_question",
+                    "query": text,
+                    "source_preference": "hybrid",
+                    "reason": "来自规划子问题",
+                }
+            )
     for direct_query in _derive_direct_search_queries(query):
         plan.append(
             {
