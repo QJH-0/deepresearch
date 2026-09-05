@@ -74,6 +74,9 @@ class BusinessSettings(BaseSettings):
     # ── DashScope 专用重排模型 ──
     rerank_model_name: str = "gte-rerank"
     enable_rerank_model: bool = True
+    # ── 证据评分 LLM 融合 ──
+    evidence_llm_fusion: bool = True
+    evidence_prior_weight: float = 0.4
 
     @model_validator(mode="before")
     @classmethod

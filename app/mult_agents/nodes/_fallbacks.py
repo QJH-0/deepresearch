@@ -7,33 +7,43 @@ import logging
 import re
 
 from ..state import AgentState
+from ._evidence import EvidenceScorer, _dedupe_sources, _score_evidence
 
 logger = logging.getLogger("mult_agents")
 
 
 def _fallback_audit(state: AgentState) -> dict:
-    evidence_pool = []
+    raw_evidence = state.get("web_evidence", []) + state.get("local_evidence", [])
+    scorer = _get_evidence_scorer(state)
+    if scorer is not None:
+        evidence_pool = scorer.score_batch([dict(r) for r in raw_evidence])
+    else:
+        evidence_pool = []
+        for record in raw_evidence:
+            score, reason = _score_evidence(record)
+            normalized = dict(record)
+            normalized["reliability_score"] = score
+            normalized["reliability_reason"] = reason
+            evidence_pool.append(normalized)
+
     source_index = []
     audit_flags = []
-    for record in state.get("web_evidence", []) + state.get("local_evidence", []):
-        score, reason = _score_evidence(record)
-        normalized = dict(record)
-        normalized["reliability_score"] = score
-        normalized["reliability_reason"] = reason
-        normalized["source_label"] = record.get("title") or record.get("doc_id") or record.get("url") or record.get("source_id")
+    for normalized in evidence_pool:
+        normalized.setdefault("source_label", normalized.get("title") or normalized.get("doc_id") or normalized.get("url") or normalized.get("source_id"))
         normalized.setdefault("supports", [])
         normalized.setdefault("refutes", [])
-        evidence_pool.append(normalized)
-        locator = record.get("url") or record.get("doc_id") or ""
+        score = normalized.get("reliability_score", 0.0)
+        reason = normalized.get("reliability_reason", "")
+        locator = normalized.get("url") or normalized.get("doc_id") or ""
         if score < 0.6:
-            audit_flags.append({"type": "low_confidence", "target": record.get("source_id"), "reason": reason})
+            audit_flags.append({"type": "low_confidence", "target": normalized.get("source_id"), "reason": reason})
         else:
             source_index.append(
                 {
-                    "source_id": record.get("source_id"),
+                    "source_id": normalized.get("source_id"),
                     "label": normalized["source_label"],
                     "locator": locator or "未提供定位信息",
-                    "source_type": record.get("source_type", "source"),
+                    "source_type": normalized.get("source_type", "source"),
                 }
             )
     return {
@@ -42,6 +52,26 @@ def _fallback_audit(state: AgentState) -> dict:
         "audit_flags": audit_flags,
         "source_index": _dedupe_sources(source_index, ["source_id"]),
     }
+
+
+def _get_evidence_scorer(state: AgentState):
+    """从配置/环境中获取 EvidenceScorer；拿不到 LLM 或开关关闭时返回 None。"""
+    import os
+    fusion_enabled = os.getenv("EVIDENCE_LLM_FUSION", "true").lower() in ("true", "1", "yes")
+    if not fusion_enabled:
+        return None
+    try:
+        from mult_agents.runtime import get_research_service
+        service = get_research_service()
+        if service is None or not hasattr(service, "bundle"):
+            return None
+        bundle = service.bundle
+        llm = getattr(bundle, "review_llm", None) or getattr(bundle, "llm", None)
+        if llm is None:
+            return None
+        return EvidenceScorer(llm)
+    except Exception:
+        return None
 
 
 

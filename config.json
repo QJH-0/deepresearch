@@ -32,5 +32,7 @@
   },
   "search_providers": ["ddgs", "tavily", "searxng"],
   "rerank_model_name": "gte-rerank",
-  "enable_rerank_model": true
+  "enable_rerank_model": true,
+  "evidence_llm_fusion": true,
+  "evidence_prior_weight": 0.4
 }

@@ -471,6 +471,121 @@ def _score_evidence(record: dict) -> tuple[float, str]:
     return 0.45, "来源信息不完整"
 
 
+_EVIDENCE_SCORE_PROMPT = """你是一名证据质量评审专家。请针对研究问题，评估每条证据的内容质量与主题相关性。
+
+研究问题：{query}
+
+证据列表：
+{evidence_list}
+
+要求：
+1. 对每条证据输出 0~1 之间的相关性/可靠性分数（0 完全不可信或无关，1 高度可信且高度相关）
+2. 分数参考维度：内容与问题的相关性、信息具体性、是否存在明显偏见或营销倾向、时效性
+3. 只输出 JSON 数组，不要输出任何其他文字
+
+输出格式（每条一个对象）：
+[{{"source_id": "证据ID", "score": 0.85, "reason": "不超过30字的中文理由"}}]
+"""
+
+
+class EvidenceScorer:
+    """证据评分融合：域名信誉先验 + LLM 结构化评估。
+
+    LLM 批量评估一批证据（≤20 条），输出与先验加权融合。
+    任何失败路径都静默回退纯先验，保证主流程零感知。
+    """
+
+    BATCH_SIZE = 20
+    LLM_WEIGHT = 0.6
+
+    def __init__(self, llm, prior_weight: float = 0.4):
+        self._llm = llm
+        self._prior_weight = prior_weight
+        self._llm_weight = 1.0 - prior_weight
+
+    def score_batch(self, records: list[dict]) -> list[dict]:
+        """批量评分入口：返回带 reliability_score / reliability_reason 的新记录列表。"""
+        if not records:
+            return []
+        scored = []
+        for start in range(0, len(records), self.BATCH_SIZE):
+            batch = records[start: start + self.BATCH_SIZE]
+            llm_scores = self._llm_score_batch(batch)
+            for record in batch:
+                prior, prior_reason = _score_evidence(record)
+                sid = record.get("source_id", "")
+                llm_result = llm_scores.get(sid)
+                if llm_result is None:
+                    score, reason = prior, prior_reason
+                else:
+                    raw = self._prior_weight * prior + self._llm_weight * llm_result["score"]
+                    score = min(1.0, max(0.0, raw))
+                    reason = f"{llm_result['reason']}（先验{prior:.2f}）"
+                item = dict(record)
+                item["reliability_score"] = score
+                item["reliability_reason"] = reason
+                scored.append(item)
+        return scored
+
+    def _llm_score_batch(self, batch: list[dict]) -> dict:
+        """调用 LLM 批量评估，返回 {source_id: {score, reason}}；失败返回 {}。"""
+        lines = []
+        for r in batch:
+            sid = r.get("source_id", "")
+            title = r.get("title", "")
+            locator = r.get("domain") or r.get("doc_id") or ""
+            snippet = str(r.get("snippet", ""))[:200]
+            lines.append(f"[{sid}] {title} | {locator} | {snippet}")
+        evidence_list = "\n".join(lines)
+        query = batch[0].get("query", "") if batch else ""
+        prompt = _EVIDENCE_SCORE_PROMPT.format(query=query, evidence_list=evidence_list)
+        try:
+            resp = self._llm.invoke(prompt)
+            content = resp.content if hasattr(resp, "content") else str(resp)
+        except Exception as exc:
+            logger.warning("[evidence_scorer] LLM 调用失败，整批回退先验 | %s", exc)
+            return {}
+        parsed = self._parse_llm_json(content)
+        if not isinstance(parsed, list):
+            return {}
+        result = {}
+        valid_sids = {r.get("source_id", "") for r in batch}
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("source_id", "")).strip()
+            if sid not in valid_sids:
+                continue
+            try:
+                score = float(item.get("score", 0))
+            except (TypeError, ValueError):
+                continue
+            score = min(1.0, max(0.0, score))
+            reason = str(item.get("reason", ""))[:50]
+            result[sid] = {"score": score, "reason": reason}
+        return result
+
+    @staticmethod
+    def _parse_llm_json(content: str):
+        """<arg_value>解析 LLM 输出：先直接 json.loads，失败用正则截取首个 [...] 子串再解析。
+        """
+        text = content.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        match = re.search(r"\[.*?\]", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return None
+
+
 
 def _dedupe_sources(items: list[dict], key_fields: list[str]) -> list[dict]:
     seen = set()
