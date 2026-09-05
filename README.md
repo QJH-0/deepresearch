@@ -1,7 +1,7 @@
 # DeepResearch
 
 > 多智能体深度研报助手 — 基于 LangGraph + FastAPI + Vue3 的 AI 研究系统
-
+> 项目使用 conda 环境 `llmdev`，Python 3.11 + 全量依赖。
 ## 架构概览
 
 ```
@@ -40,36 +40,32 @@ deepresearch/
 ├── app/                      # 后端应用
 │   ├── app_main.py           # FastAPI 入口
 │   ├── backend/              # 后端服务层
-│   │   ├── config/           # pydantic-settings 配置
-│   │   ├── infra/            # 基础设施客户端 (store_client, mq, redis, milvus, minio)
+│   │   ├── config/           # pydantic-settings 配置 (.env + config.json)
+│   │   ├── infra/            # 基础设施客户端 (postgres, redis, milvus, minio, mq)
 │   │   ├── router/           # FastAPI 路由 (research, health, documents)
 │   │   ├── schemas/          # 事件协议 (events.py, requests.py)
-│   │   └── service/          # 业务服务 (research_service, memory_service, task_registry, document_service)
+│   │   └── service/          # 业务服务 (research, memory, task_registry, document)
 │   ├── mult_agents/          # LangGraph 多智能体层
 │   │   ├── graph.py          # 图拓扑定义
 │   │   ├── state.py          # State 分组 + reducer
-│   │   ├── models.py          # 模型工厂 (build_agents)
-│   │   ├── runtime.py         # AgentBundle + 运行时
-│   │   ├── tools.py           # SearchProvider (DuckDuckGo) + RAG 工具
-│   │   ├── prompts.py         # 提示词模板
-│   │   ├── nodes/             # 节点实现 (intent, plan, clarify, web_search, ...)
-│   │   └── rag/               # RAG 检索逻辑
+│   │   ├── models.py         # 模型工厂 (build_agents)
+│   │   ├── runtime.py        # AgentBundle + 运行时
+│   │   ├── tools.py          # SearchProvider (DuckDuckGo) + RAG 工具
+│   │   ├── prompts.py        # 提示词模板
+│   │   ├── nodes/            # 节点实现 (intent, plan, clarify, web_search, ...)
+│   │   └── rag/              # RAG 检索逻辑
 │   └── test/                 # 测试套件
-│       ├── conftest.py        # 共享 mock + fixture
-│       ├── test_events.py     # 事件协议
-│       ├── test_state.py      # State 契约
-│       ├── test_p1.py         # 拓扑/reducer/搜索
-│       ├── test_p2.py         # 流式输出
-│       ├── test_p3.py         # 取消/恢复
-│       ├── test_p4.py         # HITL
-│       ├── test_p5.py         # 记忆
-│       ├── test_p7.py         # 引用溯源
-│       ├── test_citations.py  # 引用去重
-│       ├── test_stream_events.py
-│       ├── test_search_provider.py
-│       ├── test_resume.py
-│       ├── test_hitl.py
-│       └── test_memory.py
+│       ├── conftest.py       # 共享 mock + fixture
+│       ├── test_events.py    # 事件协议
+│       ├── test_state.py     # State 契约
+│       ├── test_p1.py        # 拓扑/reducer/搜索
+│       ├── test_p2.py        # 流式输出
+│       ├── test_p3.py        # 取消/恢复
+│       ├── test_p4.py        # HITL
+│       ├── test_p5.py        # 记忆
+│       ├── test_p7.py        # 引用溯源
+│       ├── test_citations.py # 引用去重
+│       └── ...
 ├── agent_front/              # 前端 Vue3
 │   ├── src/
 │   │   ├── api/              # API 调用
@@ -80,7 +76,7 @@ deepresearch/
 │   │   └── utils/            # 工具函数
 │   ├── package.json
 │   ├── vite.config.ts
-│   └── Dockerfile            # 前端容器 (多阶段: node build → nginx)
+│   └── Dockerfile
 ├── data/knowledge/           # 知识库文档
 ├── docs/                     # 开发文档
 │   ├── dev/                  # 分阶段开发文档 (Phase 0-8)
@@ -91,12 +87,17 @@ deepresearch/
 │   └── 工程问题与解决方案记录.md
 ├── scripts/                  # 脚本
 │   ├── export_event_protocol.py
+│   ├── init_pgvector.sql
 │   └── split_nodes.py
 ├── config.json               # 业务配置 (无敏感信息)
-├── requirements.txt           # 后端依赖
-├── pyproject.toml             # pytest 配置
+├── requirements.txt          # 后端依赖
+├── pyproject.toml            # pytest 配置
 ├── Dockerfile                # 后端容器 (多阶段构建)
-├── docker-compose.app.yml    # 应用编排 (backend + frontend + rabbitmq)
+├── docker-compose.app.yml    # 应用编排 (backend + frontend)
+├── docker-compose.middleware.yml  # 中间件编排
+├── start_backend.bat         # Windows 后端启动脚本
+├── check_env.ps1             # 环境检查脚本
+├── diagnose.ps1              # 诊断脚本
 └── .dockerignore
 ```
 
@@ -104,12 +105,12 @@ deepresearch/
 
 ### 1. 环境准备
 
-#### 方式 A: conda 环境安装（推荐）
+#### 方式 A: conda 环境 `llmdev`（推荐）
 
 项目使用 conda 环境 `llmdev`，Python 3.11 + 全量依赖：
 
 ```bash
-# 创建 conda 环境
+# 创建并激活 conda 环境
 conda create -n llmdev python=3.11 -y
 conda activate llmdev
 
@@ -124,7 +125,7 @@ npm install
 
 #### 方式 B: 最小环境
 
-如果只运行后端测试，`conftest.py` 会自动 mock 未安装的第三方包，无需安装 `langgraph`、`langchain` 等重依赖：
+如果只运行后端测试，`conftest.py` 会自动 mock 未安装的第三方包：
 
 ```bash
 pip install fastapi uvicorn pydantic pydantic-settings pytest pytest-asyncio python-dotenv duckduckgo-search
@@ -161,35 +162,58 @@ CHECKPOINTER_BACKEND=postgres
 ENABLE_MILVUS=true
 ```
 
+> 业务配置（模型、迭代次数、HITL 开关等）可在 `config.json` 中热修改，无需重启。
+
 ### 2. 启动中间件
 
 ```bash
-docker compose -f docs_konwledge/docker-compose.middleware.yml up -d
+docker compose -f docker-compose.middleware.yml up -d
 ```
 
-中间件包含：PostgreSQL、Redis、Milvus (etcd + MinIO)、MySQL、Neo4j
+中间件包含：PostgreSQL (pgvector)、Redis、Milvus (etcd + MinIO)、RabbitMQ
+
+| 服务 | 宿主机端口 | 用户名 | 密码 | 说明 |
+|------|-----------|--------|------|------|
+| PostgreSQL | 5432 | `root` | `postgres123` | 记忆 + Checkpoint |
+| Redis | 6379 | — | `redis123456` | 短期记忆 |
+| Milvus (gRPC) | 19530 | — | — | 向量检索 |
+| MinIO (API) | 9900 | `minioadmin` | `minioadmin` | 对象存储 |
+| MinIO (Console) | 9901 | — | — | Web 管理界面 |
+| RabbitMQ (AMQP) | 5672 | `admin` | `admin123456` | 消息队列 |
+| RabbitMQ (Management) | 15672 | — | — | Web 管理界面 |
 
 ### 3. 启动应用
 
-```bash
-# 方式 A: Docker Compose（推荐）
-docker compose -f docker-compose.app.yml up -d --build
+#### 方式 A: Docker Compose（推荐）
 
-# 方式 B: 本地开发
-# 后端
-pip install -r requirements.txt
-cd app && uvicorn app_main:app --reload --port 8000
+```bash
+docker compose -f docker-compose.app.yml up -d --build
+```
+
+#### 方式 B: 本地开发
+
+```bash
+# 后端（conda llmdev 环境）
+conda activate llmdev
+cd app
+uvicorn app_main:app --reload --port 8000
+
+# 或双击项目根目录的 start_backend.bat（Windows）
 
 # 前端
-cd agent_front && npm install && npm run dev
+cd agent_front
+npm run dev
 ```
 
 ### 4. 访问
 
-- 前端: http://localhost:8080 (Docker) 或 http://localhost:5173 (本地开发)
-- 后端 API: http://localhost:8000
-- API 文档: http://localhost:8000/docs
-- 健康检查: http://localhost:8000/health/live
+| 端点 | 地址 |
+|------|------|
+| 前端 (Docker) | http://localhost:8080 |
+| 前端 (本地开发) | http://localhost:5173 |
+| 后端 API | http://localhost:8000 |
+| API 文档 | http://localhost:8000/docs |
+| 健康检查 | http://localhost:8000/health/live |
 
 ## 测试
 
@@ -230,8 +254,8 @@ python -m pytest app/test/ --cov=backend --cov=mult_agents --cov-report=term-mis
 
 | 环境 | langgraph | psycopg | langchain | mock 策略 |
 |------|-----------|---------|-----------|-----------|
-| llmdev | ✅ 真实 | ✅ 真实 | ✅ 真实 | 不 mock，使用真实包 |
-| base | ❌ 未安装 | ❌ 未安装 | ❌ 未安装 | 自动 mock，注册具体 mock 类 |
+| llmdev | 真实 | 真实 | 真实 | 不 mock，使用真实包 |
+| base | 未安装 | 未安装 | 未安装 | 自动 mock，注册具体 mock 类 |
 
 > `_WildcardMockFinder` 会先用 `PathFinder.find_spec` 检查包是否真实安装，仅在未安装时返回 mock。这确保在 `llmdev` 环境下不会误 mock 真实包的子模块（如 `psycopg_c.pq`）。
 
@@ -245,13 +269,15 @@ cd agent_front && npx vitest
 
 | 决策 | 说明 |
 |------|------|
-| 搜索引擎 | DuckDuckGo (duckduckgo-search 纯 pip 依赖，无服务容器) |
-| Checkpointer | PostgreSQL (langgraph-checkpoint-postgres) |
-| 记忆系统 | langmem + PostgresStore 双通道 (删除旧哈希伪向量) |
-| 流式输出 | FastAPI SSE + async generator (删除 Thread+Queue 桥接) |
+| 搜索引擎 | DuckDuckGo (`duckduckgo-search` 纯 pip 依赖，无服务容器) |
+| LLM 提供商 | 阿里云百炼 DashScope (`qwen-plus` / `qwen-turbo`) |
+| Checkpointer | PostgreSQL (`langgraph-checkpoint-postgres`) |
+| 记忆系统 | langmem + PostgresStore 双通道 |
+| 流式输出 | FastAPI SSE + async generator |
 | HITL | LangGraph interrupt (3 点: clarify / plan_approval / report_review) |
 | 事件协议 | 10 种事件类型，pydantic schema 校验，EVENT_REGISTRY 注册 |
-| 前端 | Vue3 + Pinia + Naive UI，useEventStream 统一事件 reducer |
+| 前端 | Vue3 + Pinia + Naive UI，`useEventStream` 统一事件 reducer |
+| 文档向量化 | RabbitMQ 异步解耦 (chunk-sync Topic exchange) |
 
 ## 事件协议
 
@@ -272,7 +298,9 @@ cd agent_front && npx vitest
 
 ## 开发文档
 
-- [分阶段开发文档](docs/dev/README.md) — Phase 0-8 全流程
+- [分阶段开发文档](docs/dev/) — Phase 0-8 全流程
 - [事件协议](docs/event-protocol.json) — SSE 事件 schema
+- [测试用例](docs/dev/test-cases.md) — 全量测试清单
+- [系统部署文档](docs_konwledge/系统部署文档.md) — 数据库初始化与数据导入
 - [工程问题记录](docs_konwledge/工程问题与解决方案记录.md)
-- [中间件指南](docs_konwledge/DeepResearch中间件使用指南.md)
+- [中间件使用指南](docs_konwledge/DeepResearch中间件使用指南.md)
