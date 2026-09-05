@@ -30,5 +30,7 @@
     "analyze_clarify": true,
     "write_review": false
   },
-  "search_providers": ["ddgs", "tavily", "searxng"]
+  "search_providers": ["ddgs", "tavily", "searxng"],
+  "rerank_model_name": "gte-rerank",
+  "enable_rerank_model": true
 }

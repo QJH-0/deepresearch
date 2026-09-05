@@ -71,6 +71,9 @@ class BusinessSettings(BaseSettings):
     summary_model: str = "qwen-turbo"
     # ── Web 搜索 Provider 链 ──
     search_providers: list = ["ddgs", "searxng"]
+    # ── DashScope 专用重排模型 ──
+    rerank_model_name: str = "gte-rerank"
+    enable_rerank_model: bool = True
 
     @model_validator(mode="before")
     @classmethod

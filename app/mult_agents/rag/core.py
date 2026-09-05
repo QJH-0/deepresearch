@@ -11,6 +11,7 @@ Advanced RAG Core — DeepResearch 项目 RAG 核心模块
 7. 结构化 Metadata — doc_id / section_path / chunk_idx
 """
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import httpx
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -66,8 +68,12 @@ class RAGConfig:
     # 是否启用 BM25 混合检索
     enable_bm25: bool = True
 
-    # 是否启用 LLM 重排序
+    # 是否启用 LLM 重排序（降级路径）
     enable_reranker: bool = True
+
+    # DashScope 专用重排模型
+    rerank_model_name: str = "gte-rerank"
+    enable_rerank_model: bool = True
 
     # 是否启用 Parent-Child 上下文扩展
     enable_parent_child: bool = True
@@ -75,6 +81,106 @@ class RAGConfig:
     # PostgreSQL 全文检索（BM25 替代方案）
     enable_fulltext: bool = True
     postgres_dsn: str = ""
+
+    # RRF 融合平滑常数
+    rrf_k: int = 60
+
+
+# ==============================================================================
+# RRF 融合
+# ==============================================================================
+def _default_doc_key(doc) -> str:
+    """默认文档同一性 key：md5(page_content)。"""
+    return hashlib.md5(doc.page_content.encode()).hexdigest()
+
+
+def rrf_fuse(
+    result_lists: list,
+    k: int = 60,
+    top_k: int | None = None,
+    doc_key=None,
+) -> list:
+    """Reciprocal Rank Fusion：多路召回列表融合。
+
+    score(doc) = Σ_i 1 / (k + rank_i(doc))，rank 从 1 开始。
+    只依赖各路的排名顺序，不依赖分数分布，对异构打分天然鲁棒。
+    """
+    if not result_lists:
+        return []
+    key_fn = doc_key or _default_doc_key
+    scores: dict[str, float] = {}
+    doc_map: dict[str, object] = {}
+    for result_list in result_lists:
+        for rank, doc in enumerate(result_list, start=1):
+            key = key_fn(doc)
+            if key not in doc_map:
+                doc_map[key] = doc
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    fused = [doc_map[key] for key, _ in ranked]
+    return fused[:top_k] if top_k else fused
+
+
+# ==============================================================================
+# PostgreSQL 关键词检索器
+# ==============================================================================
+class PostgresKeywordRetriever:
+    """基于 document_chunks 表的 PG 全文关键词检索（专有名词/型号/编码字面匹配）。"""
+
+    def __init__(self, dsn: str, top_k: int = 20):
+        self._dsn = dsn
+        self._top_k = top_k
+
+    @property
+    def available(self) -> bool:
+        return bool(self._dsn)
+
+    def search(self, query: str, k: int | None = None) -> list:
+        """返回 langchain Document 列表（metadata 与 Milvus 召回保持同构）。"""
+        if not self.available:
+            return []
+        limit = k or self._top_k
+        try:
+            import psycopg2
+        except ImportError:
+            logger.warning("[pg_keyword] psycopg2 未安装，跳过 PG 关键词检索")
+            return []
+        try:
+            conn = psycopg2.connect(self._dsn)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, content, doc_id, parent_id, section_path
+                FROM document_chunks
+                WHERE content_tsv @@ plainto_tsquery('simple', %s)
+                  AND vector_status = 'indexed'
+                ORDER BY ts_rank(content_tsv, plainto_tsquery('simple', %s)) DESC
+                LIMIT %s
+                """,
+                (query, query, limit),
+            )
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+        except Exception as exc:
+            logger.warning("[pg_keyword] PG 全文检索失败 | %s", exc)
+            return []
+
+        docs = []
+        for row in rows:
+            chunk_id, content, doc_id, parent_id, section_path = row
+            docs.append(Document(
+                page_content=content,
+                metadata={
+                    "chunk_id": chunk_id,
+                    "doc_id": doc_id,
+                    "parent_id": parent_id,
+                    "section_path": section_path,
+                    "source_type": "local",
+                },
+            ))
+        logger.info("[pg_keyword] 检索完成 | query=%s | 记录数=%d", query, len(docs))
+        return docs
 
 
 # ==============================================================================
@@ -185,10 +291,83 @@ class QueryRewriter:
 
 
 # ==============================================================================
+# DashScope 专用重排模型
+# ==============================================================================
+class RerankUnavailable(RuntimeError):
+    """专用重排不可用，由上层降级 LLMReranker。"""
+
+
+class DashScopeReranker:
+    """DashScope 文本重排 API（gte-rerank）调用封装。
+
+    使用 httpx 直接 POST 请求 DashScope rerank 端点，避免引入 dashscope SDK。
+    失败时抛 RerankUnavailable，由 RAGSystem._rerank 降级 LLMReranker。
+    """
+
+    MAX_DOCS = 20
+    MAX_DOC_CHARS = 2000
+    _API_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+
+    def __init__(self, api_key: str, model: str = "gte-rerank", timeout: float = 15.0):
+        self._api_key = api_key
+        self._model = model
+        self._timeout = timeout
+
+    def rerank(self, query: str, documents: List[Document], top_k: int = 5) -> List[Document]:
+        """同步调用 DashScope rerank API，返回按相关性排序的 top_k 文档。"""
+        if not documents:
+            return []
+        docs = documents[: self.MAX_DOCS]
+        texts = [d.page_content[: self.MAX_DOC_CHARS] for d in docs]
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": self._model,
+            "input": {
+                "query": query,
+                "documents": texts,
+            },
+            "parameters": {
+                "return_documents": False,
+                "top_n": min(top_k, len(docs)),
+            },
+        }
+        try:
+            resp = httpx.post(
+                self._API_URL, json=body, headers=headers, timeout=self._timeout
+            )
+        except Exception as exc:
+            raise RerankUnavailable(f"DashScope rerank HTTP 请求失败: {exc}") from exc
+
+        if resp.status_code != 200:
+            raise RerankUnavailable(
+                f"DashScope rerank 返回非 200: status={resp.status_code}, body={resp.text[:200]}"
+            )
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise RerankUnavailable(f"DashScope rerank 响应 JSON 解析失败: {exc}") from exc
+
+        results = (data.get("output") or {}).get("results") or []
+        if not results:
+            return []
+
+        ranked: List[Document] = []
+        for item in results:
+            idx = item.get("index")
+            if isinstance(idx, int) and 0 <= idx < len(docs):
+                ranked.append(docs[idx])
+        return ranked[:top_k]
+
+
+# ==============================================================================
 # LLM Reranker
 # ==============================================================================
 class LLMReranker:
-    """使用 LLM 对检索结果进行 Cross-Encoder 风格的精排。"""
+    """使用 LLM 对检索结果进行 Cross-Encoder 风格的精排（降级路径）。"""
 
     RERANK_PROMPT = """你是一个相关性排序专家。请根据用户问题，对以下检索到的文档片段按相关性从高到低排序。
 
@@ -460,13 +639,29 @@ class RAGSystem:
             auto_id=True,
         )
 
-        # BM25 检索器
+        # BM25 检索器（PG 不可用时降级使用）
         self.bm25 = BM25Retriever()
+
+        # PG 关键词检索器（优先于 BM25）
+        self._keyword_retriever: Optional[PostgresKeywordRetriever] = None
+        if self.config.enable_fulltext and self.config.postgres_dsn:
+            self._keyword_retriever = PostgresKeywordRetriever(
+                dsn=self.config.postgres_dsn,
+                top_k=self.config.recall_k,
+            )
 
         # 查询重写器（延迟初始化）
         self._query_rewriter: Optional[QueryRewriter] = None
 
-        # 重排序器（延迟初始化）
+        # 专用重排模型（gte-rerank）
+        self._reranker_model: Optional[DashScopeReranker] = None
+        if self.config.enable_rerank_model and api_key:
+            self._reranker_model = DashScopeReranker(
+                api_key=api_key,
+                model=self.config.rerank_model_name,
+            )
+
+        # LLM 重排序器（降级路径，延迟初始化）
         self._reranker: Optional[LLMReranker] = None
 
         # Parent-Child 映射缓存
@@ -716,27 +911,28 @@ class RAGSystem:
             docs = self.vectorstore.similarity_search(q, k=self.config.recall_k)
             all_vector_docs.extend(docs)
 
-        # Step 3: BM25 召回
-        bm25_docs: List[Document] = []
-        if self.config.enable_bm25 and self.bm25._documents:
-            bm25_results = self.bm25.search(query, k=self.config.recall_k)
-            bm25_docs = [doc for doc, _ in bm25_results]
+        # Step 3: 关键词路（优先 PG，降级 BM25）
+        keyword_docs: List[Document] = []
+        if self._keyword_retriever is not None and self._keyword_retriever.available:
+            try:
+                keyword_docs = self._keyword_retriever.search(query, k=self.config.recall_k)
+            except Exception as exc:
+                logger.warning("[rag] PG 关键词检索失败，降级 BM25 | %s", exc)
+        if not keyword_docs and self.config.enable_bm25 and self.bm25._documents:
+            keyword_docs = [doc for doc, _ in self.bm25.search(query, k=self.config.recall_k)]
 
-        # Step 4: 合并去重
-        seen_hashes = set()
-        merged_docs: List[Document] = []
-        for doc in all_vector_docs + bm25_docs:
-            content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
-            if content_hash not in seen_hashes:
-                seen_hashes.add(content_hash)
-                merged_docs.append(doc)
+        # Step 4: RRF 融合替代 hash 去重
+        merged_docs = rrf_fuse(
+            [all_vector_docs, keyword_docs],
+            k=self.config.rrf_k,
+        )
 
-        logger.info("多路召回: 向量=%d BM25=%d 去重后=%d",
-                     len(all_vector_docs), len(bm25_docs), len(merged_docs))
+        logger.info("多路召回: 向量=%d 关键词=%d RRF融合后=%d",
+                     len(all_vector_docs), len(keyword_docs), len(merged_docs))
 
-        # Step 5: LLM 重排序
+        # Step 5: 重排序（专用模型优先，降级 LLM）
         if self.config.enable_reranker and len(merged_docs) > k * 2:
-            reranked_docs = self.reranker.rerank(query, merged_docs, top_k=k * 2)
+            reranked_docs = self._rerank(query, merged_docs, top_k=k * 2)
         else:
             reranked_docs = merged_docs[:k * 2]
 
@@ -780,6 +976,21 @@ class RAGSystem:
                 })
 
         return final_records[:k]
+
+    # ==================================================================
+    # 重排序
+    # ==================================================================
+
+    def _rerank(self, query: str, documents: List[Document], top_k: int) -> List[Document]:
+        """重排降级链：DashScopeReranker → LLMReranker → 截断。"""
+        if self._reranker_model is not None:
+            try:
+                return self._reranker_model.rerank(query, documents, top_k=top_k)
+            except RerankUnavailable as exc:
+                logger.warning("[rag] 专用重排失败，降级 LLM 重排 | %s", exc)
+        if self.reranker is not None:
+            return self.reranker.rerank(query, documents, top_k=top_k)
+        return documents[:top_k]
 
     # ==================================================================
     # 基础操作

@@ -65,6 +65,7 @@ class _WildcardMockFinder(importlib.abc.MetaPathFinder):
         "redis",
         "sse_starlette",
         "starlette",
+        "psycopg2",
         # langchain 扩展包（测试环境可不安装）
         "langchain_text_splitters",
         "langchain_experimental",
