@@ -66,6 +66,8 @@ class _WildcardMockFinder(importlib.abc.MetaPathFinder):
         "sse_starlette",
         "starlette",
         "psycopg2",
+        "psycopg",
+        "langmem",
         # langchain 扩展包（测试环境可不安装）
         "langchain_text_splitters",
         "langchain_experimental",
@@ -216,6 +218,28 @@ def _register_langgraph_mocks():
         lgcm.InMemorySaver = _InMemorySaver
         sys.modules["langgraph.checkpoint.memory"] = lgcm
 
+    if "langgraph.store" not in sys.modules:
+        lgs = types.ModuleType("langgraph.store")
+        lgs.__path__ = []
+        sys.modules["langgraph.store"] = lgs
+        lg.store = lgs
+
+    if "langgraph.store.postgres" not in sys.modules:
+        lgsp = types.ModuleType("langgraph.store.postgres")
+        lgsp.__path__ = []
+        lgsp.AsyncPostgresStore = type("AsyncPostgresStore", (), {"__init__": lambda self, *a, **kw: None})
+        lgsp.PostgresStore = type("PostgresStore", (), {"__init__": lambda self, *a, **kw: None})
+        sys.modules["langgraph.store.postgres"] = lgsp
+        lgs.postgres = lgsp
+
+    if "langgraph.store.postgres.base" not in sys.modules:
+        lgspb = types.ModuleType("langgraph.store.postgres.base")
+        lgspb.PostgresIndexConfig = type("PostgresIndexConfig", (), {"__init__": lambda self, *a, **kw: None})
+        lgspb.AsyncPostgresStore = type("AsyncPostgresStore", (), {"__init__": lambda self, *a, **kw: None})
+        lgspb.PostgresStore = type("PostgresStore", (), {"__init__": lambda self, *a, **kw: None})
+        sys.modules["langgraph.store.postgres.base"] = lgspb
+        lgsp.base = lgspb
+
 
 def _register_langchain_core_mocks():
     """注册 langchain_core 子模块的具体 mock 类。"""
@@ -235,6 +259,8 @@ def _register_langchain_core_mocks():
         lcm.HumanMessage = _HumanMessage
         lcm.BaseMessage = type("BaseMessage", (), {})
         lcm.AIMessage = type("AIMessage", (), {})
+        lcm.SystemMessage = type("SystemMessage", (), {"__init__": lambda self, content="", **kw: setattr(self, "content", content)})
+        lcm.RemoveMessage = type("RemoveMessage", (), {"__init__": lambda self, id=None: setattr(self, "id", id)})
         sys.modules["langchain_core.messages"] = lcm
         lc.messages = lcm
 

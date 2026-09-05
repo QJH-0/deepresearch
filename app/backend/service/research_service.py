@@ -18,7 +18,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from threading import Lock
-from typing import Optional
+from typing import Optional, AsyncIterator, Tuple, Any
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -63,6 +63,60 @@ async def _generate_llm_title(query: str, report_summary: str, api_key: str) -> 
         return ""
 
 logger = logging.getLogger("backend.research_service")
+
+HEARTBEAT_FRAME = ": ping\n\n"
+
+
+def _get_heartbeat_interval() -> float:
+    """从 BusinessSettings 读取 SSE 心跳间隔（秒），<=0 表示关闭。"""
+    try:
+        from backend.config.settings import BusinessSettings
+        return float(BusinessSettings().sse_heartbeat_seconds)
+    except Exception:
+        return 15.0
+
+
+async def _astream_with_heartbeat(
+    astream_iter: AsyncIterator,
+    interval: float,
+):
+    """逐项产出 astream chunk；超过 interval 秒无产出时先产出心跳标记。
+
+    产出物为 ("heartbeat", None) 或 (mode, chunk)，调用方据此 yield 心跳注释帧。
+    超时后不取消内部 future，避免杀掉正在执行的 graph step。
+    """
+    if interval <= 0:
+        async for mode, chunk in astream_iter:
+            yield mode, chunk
+        return
+
+    aiter = astream_iter.__aiter__()
+    _sentinel = object()
+    pending: asyncio.Future | None = None
+
+    while True:
+        if pending is None:
+            try:
+                pending = asyncio.ensure_future(anext(aiter))
+            except StopAsyncIteration:
+                return
+
+        try:
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if pending in done:
+                try:
+                    mode, chunk = pending.result()
+                except StopAsyncIteration:
+                    pending = None
+                    return
+                pending = None
+                yield mode, chunk
+            else:
+                yield "heartbeat", None
+        except asyncio.CancelledError:
+            if pending is not None and not pending.done():
+                pending.cancel()
+            raise
 
 # 节点中文标签
 NODE_LABELS = {
@@ -223,10 +277,17 @@ class ResearchService:
         # 1. 发送 run.started
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
 
+        heartbeat_interval = _get_heartbeat_interval()
         try:
-            async for mode, chunk in self._app.astream(
-                input_state, config, stream_mode=["custom", "updates"]
+            async for mode, chunk in _astream_with_heartbeat(
+                self._app.astream(
+                    input_state, config, stream_mode=["custom", "updates"]
+                ),
+                heartbeat_interval,
             ):
+                if mode == "heartbeat":
+                    yield HEARTBEAT_FRAME
+                    continue
                 if mode == "custom":
                     # 节点内 StreamWriter 发出的自定义事件
                     if isinstance(chunk, dict):
@@ -857,10 +918,17 @@ class ResearchService:
             logger.info("[TRACE] resume_stream ANSWER | thread=%s | resume_value=%s",
                         thread_id, str(resume_value)[:100])
 
+        heartbeat_interval = _get_heartbeat_interval()
         try:
-            async for mode_chunk, chunk in self._app.astream(
-                input_state, config, stream_mode=["custom", "updates"]
+            async for mode_chunk, chunk in _astream_with_heartbeat(
+                self._app.astream(
+                    input_state, config, stream_mode=["custom", "updates"]
+                ),
+                heartbeat_interval,
             ):
+                if mode_chunk == "heartbeat":
+                    yield HEARTBEAT_FRAME
+                    continue
                 if mode_chunk == "custom":
                     if isinstance(chunk, dict):
                         evt_type = chunk.get("type", "")

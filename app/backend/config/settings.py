@@ -77,6 +77,8 @@ class BusinessSettings(BaseSettings):
     # ── 证据评分 LLM 融合 ──
     evidence_llm_fusion: bool = True
     evidence_prior_weight: float = 0.4
+    # ── SSE 心跳保活 ──
+    sse_heartbeat_seconds: int = 15
 
     @model_validator(mode="before")
     @classmethod
