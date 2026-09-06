@@ -283,8 +283,8 @@ def _get_chain_loop():
 def _load_search_provider_order() -> list[str]:
     """从 config.json 读取 search_providers 配置，非法值自动剔除。"""
     try:
-        from backend.config.settings import BusinessSettings
-        order = BusinessSettings().search_providers
+        from backend.config.settings import get_business_settings
+        order = get_business_settings().search_providers
     except Exception:
         order = ["ddgs", "searxng"]
     valid = [name for name in order if name in _VALID_PROVIDER_NAMES]
@@ -312,6 +312,14 @@ def _reset_provider_chain():
     """重置全局链单例（供测试使用）。"""
     global _PROVIDER_CHAIN
     _PROVIDER_CHAIN = None
+
+
+# R3.4: 配置热更后重置搜索链单例
+try:
+    from backend.config.settings import register_reload_callback
+    register_reload_callback(_reset_provider_chain)
+except Exception:
+    pass
 
 
 # 全局 RAG 系统实例

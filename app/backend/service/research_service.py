@@ -70,8 +70,8 @@ HEARTBEAT_FRAME = ": ping\n\n"
 def _get_heartbeat_interval() -> float:
     """从 BusinessSettings 读取 SSE 心跳间隔（秒），<=0 表示关闭。"""
     try:
-        from backend.config.settings import BusinessSettings
-        return float(BusinessSettings().sse_heartbeat_seconds)
+        from backend.config.settings import get_business_settings
+        return float(get_business_settings().sse_heartbeat_seconds)
     except Exception:
         return 15.0
 

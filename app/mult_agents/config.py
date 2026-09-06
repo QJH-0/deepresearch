@@ -89,10 +89,10 @@ class AppConfig:
     @staticmethod
     def from_file(path: str | Path | None = None) -> "AppConfig":
         """从 .env + config.json 构建 AppConfig（通过 pydantic-settings）。"""
-        from backend.config.settings import MiddlewareSettings, BusinessSettings
+        from backend.config.settings import MiddlewareSettings, get_business_settings
 
         mw = MiddlewareSettings()
-        biz = BusinessSettings()
+        biz = get_business_settings()
 
         # 环境变量覆盖 config.json 的值
         def _env_str(key: str, default: str = "") -> str:

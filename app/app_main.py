@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from backend.config import AppSettings
-from backend.router import health_router, research_router, document_router
+from backend.router import health_router, research_router, document_router, admin_router
 from backend.service import init_task_registry, get_task_registry, init_memory_service, get_memory_service, init_summary_service
 from backend.infra import init_store, close_store, get_store
 from mult_agents.config import AppConfig
@@ -313,6 +313,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(research_router)
     app.include_router(document_router)
+    app.include_router(admin_router)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):

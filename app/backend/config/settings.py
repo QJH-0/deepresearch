@@ -2,13 +2,18 @@
 
 P0 交付物：单一 AppSettings 出口，替代双头解析。
 mult_agents/config.py 的 AppConfig 保持类名与字段访问方式不变，内部改为从 AppSettings 取值。
+R3.4: 增加 get_business_settings() 模块级单例与热更新支持。
 """
 
 import json
+import logging
 from pathlib import Path
+from typing import Callable
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("backend.config.settings")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _ENV_PATH = _PROJECT_ROOT / ".env"
@@ -34,6 +39,7 @@ class MiddlewareSettings(BaseSettings):
     minio_endpoint: str = "localhost:9900"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
+    admin_token: str = ""
 
 
 class BusinessSettings(BaseSettings):
@@ -179,3 +185,48 @@ class AppSettings(BaseSettings):
     @property
     def minio_secret_key(self) -> str:
         return self.middleware.minio_secret_key
+
+
+# ── R3.4: 模块级 BusinessSettings 单例与热更新 ──────────────────
+
+_BUSINESS: BusinessSettings | None = None
+_RELOAD_CALLBACKS: list[Callable] = []
+
+# 需要重启才生效的字段
+_RESTART_REQUIRED_FIELDS = {"model", "thinking_nodes", "checkpointer_backend"}
+
+# GET /config 脱敏排除字段
+_SENSITIVE_FIELDS: set[str] = set()
+
+
+def get_business_settings() -> BusinessSettings:
+    """获取当前生效的 BusinessSettings 单例（线程安全：模块级引用原子替换）。"""
+    global _BUSINESS
+    if _BUSINESS is None:
+        _BUSINESS = BusinessSettings()
+    return _BUSINESS
+
+
+def _set_business_settings(new: BusinessSettings) -> None:
+    """原子替换内存配置并触发 reload 回调。"""
+    global _BUSINESS
+    _BUSINESS = new
+    for fn in _RELOAD_CALLBACKS:
+        try:
+            fn()
+        except Exception as exc:
+            logger.warning("[settings] reload 回调失败 | %s | %s", getattr(fn, "__name__", fn), exc)
+
+
+def register_reload_callback(fn: Callable) -> None:
+    """注册配置热更后的失效回调（如重置搜索链单例）。"""
+    _RELOAD_CALLBACKS.append(fn)
+
+
+def _diff_restart_required(old: BusinessSettings, new: BusinessSettings) -> list[str]:
+    """比对发生变化的需重启字段列表。"""
+    changed = []
+    for field_name in _RESTART_REQUIRED_FIELDS:
+        if getattr(old, field_name, None) != getattr(new, field_name, None):
+            changed.append(field_name)
+    return changed
