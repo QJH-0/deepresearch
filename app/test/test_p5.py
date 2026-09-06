@@ -354,13 +354,11 @@ class TestT56OldMemoryCleanup:
         assert not hasattr(runtime, "MEMORY_MANAGER"), \
             "runtime.MEMORY_MANAGER should be deleted"
 
-    def test_memory_init_only_exports_types(self):
-        """memory/__init__.py 只导出类型定义，不导出 MemoryManager。"""
-        from mult_agents import memory
-        assert not hasattr(memory, "MemoryManager"), \
-            "MemoryManager should be removed from memory package"
-        assert hasattr(memory, "MemoryEntry")
-        assert hasattr(memory, "MemoryType")
+    def test_memory_module_removed(self):
+        """mult_agents/memory 目录已删除（R4.3 残留清理）。"""
+        from pathlib import Path
+        memory_dir = Path(__file__).resolve().parents[1] / "mult_agents" / "memory"
+        assert not memory_dir.exists(), f"{memory_dir} 应已删除（R4.3 残留清理）"
 
 
 # ── T5-7: schema 隔离 ───────────────────────────────

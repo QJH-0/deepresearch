@@ -265,12 +265,11 @@ class TestReportReviewCardActionFix:
         assert "'adopt'" in src or '"adopt"' in src
         assert "'accept'" not in src.replace("'adopt'", "").replace('"adopt"', "")
 
-    def test_report_review_card_no_reject(self):
-        """ReportReviewCard 不包含 reject 动作调用（注释说明除外）。"""
+    def test_report_review_card_has_reject(self):
+        """ReportReviewCard 包含 reject 动作（R4.3 补齐否决分支）。"""
         src = (_FRONT_PATH / "components" / "chat" / "ReportReviewCard.vue").read_text(encoding="utf-8")
-        # 检查不存在 emit('resume', { action: 'reject' }) 调用
-        assert "action: 'reject'" not in src
-        assert 'action: "reject"' not in src
+        assert "action: 'reject'" in src or 'action: "reject"' in src
+        assert "feedback" in src
 
     def test_report_review_card_has_kind(self):
         """ReportReviewCard 的 emit 包含 kind:'report_review'。"""

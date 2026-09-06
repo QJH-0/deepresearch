@@ -149,6 +149,22 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
                         "iteration": iteration + 1,
                     })
 
+            case "reject":
+                # 否决报告 → 带理由重走规划
+                feedback = decision.get("feedback", "")
+                iteration = state.get("iteration", 0)
+                max_iter = state.get("max_iterations", 3)
+                if iteration >= max_iter:
+                    logger.warning("[write] 迭代已达上限 %d，否决后直接采纳", max_iter)
+                    if writer:
+                        writer({"node": "write", "message": "已达迭代上限，报告自动采纳"})
+                else:
+                    logger.info("[write] 用户否决报告 | feedback=%s | iteration=%d", feedback, iteration + 1)
+                    return Command(goto="plan", update={
+                        "user_feedback": feedback,
+                        "iteration": iteration + 1,
+                    })
+
     emit("write", final_content)
     if writer:
         writer({"node": "write", "message": "报告撰写完成"})

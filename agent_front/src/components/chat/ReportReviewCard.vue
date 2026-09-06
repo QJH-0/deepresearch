@@ -17,7 +17,9 @@ const emit = defineEmits<{
 
 const draft = computed(() => String(props.payload.draft || props.payload.report || ''))
 const showDeepen = ref(false)
+const showReject = ref(false)
 const deepenText = ref('')
+const rejectFeedback = ref('')
 
 function accept() {
   emit('resume', { kind: 'report_review', action: 'adopt' })
@@ -31,7 +33,14 @@ function submitDeepen() {
   showDeepen.value = false
   deepenText.value = ''
 }
-// P1-4: reject 在后端 schema 中未定义，已删除
+function reject() {
+  showReject.value = true
+}
+function submitReject() {
+  emit('resume', { kind: 'report_review', action: 'reject', feedback: rejectFeedback.value })
+  showReject.value = false
+  rejectFeedback.value = ''
+}
 </script>
 
 <template>
@@ -60,9 +69,24 @@ function submitDeepen() {
         </div>
       </div>
 
+      <div v-else-if="showReject" class="deepen-section">
+        <p class="section-label">否决理由（必填）</p>
+        <NInput
+          v-model:value="rejectFeedback"
+          type="textarea"
+          :rows="3"
+          placeholder="请输入否决理由，系统将带理由重走规划…"
+        />
+        <div class="deepen-actions">
+          <NButton size="small" @click="showReject = false">取消</NButton>
+          <NButton size="small" type="error" :disabled="!rejectFeedback.trim()" @click="submitReject">提交否决</NButton>
+        </div>
+      </div>
+
       <div v-else class="card-actions">
         <NButton type="primary" @click="accept">采纳</NButton>
         <NButton @click="deepen">再深入</NButton>
+        <NButton type="error" ghost @click="reject">否决</NButton>
       </div>
     </div>
   </div>

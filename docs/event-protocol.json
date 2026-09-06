@@ -243,5 +243,71 @@
     ],
     "title": "RunErrorData",
     "type": "object"
+  },
+  "_resume_payloads": {
+    "_description": "HITL interrupt 恢复载荷（POST /api/v1/resume 的 resume_value 结构），按 interrupt kind 校验",
+    "clarification": {
+      "properties": {
+        "kind": {
+          "enum": ["clarification"],
+          "type": "string"
+        },
+        "answers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "与问题列表一一对应的回答"
+        }
+      },
+      "required": ["kind", "answers"],
+      "title": "ClarifyResumePayload"
+    },
+    "plan_approval": {
+      "properties": {
+        "kind": {
+          "enum": ["plan_approval"],
+          "type": "string"
+        },
+        "action": {
+          "enum": ["approve", "revise", "reject"],
+          "type": "string"
+        },
+        "reason": {
+          "default": null,
+          "type": ["string", "null"],
+          "description": "revise 时必填"
+        }
+      },
+      "required": ["kind", "action"],
+      "title": "PlanApprovalResumePayload"
+    },
+    "report_review": {
+      "properties": {
+        "kind": {
+          "enum": ["report_review"],
+          "type": "string"
+        },
+        "action": {
+          "enum": ["adopt", "deepen", "reject"],
+          "type": "string"
+        },
+        "extra_sub_questions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "deepen 时必填"
+        },
+        "feedback": {
+          "default": "",
+          "type": "string",
+          "description": "reject 时的否决理由，必填"
+        }
+      },
+      "required": ["kind", "action"],
+      "title": "ReportReviewResumePayload"
+    }
   }
 }

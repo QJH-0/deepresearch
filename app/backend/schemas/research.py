@@ -53,13 +53,16 @@ class PlanApprovalResumePayload(BaseModel):
 class ReportReviewResumePayload(BaseModel):
     """报告审核 resume payload。"""
     kind: Literal["report_review"]
-    action: Literal["adopt", "deepen"]
+    action: Literal["adopt", "deepen", "reject"]
     extra_sub_questions: list[str] = []  # deepen 必填
+    feedback: str = ""  # reject 时的否决理由
 
     @model_validator(mode="after")
     def validate_extra(self):
         if self.action == "deepen" and not self.extra_sub_questions:
             raise ValueError("deepen 操作必须提供 extra_sub_questions")
+        if self.action == "reject" and not self.feedback:
+            raise ValueError("reject 操作必须提供 feedback")
         return self
 
 

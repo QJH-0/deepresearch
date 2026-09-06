@@ -57,12 +57,11 @@ class TestModuleExists:
     def test_memory_service_file_exists(self):
         assert (_APP_PATH / "backend" / "service" / "memory_service.py").exists()
 
-    def test_memory_init_only_exports_types(self):
-        """memory/__init__.py 只导出类型定义，不导出 MemoryManager。"""
-        from mult_agents import memory
-        assert not hasattr(memory, "MemoryManager"), "MemoryManager should be removed"
-        assert hasattr(memory, "MemoryEntry")
-        assert hasattr(memory, "MemoryType")
+    def test_memory_module_removed(self):
+        """mult_agents/memory 目录已删除（R4.3 残留清理）。"""
+        from pathlib import Path
+        memory_dir = _APP_PATH / "mult_agents" / "memory"
+        assert not memory_dir.exists(), f"{memory_dir} 应已删除（R4.3 残留清理）"
 
 
 # ── T5-6: 旧记忆清除 ────────────────────────────────
