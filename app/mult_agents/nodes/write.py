@@ -81,6 +81,14 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
         if isinstance(chunk, tuple) and len(chunk) == 2:
             msg_chunk, metadata = chunk
+            # R2.4: 深度思考 reasoning 增量捕获
+            reasoning = getattr(msg_chunk, "reasoning_content", None)
+            if not reasoning:
+                additional = getattr(msg_chunk, "additional_kwargs", None)
+                if isinstance(additional, dict):
+                    reasoning = additional.get("reasoning_content", "")
+            if reasoning and writer:
+                writer({"type": "thinking", "node": "write", "text": str(reasoning)})
             text = getattr(msg_chunk, "content", "")
             if text:
                 content += text

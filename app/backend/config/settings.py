@@ -80,6 +80,8 @@ class BusinessSettings(BaseSettings):
     evidence_prior_weight: float = 0.4
     # ── SSE 心跳保活 ──
     sse_heartbeat_seconds: int = 15
+    # ── 深度思考节点配置 ──
+    thinking_nodes: list = ["write", "deep_dive", "analyze"]
 
     @model_validator(mode="before")
     @classmethod

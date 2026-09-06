@@ -304,6 +304,16 @@ class ResearchService:
                                 yield sse(event("message.start", message_id=mid, node=node))
                             yield sse(event("message.delta", message_id=mid, text=text))
 
+                        # R2.4: 深度思考 reasoning 增量
+                        elif evt_type == "thinking":
+                            node = chunk.get("node", "")
+                            text = chunk.get("text", "")
+                            mid = f"{run_id}:{node}"
+                            if node not in seen_nodes:
+                                seen_nodes.add(node)
+                                yield sse(event("message.start", message_id=mid, node=node))
+                            yield sse(event("message.thinking", message_id=mid, text=text))
+
                         # 进度消息
                         elif evt_type == "progress":
                             node = chunk.get("node", "")
@@ -904,6 +914,7 @@ class ResearchService:
 
         logger.info("[TRACE] resume_stream START | run=%s | thread=%s | mode=%s", run_id, thread_id, mode)
 
+        seen_nodes: set[str] = set()
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
 
         # 输入路由：mode=continue → None（从最后 checkpoint 续跑）；mode=answer → Command(resume=...)
@@ -936,7 +947,18 @@ class ResearchService:
                             node = chunk.get("node", "")
                             text = chunk.get("text", "")
                             mid = f"{run_id}:{node}"
+                            if node not in seen_nodes:
+                                seen_nodes.add(node)
+                                yield sse(event("message.start", message_id=mid, node=node))
                             yield sse(event("message.delta", message_id=mid, text=text))
+                        elif evt_type == "thinking":
+                            node = chunk.get("node", "")
+                            text = chunk.get("text", "")
+                            mid = f"{run_id}:{node}"
+                            if node not in seen_nodes:
+                                seen_nodes.add(node)
+                                yield sse(event("message.start", message_id=mid, node=node))
+                            yield sse(event("message.thinking", message_id=mid, text=text))
                         elif evt_type == "progress":
                             node = chunk.get("node", "")
                             label = NODE_LABELS.get(node, node)

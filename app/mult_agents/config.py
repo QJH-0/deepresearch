@@ -68,6 +68,15 @@ class AppConfig:
     summary_threshold: int = 20
     summary_keep_recent: int = 6
     summary_model: str = "qwen-turbo"
+    # ── 深度思考节点 ──
+    thinking_nodes: list = field(default_factory=lambda: ["write", "deep_dive", "analyze"])
+    # ── 其他业务配置 ──
+    sse_heartbeat_seconds: int = 15
+    search_providers: list = field(default_factory=lambda: ["ddgs", "searxng"])
+    rerank_model_name: str = "gte-rerank"
+    enable_rerank_model: bool = True
+    evidence_llm_fusion: bool = True
+    evidence_prior_weight: float = 0.4
 
     def with_overrides(self, **kwargs) -> "AppConfig":
         cleaned = {k: v for k, v in kwargs.items() if v is not None}
@@ -145,6 +154,13 @@ class AppConfig:
             summary_threshold=_env_int("SUMMARY_THRESHOLD", biz.summary_threshold),
             summary_keep_recent=_env_int("SUMMARY_KEEP_RECENT", biz.summary_keep_recent),
             summary_model=_env_str("SUMMARY_MODEL", biz.summary_model),
+            thinking_nodes=getattr(biz, "thinking_nodes", ["write", "deep_dive", "analyze"]),
+            sse_heartbeat_seconds=getattr(biz, "sse_heartbeat_seconds", 15),
+            search_providers=getattr(biz, "search_providers", ["ddgs", "searxng"]),
+            rerank_model_name=getattr(biz, "rerank_model_name", "gte-rerank"),
+            enable_rerank_model=getattr(biz, "enable_rerank_model", True),
+            evidence_llm_fusion=getattr(biz, "evidence_llm_fusion", True),
+            evidence_prior_weight=getattr(biz, "evidence_prior_weight", 0.4),
         )
 
     @staticmethod

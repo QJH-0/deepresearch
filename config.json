@@ -36,5 +36,6 @@
   "enable_rerank_model": true,
   "evidence_llm_fusion": true,
   "evidence_prior_weight": 0.4,
-  "sse_heartbeat_seconds": 15
+  "sse_heartbeat_seconds": 15,
+  "thinking_nodes": ["write", "deep_dive", "analyze"]
 }
