@@ -43,6 +43,8 @@ interface ThreadChat {
   error: string
   /** 是否正在重连（断线自动恢复中） */
   reconnecting: boolean
+  /** 用户是否已手动停止（用于区分续流 vs 新任务） */
+  userStopped: boolean
 }
 
 function createThreadChat(): ThreadChat {
@@ -53,6 +55,7 @@ function createThreadChat(): ThreadChat {
     running: false,
     error: '',
     reconnecting: false,
+    userStopped: false,
   }
 }
 
@@ -267,6 +270,14 @@ export const useChatStore = defineStore('chat', () => {
     return getThread(threadId).reconnecting
   }
 
+  function setUserStopped(threadId: string, value: boolean): void {
+    getThread(threadId).userStopped = value
+  }
+
+  function isUserStopped(threadId: string): boolean {
+    return getThread(threadId).userStopped
+  }
+
   function clearThread(threadId: string): void {
     threads.delete(threadId)
   }
@@ -312,5 +323,7 @@ export const useChatStore = defineStore('chat', () => {
     replaceThreadMessages,
     setReconnecting,
     isReconnecting,
+    setUserStopped,
+    isUserStopped,
   }
 })

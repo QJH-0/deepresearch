@@ -251,6 +251,7 @@ export function useEventStream() {
     hitl_enabled?: boolean
   }): Promise<void> {
     chat.ensureThread(threadId)
+    chat.setUserStopped(threadId, false)
     chat.addUserMessage(threadId, query)
     void threads.refresh()
 
@@ -274,6 +275,57 @@ export function useEventStream() {
     }
   }
 
+  /**
+   * 智能续流入口：区分"续流上次任务"和"开始新任务"。
+   *
+   * 逻辑：
+   * 1. 用户手动停止后（userStopped=true），再次输入含"继续/continue/resume"等关键词 → 续流
+   * 2. 用户手动停止后，输入其他内容 → 新任务
+   * 3. 非手动停止场景（如网络断开后的重连）→ 由 scheduleReconnect 处理，不走此入口
+   */
+  const RESUME_KEYWORDS = ['继续', '续流', 'resume', 'continue', '接着', '接着来', 'go on', 'proceed']
+
+  function matchesResumeKeyword(query: string): boolean {
+    const normalized = query.trim().toLowerCase()
+    return RESUME_KEYWORDS.some((kw) => normalized.includes(kw.toLowerCase()))
+  }
+
+  async function runOrResume(threadId: string, query: string, options?: {
+    user_id?: string
+    tenant_id?: string
+    hitl_enabled?: boolean
+  }): Promise<void> {
+    // 只有用户手动停止后，才需要判断是续流还是新任务
+    if (chat.isUserStopped(threadId)) {
+      if (matchesResumeKeyword(query)) {
+        // 关键词匹配 → 尝试续流
+        try {
+          const state = await fetchThreadState(threadId)
+          if (state.resumable && state.status !== 'running') {
+            chat.ensureThread(threadId)
+            chat.addUserMessage(threadId, query)
+            void threads.refresh()
+            await syncThreadMessages(threadId)
+            const resp = await postStream('/api/v1/research/resume', {
+              thread_id: threadId,
+              mode: 'continue',
+            })
+            chat.setUserStopped(threadId, false)
+            await consume(threadId, resp)
+            setAttempts(threadId, 0)
+            return
+          }
+        } catch {
+          // 状态检查失败，降级走新 run
+        }
+      }
+      // 不匹配关键词 或 checkpoint 不可恢复 → 新任务，清除标记
+      chat.setUserStopped(threadId, false)
+    }
+    // 非手动停止场景，或关键词不匹配 → 新任务
+    await run(threadId, query, options)
+  }
+
   /** 恢复中断的研究（HITL 入口，不套重连状态机） */
   async function resume(threadId: string, payload: Record<string, unknown>): Promise<void> {
     intr.clear(threadId)
@@ -286,5 +338,5 @@ export function useEventStream() {
     await consume(threadId, resp)
   }
 
-  return { run, resume, consume, dispatch, scheduleReconnect, syncThreadMessages }
+  return { run, resume, runOrResume, consume, dispatch, scheduleReconnect, syncThreadMessages }
 }

@@ -21,7 +21,7 @@ const route = useRoute()
 const chat = useChatStore()
 const threads = useThreadsStore()
 const intr = useInterruptStore()
-const { run, resume } = useEventStream()
+const { run, resume, runOrResume } = useEventStream()
 
 const messageList = ref<HTMLElement | null>(null)
 const composer = ref<InstanceType<typeof Composer> | null>(null)
@@ -35,10 +35,10 @@ const agentTimeline = computed(() => chat.getAgentTimeline(threads.currentThread
 const isEmpty = computed(() => messages.value.length === 0 || (messages.value.length === 1 && messages.value[0]?.role === 'assistant' && !messages.value[0]?.content))
 
 const starterPrompts = [
-  { title: '深度调研', prompt: '请调研"企业知识库 Agent 平台"市场，按市场规模、主要竞品、收费模式三部分输出。' },
-  { title: '方案对比', prompt: '请对比"纯大模型直答""RAG 单 Agent""多 Agent 协作"三种方案，给出优缺点与推荐结论。' },
-  { title: '知识问答', prompt: '请解释这个项目里"意图分流"的作用。' },
-  { title: '落地计划', prompt: '请把"上线一个可用的 DeepResearch MVP"拆成两周计划。' },
+  { title: '深度调研', prompt: '请调研当前 AI Agent 领域的前沿进展，包括主流框架、典型应用场景和落地挑战。' },
+  { title: '方案对比', prompt: '请对比传统搜索引擎、RAG 检索增强生成和 Agent 自主调研三种信息获取方案，分析各自的适用场景与局限性。' },
+  { title: '知识问答', prompt: '请解释大语言模型中的"幻觉"问题产生原因，以及目前主流的缓解方法。' },
+  { title: '落地计划', prompt: '请帮我制定一个两周学习计划，目标是系统掌握 LangChain 或 LangGraph 的核心概念与基础用法。' },
 ]
 
 function scrollToBottom() { void nextTick(() => { if (messageList.value) messageList.value.scrollTop = messageList.value.scrollHeight }) }
@@ -54,7 +54,9 @@ async function onSend(text: string) {
     return
   }
 
-  await run(id, text, { hitl_enabled: hitlEnabled.value })
+  // 先检查后端是否存在可恢复的 checkpoint（用户停止后续流），
+  // 不可恢复则走新 run
+  await runOrResume(id, text, { hitl_enabled: hitlEnabled.value })
   scrollToBottom()
 }
 
@@ -66,16 +68,15 @@ async function onStop() {
   const threadId = threads.currentThreadId
   if (threadId) { try { await cancelResearch(threadId) } catch { /* 乐观更新 */ } }
   chat.markCancelled(threadId)
+  chat.setUserStopped(threadId, true)
 }
 
 async function openThread(threadId: string) {
-  // 前端临时会话 ID（thread_ 前缀）在后端不存在，跳过加载
-  if (threadId.startsWith('thread_')) return
   try {
     const data = await fetchThreadMessages(threadId)
     const loaded = toChatMessages(threadId, data.messages || [])
     chat.setMessages(threadId, loaded as never)
-  } catch { /* 静默失败 */ }
+  } catch { /* 临时会话 ID 无后端记录，静默处理 */ }
   scrollToBottom()
 }
 
@@ -111,7 +112,6 @@ watch(() => route.params.threadId, (id) => {
 
 // ── lifecycle ────────────────────────────────────────
 onMounted(() => {
-  void threads.load()
   const fromRoute = Array.isArray(route.params.threadId) ? route.params.threadId[0] : route.params.threadId
   if (fromRoute) {
     threads.selectThread(fromRoute)
