@@ -1,7 +1,7 @@
 # DeepResearch
 
 > 多智能体深度研报助手 — 基于 LangGraph + FastAPI + Vue3 的 AI 研究系统
-> 项目使用 conda 环境 `llmdev`，Python 3.11 + 全量依赖。
+> 项目使用 conda 环境 `llmdev`，Python 3.11 + 全量依赖，进行所有测试前必须切换到此环境。
 ## 架构概览
 
 ```
