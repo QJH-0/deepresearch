@@ -166,6 +166,11 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function setRunning(threadId: string): void {
+    const t = getThread(threadId)
+    t.running = true
+  }
+
   function finish(threadId: string, _data: { message_id: string; final_state: string }): void {
     const t = getThread(threadId)
     if (t.streamingMessageId) {
@@ -260,6 +265,7 @@ export const useChatStore = defineStore('chat', () => {
     currentThreadId,
     ensureThread,
     addUserMessage,
+    setRunning,
     startAssistantMessage,
     appendDelta,
     appendThinking,

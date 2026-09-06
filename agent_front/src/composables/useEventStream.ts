@@ -66,7 +66,7 @@ export function useEventStream() {
     switch (env.type as EventType) {
       case 'run.started': {
         chat.ensureThread(threadId)
-        chat.startAssistantMessage(threadId)
+        chat.setRunning(threadId)
         break
       }
       case 'agent.status': {
@@ -84,6 +84,10 @@ export function useEventStream() {
       }
       case 'message.delta': {
         const d = env.data as EventDataMap['message.delta']
+        // 容错：delta 先于 message.start 到达时惰性初始化
+        if (!chat.getMessages(threadId).find((m) => m.id === d.message_id)) {
+          chat.startAssistantMessage(threadId, d.message_id)
+        }
         chat.appendDelta(threadId, d.message_id, d.text)
         break
       }
