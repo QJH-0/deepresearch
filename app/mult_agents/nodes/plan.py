@@ -21,7 +21,7 @@ from ._evidence import _default_plan, _derive_search_plan
 logger = logging.getLogger("mult_agents")
 
 
-def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState | Command:
+async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState | Command:
     logger.info("%s 开始 | agent=%s", colorize("[plan]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "plan", "message": "正在生成研究计划..."})
@@ -40,7 +40,7 @@ def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = 
             f"上一版计划已生成但不满足需求，请根据用户意见调整计划，输出修订后的规划 JSON。"
         )
 
-    payload, content, messages = _invoke_json_agent(
+    payload, content, messages = await _invoke_json_agent(
         state,
         prompt,
         agent,
@@ -88,7 +88,7 @@ def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = 
                     "research_questions": research_questions,
                     "search_plan": search_plan,
                     "budget": budget,
-                    "messages": messages,
+                    "agent_messages": messages,
                     "draft": content,
                     "iteration": 0,
                     "plan_revision_count": 0,
@@ -109,7 +109,7 @@ def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = 
                         "research_questions": research_questions,
                         "search_plan": search_plan,
                         "budget": budget,
-                        "messages": messages,
+                        "agent_messages": messages,
                         "draft": content,
                         "iteration": 0,
                         "plan_revision_count": plan_revision_count,
@@ -143,7 +143,7 @@ def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = 
         "research_questions": research_questions,
         "search_plan": search_plan,
         "budget": budget,
-        "messages": messages,
+        "agent_messages": messages,
         "draft": content,
         "iteration": 0,
         "user_feedback": {},

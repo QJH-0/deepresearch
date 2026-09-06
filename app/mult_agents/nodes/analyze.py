@@ -16,12 +16,12 @@ from ._fallbacks import _fallback_analysis, _check_evidence_sufficiency
 logger = logging.getLogger("mult_agents")
 
 
-def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
+async def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[analyze]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "analyze", "message": "正在分析证据并生成结论..."})
     fallback = _fallback_analysis(state)
-    payload, content, messages = _invoke_json_agent(
+    payload, content, messages = await _invoke_json_agent(
         state,
         "请基于证据池输出结论映射 JSON，并评估证据完备性：\n"
         f"原问题：{state['query']}\n"
@@ -77,13 +77,13 @@ def analyze_node(state: AgentState, agent, agent_name: str, writer: StreamWriter
         "claim_map": claim_map,
         "needs_more_research": needs_more_research,
         "missing_gaps": missing_gaps,
-        "messages": messages,
+        "agent_messages": messages,
         "user_feedback": user_feedback,
     }
 
 
 
-def reflect_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
+async def reflect_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[reflect]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "reflect", "message": "正在生成补搜计划..."})
@@ -105,7 +105,7 @@ def reflect_node(state: AgentState, agent, agent_name: str, writer: StreamWriter
         "请生成新的补搜计划以填补缺口。"
     )
     
-    payload, content, messages = _invoke_json_agent(
+    payload, content, messages = await _invoke_json_agent(
         state,
         prompt,
         agent,
@@ -118,7 +118,7 @@ def reflect_node(state: AgentState, agent, agent_name: str, writer: StreamWriter
     return {
         "iteration": state.get("iteration", 0) + 1,
         "supplementary_queries": payload.get("supplementary_queries", fallback["supplementary_queries"]),
-        "messages": messages,
+        "agent_messages": messages,
     }
 
 

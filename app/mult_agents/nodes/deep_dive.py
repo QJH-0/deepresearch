@@ -12,11 +12,12 @@ from ..state import AgentState
 from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs
 from ._parsing import _invoke_json_agent
 from ._evidence import _score_evidence, _dedupe_sources
+from ._fallbacks import _fallback_audit
 
 logger = logging.getLogger("mult_agents")
 
 
-def deep_dive_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
+async def deep_dive_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[deep_dive]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "deep_dive", "message": "正在对证据进行评分和审计..."})
@@ -24,7 +25,7 @@ def deep_dive_node(state: AgentState, agent, agent_name: str, writer: StreamWrit
         logger.info("%s 等待检索结果", colorize("[deep_dive]", "yellow"))
         return {}
     fallback = _fallback_audit(state)
-    payload, content, messages = _invoke_json_agent(
+    payload, content, messages = await _invoke_json_agent(
         state,
         "请对 web 与 local 证据进行评分、去重、冲突审计，并只输出 JSON。\n"
         f"问题：{state['query']}\n"
@@ -95,6 +96,6 @@ def deep_dive_node(state: AgentState, agent, agent_name: str, writer: StreamWrit
         "evidence_pool": evidence_pool,
         "audit_flags": audit_flags,
         "source_index": source_index,
-        "messages": messages,
+        "agent_messages": messages,
     }
 

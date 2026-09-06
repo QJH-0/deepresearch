@@ -15,7 +15,7 @@ from ._parsing import _last_content, _invoke_json_agent
 logger = logging.getLogger("mult_agents")
 
 
-def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
+async def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[intent]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
         writer({"node": "intent", "message": "正在判断问题意图..."})
@@ -25,7 +25,7 @@ def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter 
         f"规则引擎初判：{rule_route}\n"
         "请输出 JSON：{\"route\":\"direct|multiagent\",\"reason\":\"...\"}"
     )
-    payload, content, messages = _invoke_json_agent(
+    payload, content, messages = await _invoke_json_agent(
         state,
         prompt,
         agent,
@@ -40,7 +40,7 @@ def intent_node(state: AgentState, agent, agent_name: str, writer: StreamWriter 
     logger.info("%s 路由: %s", colorize("[intent]", "green"), route)
     if writer:
         writer({"node": "intent", "message": f"意图判定完成: {route}"})
-    return {"intent": route, "draft": content, "messages": messages}
+    return {"intent": route, "draft": content, "agent_messages": messages}
 
 
 
@@ -84,7 +84,7 @@ async def direct_answer_node(state: AgentState, agent, agent_name: str, writer: 
         "draft": content,
         "analysis_summary": content,
         "needs_more_research": False,
-        "messages": [human],
+        "agent_messages": [human],
     }
 
 

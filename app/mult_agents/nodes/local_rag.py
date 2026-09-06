@@ -22,7 +22,7 @@ from ._evidence import (
 logger = logging.getLogger("mult_agents")
 
 
-def local_rag_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
+async def local_rag_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[local_rag]", "cyan"), colorize(agent_name, "magenta"))
     queries = _build_queries(state, "local")
     if writer:
@@ -73,7 +73,7 @@ def local_rag_node(state: AgentState, agent, agent_name: str, writer: StreamWrit
             "local_rag_trace": query_traces,
         }
     fallback = _fallback_local_evidence(raw_records)
-    payload, content, messages = _invoke_json_agent(
+    payload, content, messages = await _invoke_json_agent(
         state,
         "请基于以下知识库证据整理结构化 JSON。\n"
         f"原问题：{state['query']}\n"
@@ -121,6 +121,6 @@ def local_rag_node(state: AgentState, agent, agent_name: str, writer: StreamWrit
         "local_evidence": existing_evidence + evidence,
         "local_retrieval_stats": local_retrieval_stats,
         "local_rag_trace": query_traces,
-        "messages": messages,
+        "agent_messages": messages,
     }
 

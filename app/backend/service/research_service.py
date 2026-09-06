@@ -255,6 +255,10 @@ class ResearchService:
             hitl_enabled=runtime_config.hitl_enabled,
             hitl_config=runtime_config.hitl_config,
         )
+        # R4.4: 用户真实输入写入 chat_messages（前端可见）
+        from langchain_core.messages import HumanMessage as _HM
+        input_state["chat_messages"] = [_HM(content=query)]
+        input_state["agent_messages"] = []
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
         # 对话摘要压缩：从 checkpoint 获取已有消息 + 新 query 合并判断
@@ -273,6 +277,7 @@ class ResearchService:
         final = ""
         route = "multiagent"
         seen_nodes: set[str] = set()
+        last_token_node = ""
 
         # 1. 发送 run.started
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
@@ -298,6 +303,7 @@ class ResearchService:
                             node = chunk.get("node", "")
                             text = chunk.get("text", "")
                             mid = f"{run_id}:{node}"
+                            last_token_node = node
                             # 首次出现该节点时发 message.start
                             if node not in seen_nodes:
                                 seen_nodes.add(node)
@@ -309,6 +315,7 @@ class ResearchService:
                             node = chunk.get("node", "")
                             text = chunk.get("text", "")
                             mid = f"{run_id}:{node}"
+                            last_token_node = node
                             if node not in seen_nodes:
                                 seen_nodes.add(node)
                                 yield sse(event("message.start", message_id=mid, node=node))
@@ -376,11 +383,14 @@ class ResearchService:
 
             # 2. 正常结束：发 run.completed + P5 后台记忆提取
             if final:
+                # R4.4: 最终报告写入 chat_messages（前端可见）
+                from langchain_core.messages import AIMessage as _AIM
+                await self._app.aupdate_state(config, {"chat_messages": [_AIM(content=final)]})
                 self._complete_thread(thread_id, intent=route)
                 close_research_logger(thread_id, route=route, final=final)
                 logger.info("[TRACE] stream_research DONE | run=%s | thread=%s | route=%s | final_len=%d | elapsed=%.2fs",
                              run_id, thread_id, route, len(final), time.time() - t0)
-                yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
+                yield sse(event("run.completed", message_id=f"{run_id}:{last_token_node or 'write'}", final_state="done", final=final))
                 # P5: 后台记忆提取（run.completed 后异步触发，不阻塞）
                 self._trigger_memory_extract(runtime_config, query, final, thread_id)
                 # P6-6: LLM 标题生成（run.completed 后异步，不阻塞）
@@ -390,9 +400,12 @@ class ResearchService:
                 snapshot = await self._app.aget_state(config)
                 final = str(snapshot.values.get("final", ""))
                 if final:
+                    # R4.4: 最终报告写入 chat_messages
+                    from langchain_core.messages import AIMessage as _AIM
+                    await self._app.aupdate_state(config, {"chat_messages": [_AIM(content=final)]})
                     self._complete_thread(thread_id, intent=route)
                     close_research_logger(thread_id, route=route, final=final)
-                    yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
+                    yield sse(event("run.completed", message_id=f"{run_id}:{last_token_node or 'write'}", final_state="done", final=final))
                     # P5: 后台记忆提取
                     self._trigger_memory_extract(runtime_config, query, final, thread_id)
                     # P6-6: LLM 标题生成
@@ -460,6 +473,10 @@ class ResearchService:
             hitl_enabled=runtime_config.hitl_enabled,
             hitl_config=runtime_config.hitl_config,
         )
+        # R4.4: 用户真实输入写入 chat_messages（前端可见）
+        from langchain_core.messages import HumanMessage as _HM
+        input_state["chat_messages"] = [_HM(content=query)]
+        input_state["agent_messages"] = []
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
         # 对话摘要压缩
@@ -520,6 +537,10 @@ class ResearchService:
             hitl_enabled=runtime_config.hitl_enabled,
             hitl_config=runtime_config.hitl_config,
         )
+        # R4.4: 用户真实输入写入 chat_messages
+        from langchain_core.messages import HumanMessage as _HM
+        input_state["chat_messages"] = [_HM(content=query)]
+        input_state["agent_messages"] = []
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
         # 对话摘要压缩
@@ -666,10 +687,9 @@ class ResearchService:
         config: dict,
         runtime_config: AppConfig,
     ) -> dict:
-        """在 graph 执行前对已有消息执行摘要压缩。
+        """在 graph 执行前对已有对话消息执行摘要压缩。
 
-        从 checkpoint 获取已有 messages，加上 input_state 中的新 query，
-        如果总数超过阈值则触发摘要压缩，将压缩后的 messages 写回 input_state。
+        R4.4: 从 chat_messages（用户可见对话）读取，不含内部推理 prompt。
         """
         summary_service = get_summary_service()
         if summary_service is None:
@@ -677,7 +697,8 @@ class ResearchService:
 
         try:
             snapshot = await self._app.aget_state(config)
-            existing_msgs = list(snapshot.values.get("messages", []))
+            # R4.4: 优先读 chat_messages，兼容旧 checkpoint 的 messages
+            existing_msgs = list(snapshot.values.get("chat_messages") or snapshot.values.get("messages") or [])
             existing_summary = str(snapshot.values.get("conversation_summary", ""))
         except Exception:
             existing_msgs = []
@@ -694,24 +715,20 @@ class ResearchService:
             all_msgs, existing_summary
         )
 
-        # 压缩后：input_state 的 messages 改为压缩列表减去已有消息（只保留新增部分）
-        # LangGraph add_messages reducer 会合并 input_state messages 到 checkpoint
-        # 所以 input_state 只需要放入新增消息（即新 query），但摘要消息需要通过 update_state 写入
         input_state["conversation_summary"] = new_summary
+        input_state["chat_messages"] = compressed_msgs
 
-        # 如果触发了摘要，通过 update_state 将压缩后的 messages 写入 checkpoint
-        # 这样 astream(input_state) 时 add_messages 会基于已压缩的消息列表追加新 query
         await self._app.aupdate_state(config, {
-            "messages": compressed_msgs,
+            "chat_messages": compressed_msgs,
             "conversation_summary": new_summary,
         })
 
         return input_state
 
     async def _apply_summary_to_checkpoint(self, config: dict) -> None:
-        """对 checkpoint 中已有消息执行摘要压缩（resume_stream 用）。
+        """对 checkpoint 中已有对话消息执行摘要压缩（resume_stream 用）。
 
-        直接从 checkpoint 读取 messages，如超阈值则压缩并写回。
+        R4.4: 从 chat_messages 读取，不含内部推理 prompt。
         """
         summary_service = get_summary_service()
         if summary_service is None:
@@ -719,7 +736,7 @@ class ResearchService:
 
         try:
             snapshot = await self._app.aget_state(config)
-            existing_msgs = list(snapshot.values.get("messages", []))
+            existing_msgs = list(snapshot.values.get("chat_messages") or snapshot.values.get("messages") or [])
             existing_summary = str(snapshot.values.get("conversation_summary", ""))
         except Exception:
             return
@@ -732,7 +749,7 @@ class ResearchService:
         )
 
         await self._app.aupdate_state(config, {
-            "messages": compressed_msgs,
+            "chat_messages": compressed_msgs,
             "conversation_summary": new_summary,
         })
         logger.info(
@@ -862,7 +879,17 @@ class ResearchService:
             snapshot = await self._app.aget_state(config)
             if not snapshot or not snapshot.values:
                 return []
-            state_msgs = snapshot.values.get("messages", [])
+            # R4.4: 优先读 chat_messages（用户可见对话），兼容旧 checkpoint
+            state_msgs = snapshot.values.get("chat_messages")
+            if state_msgs is None:
+                # 旧 checkpoint 无 chat_messages → 从 query + final 恢复
+                query = snapshot.values.get("query", "")
+                final = snapshot.values.get("final", "")
+                if query:
+                    messages.append({"role": "user", "content": query})
+                if final:
+                    messages.append({"role": "assistant", "content": final})
+                return messages
             for msg in state_msgs[-limit:]:
                 role = getattr(msg, "type", "unknown")
                 content = getattr(msg, "content", str(msg))
@@ -870,15 +897,6 @@ class ResearchService:
                     messages.append({"role": "user", "content": content})
                 elif role == "ai":
                     messages.append({"role": "assistant", "content": content})
-            final = snapshot.values.get("final", "")
-            if final and (not messages or messages[-1]["content"] != final):
-                messages.append({"role": "assistant", "content": final})
-            if not messages:
-                query = snapshot.values.get("query", "")
-                if query:
-                    messages.append({"role": "user", "content": query})
-                if final:
-                    messages.append({"role": "assistant", "content": final})
         except Exception as exc:
             logger.warning("获取会话消息失败: %s", exc)
         return messages
@@ -915,6 +933,7 @@ class ResearchService:
         logger.info("[TRACE] resume_stream START | run=%s | thread=%s | mode=%s", run_id, thread_id, mode)
 
         seen_nodes: set[str] = set()
+        last_token_node = ""
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
 
         # 输入路由：mode=continue → None（从最后 checkpoint 续跑）；mode=answer → Command(resume=...)
@@ -947,6 +966,7 @@ class ResearchService:
                             node = chunk.get("node", "")
                             text = chunk.get("text", "")
                             mid = f"{run_id}:{node}"
+                            last_token_node = node
                             if node not in seen_nodes:
                                 seen_nodes.add(node)
                                 yield sse(event("message.start", message_id=mid, node=node))
@@ -955,6 +975,7 @@ class ResearchService:
                             node = chunk.get("node", "")
                             text = chunk.get("text", "")
                             mid = f"{run_id}:{node}"
+                            last_token_node = node
                             if node not in seen_nodes:
                                 seen_nodes.add(node)
                                 yield sse(event("message.start", message_id=mid, node=node))
@@ -997,20 +1018,26 @@ class ResearchService:
 
             # 尝试获取 final
             if final:
+                # R4.4: 最终报告写入 chat_messages
+                from langchain_core.messages import AIMessage as _AIM
+                await self._app.aupdate_state(config, {"chat_messages": [_AIM(content=final)]})
                 self._complete_thread(thread_id, intent="multiagent")
                 close_research_logger(thread_id, route="multiagent", final=final)
                 logger.info("[TRACE] resume_stream DONE | run=%s | thread=%s | final_len=%d",
                              run_id, thread_id, len(final))
-                yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
+                yield sse(event("run.completed", message_id=f"{run_id}:{last_token_node or 'write'}", final_state="done", final=final))
                 # P5: 后台记忆提取
                 await self._trigger_memory_extract_from_snapshot(thread_id, final, config)
             else:
                 snapshot = await self._app.aget_state(config)
                 final = str(snapshot.values.get("final", ""))
                 if final:
+                    # R4.4: 最终报告写入 chat_messages
+                    from langchain_core.messages import AIMessage as _AIM
+                    await self._app.aupdate_state(config, {"chat_messages": [_AIM(content=final)]})
                     self._complete_thread(thread_id, intent="multiagent")
                     close_research_logger(thread_id, route="multiagent", final=final)
-                    yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
+                    yield sse(event("run.completed", message_id=f"{run_id}:{last_token_node or 'write'}", final_state="done", final=final))
                     # P5: 后台记忆提取
                     await self._trigger_memory_extract_from_snapshot(thread_id, final, config)
                 else:

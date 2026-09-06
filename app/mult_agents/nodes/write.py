@@ -49,7 +49,7 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
         # 流式输出提示，确保前端能收到消息内容（避免「无输出」）
         if writer:
             writer({"type": "token", "node": "write", "text": hint})
-        return {"draft": hint, "final": hint, "messages": []}
+        return {"draft": hint, "final": hint, "agent_messages": []}
 
     valid_source_ids = [str(item.get("source_id", "")).strip() for item in state.get("source_index", []) if item.get("source_id")]
     valid_source_ids = [item for item in valid_source_ids if item][:80]
@@ -170,5 +170,5 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     emit("write", final_content)
     if writer:
         writer({"node": "write", "message": "报告撰写完成"})
-    return {"draft": final_content, "final": final_content, "messages": [human]}
+    return {"draft": final_content, "final": final_content, "agent_messages": [human]}
 

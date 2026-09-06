@@ -1,7 +1,7 @@
 """状态定义模块：多智能体工作流共享的 AgentState 分组结构。
 
 P1 重写：从 41 字段扁平 TypedDict 重构为分组+reducer+校验结构。
-- messages 用 add_messages reducer（支持增量追加/覆盖）
+- chat_messages / agent_messages 用 add_messages reducer（双轨制）
 - sources/findings/plan 用 operator.add reducer（累加去重在节点内实现）
 - clarifications 占位（P4 HITL 启用）
 - 旧字段按语义归组保留，无引用价值的字段删除
@@ -16,9 +16,10 @@ from langgraph.graph.message import add_messages
 
 # ── 对话流 ──
 class ConversationState(TypedDict):
-    messages: Annotated[list, add_messages]
-    clarifications: Annotated[list, operator.add]  # P4 启用，先占位
-    conversation_summary: str  # 对话摘要文本（消息超阈值时 LLM 压缩生成）
+    chat_messages: Annotated[list, add_messages]       # 用户可见对话（前端读取）
+    agent_messages: Annotated[list, add_messages]      # agent 内部上下文（前端不可见）
+    clarifications: Annotated[list, operator.add]      # P4 启用，先占位
+    conversation_summary: str                          # 对话摘要文本（消息超阈值时 LLM 压缩生成）
 
 
 # ── 研究数据 ──
@@ -104,7 +105,8 @@ def create_initial_state(
 ) -> AgentState:
     return {
         # ConversationState
-        "messages": [],
+        "chat_messages": [],
+        "agent_messages": [],
         "clarifications": [],
         "conversation_summary": "",
         # ResearchState

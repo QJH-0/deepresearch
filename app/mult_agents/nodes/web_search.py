@@ -22,7 +22,7 @@ from ._evidence import (
 logger = logging.getLogger("mult_agents")
 
 
-def web_search_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
+async def web_search_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[web_search]", "cyan"), colorize(agent_name, "magenta"))
     queries = _build_queries(state, "web")
     logger.info("[web_search_node] 构建查询 | 查询数量=%s | queries=%s", len(queries), [q.get("query", "") for q in queries])
@@ -84,7 +84,7 @@ def web_search_node(state: AgentState, agent, agent_name: str, writer: StreamWri
     if writer:
         writer({"node": "web_search", "message": f"检索完成，共 {len(raw_records)} 条原始记录，正在用 LLM 整理证据..."})
     fallback = _fallback_web_evidence(raw_records)
-    payload, content, messages = _invoke_json_agent(
+    payload, content, messages = await _invoke_json_agent(
         state,
         "请基于以下网页证据整理结构化 JSON。\n"
         f"原问题：{state['query']}\n"
@@ -137,6 +137,6 @@ def web_search_node(state: AgentState, agent, agent_name: str, writer: StreamWri
         "web_evidence": existing_evidence + evidence,
         "web_retrieval_stats": web_retrieval_stats,
         "web_search_trace": query_traces,
-        "messages": messages,
+        "agent_messages": messages,
     }
 
