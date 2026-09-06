@@ -462,11 +462,9 @@ async def export_pdf(
     thread_id: str,
     research_service: ResearchService = Depends(get_research_service),
 ):
-    """P7-4: 导出会话最终报告为 PDF。
+    """导出会话最终报告为 PDF（Playwright headless Chromium）。
 
-    降级策略：
-    1. 尝试 weasyprint 渲染
-    2. 装不上 → 返回 HTML 打印页面（前端 window.print()）
+    降级策略：Playwright 失败 → 返回 Markdown 文件（保内容不保排版）。
     """
     messages = await research_service.get_thread_messages(thread_id)
     if not messages:
@@ -482,49 +480,23 @@ async def export_pdf(
     if not report_content:
         raise HTTPException(status_code=404, detail="无可导出的报告内容")
 
-    # 尝试 weasyprint
-    try:
-        from weasyprint import HTML
+    from backend.service import get_pdf_export_service
+    from backend.service.pdf_export_service import render_report_html
 
-        html_content = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-body {{ font-family: 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif; line-height: 1.7; max-width: 700px; margin: 40px auto; color: #333; }}
-h1, h2, h3 {{ color: #2c3e50; }}
-sup.citation-ref {{ color: #3f67d4; font-size: 0.75em; }}
-pre {{ background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }}
-table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ border: 1px solid #ddd; padding: 6px 12px; }}
-</style></head><body>
-{report_content.replace(chr(10), '<br>')}
-</body></html>"""
-        pdf_bytes = HTML(string=html_content).write_pdf()
+    service = get_pdf_export_service()
+    try:
+        pdf_bytes = await service.export(render_report_html(report_content))
         filename = f"report_{thread_id[:12]}.pdf"
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
-    except ImportError:
-        # 降级：返回 HTML 打印页面
-        html_content = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>研究报告导出</title>
-<style>
-body {{ font-family: 'Microsoft YaHei', sans-serif; line-height: 1.7; max-width: 700px; margin: 40px auto; color: #333; }}
-h1, h2, h3 {{ color: #2c3e50; }}
-pre {{ background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }}
-table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ border: 1px solid #ddd; padding: 6px 12px; }}
-@media print {{ .no-print {{ display: none; }} }}
-</style></head><body>
-<div class="no-print" style="text-align:center; margin-bottom: 20px;">
-<button onclick="window.print()" style="padding:8px 20px; font-size:14px; cursor:pointer;">🖨 打印为 PDF</button>
-</div>
-<pre style="white-space: pre-wrap; word-wrap: break-word;">{report_content}</pre>
-</body></html>"""
-        return Response(
-            content=html_content.encode("utf-8"),
-            media_type="text/html; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as exc:
-        logger.error("PDF 导出失败: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"PDF 导出失败: {exc}")
+        logger.error("[export] PDF 生成失败，降级 Markdown | thread=%s | %s", thread_id, exc)
+        filename = f"report_{thread_id[:12]}.md"
+        return Response(
+            content=report_content.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )

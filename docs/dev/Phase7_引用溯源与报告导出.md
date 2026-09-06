@@ -81,9 +81,15 @@ function exportMarkdown(msg: Message, sources: Source[]) {
 }
 ```
 
-**PDF（服务端）**：
-- 新增 `POST /threads/{thread_id}/export/pdf`（research_router）：取最终报告 + sources → weasyprint 渲染（模板含标题、元信息、正文角标上标、尾部参考列表排版）→ 返回 `application/pdf` 流。
-- 依赖：`weasyprint`（Windows 需 GTK 运行库——**风险项，见第 7 节**，装不上则降级方案：前端 print CSS 打印导出）。
+**PDF（服务端，R3.3 重构）**：
+- `GET /threads/{thread_id}/export/pdf`（research_router）：取最终报告 → `render_report_html` 构造完整 HTML（含 CSS 排版、代码高亮、表格）→ Playwright headless Chromium `page.pdf()` 生成 PDF。
+- 依赖：`playwright`（首次使用需执行 `playwright install chromium` 下载 Chromium ~150MB）。
+- 降级策略：Playwright 失败 → 返回 Markdown 文件（Content-Disposition 提示），不再走旧 weasyprint 路径。
+- 安装说明：
+  ```
+  pip install -r requirements.txt
+  playwright install chromium
+  ```
 
 ### H3 研究过程时间线（顺带交付）
 
@@ -116,7 +122,7 @@ function exportMarkdown(msg: Message, sources: Source[]) {
 | 风险 | 对策 |
 |------|------|
 | LLM 不守引用格式（漏标/乱标） | prompt 强约束 + 后处理兜底 + 覆盖率日志监控；覆盖率 <80% 时迭代 prompt（加 few-shot 示例） |
-| weasyprint Windows 依赖 GTK 装不上 | 降级顺序：① weasyprint 正常；② 前端 print CSS + window.print()；③ 只交付 MD 导出，PDF 记入债务清单 |
+| ~~weasyprint Windows 依赖 GTK 装不上~~ | **R3.3 已替换为 Playwright headless Chromium**，跨平台一致、中文排版保真；降级链：Playwright 失败 → 返回 Markdown 文件 |
 | 角标与 md 语法冲突（`[1]` 被渲染为链接语法） | MarkdownRender 在渲染前用占位符替换 `[n]`，渲染后替换回自定义上标元素（gpt-researcher markdown_processing 同类处理） |
 | sources 编号在 reflect 多轮后不稳定 | 去重保序（首次出现定编号），新增来源只追加不改旧编号；T7-1 覆盖 |
 | 知识库来源点击定位粒度粗 | 首版做到"打开文档"级；chunk 级正文高亮记入后续迭代（前端需后端提供 chunk 文本接口——评估 `rag/db_viewer.py` 可复用性） |

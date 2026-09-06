@@ -7,7 +7,7 @@
     T-A4  前端回滚字段适配后端契约（P0-4）
     T-A5  ReportReviewCard 动作枚举一致性（P1-4）
     T-A6  interrupt store 重建逻辑存在（P1-3）
-    T-A7  weasyprint 在 requirements.txt 中（P2-1）
+    T-A7  PDF 导出依赖（R3.3: weasyprint→playwright）
     T-A8  旧 sse.ts 已删除（P2-6）
 
 运行方式:
@@ -306,18 +306,19 @@ class TestInterruptStoreRebuild:
 
 
 # ──────────────────────────────────────────────
-# T-A7 weasyprint 在 requirements.txt 中（P2-1）
+# T-A7 PDF 导出依赖（R3.3: weasyprint→playwright）
 # ──────────────────────────────────────────────
 
 
-class TestWeasyprintDependency:
-    """requirements.txt 包含 weasyprint。"""
+class TestPdfExportDependency:
+    """requirements.txt 包含 playwright（R3.3 替换 weasyprint）。"""
 
-    def test_weasyprint_in_requirements(self):
-        """requirements.txt 包含 weasyprint。"""
+    def test_playwright_in_requirements(self):
+        """requirements.txt 包含 playwright，不含 weasyprint。"""
         req_path = _PROJECT_ROOT / "requirements.txt"
         content = req_path.read_text(encoding="utf-8")
-        assert "weasyprint" in content.lower(), "requirements.txt 应包含 weasyprint"
+        assert "playwright" in content.lower(), "requirements.txt 应包含 playwright"
+        assert "weasyprint" not in content.lower(), "requirements.txt 不应再包含 weasyprint"
 
 
 # ──────────────────────────────────────────────

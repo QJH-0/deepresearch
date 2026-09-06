@@ -19,18 +19,27 @@ COPY requirements.txt .
 # 安装依赖到独立 prefix 目录（便于多阶段拷贝）
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
+# R3.3: 下载 Chromium 二进制到独立目录
+RUN playwright install chromium
+
 # ---- Stage 2: runner ----
 FROM python:3.11-slim AS runner
 
 WORKDIR /app
 
-# 运行时系统依赖（psycopg2-binary 需要 libpq，pymilvus 不需要额外系统库）
+# 运行时系统依赖：
+# - libpq5: psycopg2 运行时
+# - R3.3: Chromium 运行所需系统库（由 playwright install-deps 安装）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && playwright install-deps chromium
 
 # 从 builder 拷贝已安装的 Python 包
 COPY --from=builder /install /usr/local
+
+# R3.3: 拷贝 Chromium 浏览器二进制
+COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # 拷贝应用代码
 COPY app/ app/

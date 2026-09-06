@@ -5,6 +5,7 @@ from .research_service import ResearchService, get_research_service
 from .task_registry import TaskRegistry, ConcurrentRunError, get_task_registry, init_task_registry
 from .memory_service import MemoryService, get_memory_service, init_memory_service
 from .summary_service import SummaryService, get_summary_service, init_summary_service
+from .pdf_export_service import PdfExportService, get_pdf_export_service
 
 
 __all__ = [
@@ -20,4 +21,6 @@ __all__ = [
     "SummaryService",
     "get_summary_service",
     "init_summary_service",
+    "PdfExportService",
+    "get_pdf_export_service",
 ]
