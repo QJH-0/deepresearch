@@ -1,28 +1,26 @@
 """
 RabbitMQ 消费者 — chunk-sync 异步向量化服务。
 
-参考:
-  - RAGFlow: task_executor 消费 Redis 队列中的文档解析和 embedding 任务
-  - Dify: Celery worker 异步执行 chunk embedding + index 任务
-  - pika BasicConsumer + manual_ack: 消费失败不 ACK，消息重回队列
-
 异步链路流程:
   1. 消费者拉取 chunk-sync.queue 消息
-  2. 调用 Embedding 模型生成向量
-  3. 写入 Milvus (子块 + 父块)
+  2. 幂等检查：该 chunk 已 indexed → 直接 ACK 跳过
+  3. 调用 Embedding 模型生成向量并写入 Milvus
   4. 更新 PG chunk vector_status = 'indexed'
   5. 手动 ACK 消息
 
 容错策略:
-  - Embedding 或 Milvus 写入失败 → NACK (requeue=False，进入死信或丢弃)
-  - PG 更新失败 → 消息已 ACK（向量已写入），下次启动时补偿扫描
-  - 消费者启动时自动扫描 pending 消息补偿发送
+  - 处理失败按消息体 hash 累计重试次数
+  - 重试超限 → nack(requeue=False) → DLX 路由进死信队列 (DLQ)
+  - 消费幂等：处理前检查 chunk 状态，indexed 直接 ACK 跳过
+  - 消费者启动时自动扫描 pending outbox 消息补偿发送
 """
 
+import hashlib
 import json
 import logging
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 import pika
@@ -35,21 +33,39 @@ from .postgres_client import ChunkRepository
 
 logger = logging.getLogger("backend.infra.consumer")
 
+# ── 常量 ─────────────────────────────────────────────────────────────
+
+_DEFAULT_RETRY_LIMIT = 3
+_BACKOFF_MAX = 10
+_RETRY_CACHE_MAX = 1000
+
+
 # ── MQ 消息回调 ──────────────────────────────────────────────────────
+
+def _body_hash(body: bytes) -> str:
+    """计算消息体 md5，用作重试计数 key。"""
+    return hashlib.md5(body).hexdigest()
+
 
 def _create_chunk_sync_callback(
     rag: RAGSystem,
     repo: ChunkRepository,
+    retry_limit: int = _DEFAULT_RETRY_LIMIT,
+    retry_counts: Optional[OrderedDict] = None,
 ):
     """
     创建 pika 消费回调函数。
 
     回调流程:
-      1. 解析消息 payload (chunk_id, content, parent_id, metadata, ...)
-      2. 调用 RAG 系统将 chunk 写入 Milvus (子块向量 + 父块向量)
-      3. 更新 PG 中 chunk 的 vector_status = 'indexed'
+      1. 幂等检查：chunk 已 indexed → ACK 跳过
+      2. 向量化写入 Milvus + BM25
+      3. 更新 PG chunk 状态为 indexed
       4. 手动 ACK
+      失败时按 body hash 累计重试，超限 nack(requeue=False) → DLQ
     """
+
+    if retry_counts is None:
+        retry_counts = OrderedDict()
 
     def callback(
         ch: pika.channel.Channel,
@@ -58,87 +74,108 @@ def _create_chunk_sync_callback(
         body: bytes,
     ) -> None:
         delivery_tag = method.delivery_tag
+        bhash = _body_hash(body)
+
         try:
-            payload = json.loads(body.decode("utf-8"))
-            chunk_id = payload.get("chunk_id", "")
-            content = payload.get("content", "")
-            parent_id = payload.get("parent_id", "")
-            section_path = payload.get("section_path", "")
-            source_name = payload.get("source_name", "unknown")
-            doc_id = payload.get("doc_id", "")
-
-            logger.info(
-                "消费消息 | chunk_id=%s | doc_id=%s | content_len=%d",
-                chunk_id, doc_id, len(content),
-            )
-
-            # Step 1: 调用 Embedding 生成向量并写入 Milvus
-            # 复用 RAG 系统的 ingest 逻辑，但只处理单个 chunk
-            from langchain_core.documents import Document
-
-            # 从原始 metadata 中提取 child_id（Milvus schema 要求该字段非空）
-            raw_metadata = payload.get("metadata", {})
-            child_id = raw_metadata.get("child_id", "")
-
-            # 写入子块向量库
-            child_doc = Document(
-                page_content=content,
-                metadata={
-                    "source": doc_id,
-                    "source_name": source_name,
-                    "section_path": section_path,
-                    "parent_id": parent_id,
-                    "child_id": child_id,
-                    "chunk_type": "child",
-                    "chunk_idx": payload.get("chunk_idx", 0),
-                    "doc_id": doc_id,
-                },
-            )
-            rag.vectorstore.add_documents([child_doc])
-
-            # 同步更新 BM25 索引
-            rag.bm25.add_documents([child_doc])
-
-            # 写入父块向量库（如存在 parent_id）
-            if parent_id and parent_id not in rag._parent_map:
-                parent_doc = Document(
-                    page_content=content,  # 父块内容 = 当前 chunk 内容（简化版）
-                    metadata={
-                        "source": doc_id,
-                        "source_name": source_name,
-                        "section_path": section_path,
-                        "parent_id": parent_id,
-                        "chunk_type": "parent",
-                        "doc_id": doc_id,
-                    },
-                )
-                rag.parent_store.add_documents([parent_doc])
-                rag._parent_map[parent_id] = parent_doc
-
-            logger.info("Milvus 写入成功 | chunk_id=%s", chunk_id)
-
-            # Step 2: 更新 PG chunk 状态
-            repo.update_chunk_vector_status(
-                chunk_id=chunk_id,
-                status="indexed",
-                milvus_pk="",
-            )
-
-            # Step 3: 手动 ACK
+            _process_message(rag, repo, body)
             ch.basic_ack(delivery_tag=delivery_tag)
-            logger.info("ACK 完成 | chunk_id=%s", chunk_id)
+            retry_counts.pop(bhash, None)
 
         except Exception as exc:
-            logger.error(
-                "消费失败 | delivery_tag=%s | error=%s",
-                delivery_tag, exc,
-                exc_info=True,
-            )
-            # NACK + requeue=False: 避免无限循环重试
-            # 实际生产中应配置死信队列 (DLX) 接收失败消息
-            ch.basic_nack(delivery_tag=delivery_tag, requeue=False)
+            count = retry_counts.get(bhash, 0) + 1
+            retry_counts[bhash] = count
+
+            if len(retry_counts) > _RETRY_CACHE_MAX:
+                retry_counts.popitem(last=False)
+
+            if count >= retry_limit:
+                logger.error(
+                    "[chunk-consumer] 重试超限进 DLQ | delivery=%s | body_hash=%s | body=%s | error=%s",
+                    delivery_tag, bhash[:8], body[:200], exc,
+                )
+                retry_counts.pop(bhash, None)
+                ch.basic_nack(delivery_tag=delivery_tag, requeue=False)
+            else:
+                logger.warning(
+                    "[chunk-consumer] 处理失败(%d/%d) | body_hash=%s | error=%s",
+                    count, retry_limit, bhash[:8], exc,
+                )
+                backoff = min(count * 2, _BACKOFF_MAX)
+                time.sleep(backoff)
+                ch.basic_nack(delivery_tag=delivery_tag, requeue=True)
 
     return callback
+
+
+def _process_message(rag: RAGSystem, repo: ChunkRepository, body: bytes) -> None:
+    """
+    解析消息并执行向量化，含幂等闸门。
+
+    幂等检查：chunk 已 indexed → 直接返回（外层 ACK）
+    状态回写失败视为整条处理失败（抛异常走重试路径），
+    保证「成功状态 ⇒ 已向量化」不变式。
+    """
+    payload = json.loads(body.decode("utf-8"))
+    chunk_id = payload.get("chunk_id", "")
+    content = payload.get("content", "")
+    parent_id = payload.get("parent_id", "")
+    section_path = payload.get("section_path", "")
+    source_name = payload.get("source_name", "unknown")
+    doc_id = payload.get("doc_id", "")
+
+    status = repo.get_chunk_status(chunk_id)
+    if status == "indexed":
+        logger.info("[chunk-consumer] chunk 已向量化，幂等跳过 | chunk=%s", chunk_id)
+        return
+
+    logger.info(
+        "消费消息 | chunk_id=%s | doc_id=%s | content_len=%d",
+        chunk_id, doc_id, len(content),
+    )
+
+    from langchain_core.documents import Document
+
+    raw_metadata = payload.get("metadata", {})
+    child_id = raw_metadata.get("child_id", "")
+
+    child_doc = Document(
+        page_content=content,
+        metadata={
+            "source": doc_id,
+            "source_name": source_name,
+            "section_path": section_path,
+            "parent_id": parent_id,
+            "child_id": child_id,
+            "chunk_type": "child",
+            "chunk_idx": payload.get("chunk_idx", 0),
+            "doc_id": doc_id,
+        },
+    )
+    rag.vectorstore.add_documents([child_doc])
+    rag.bm25.add_documents([child_doc])
+
+    if parent_id and parent_id not in rag._parent_map:
+        parent_doc = Document(
+            page_content=content,
+            metadata={
+                "source": doc_id,
+                "source_name": source_name,
+                "section_path": section_path,
+                "parent_id": parent_id,
+                "chunk_type": "parent",
+                "doc_id": doc_id,
+            },
+        )
+        rag.parent_store.add_documents([parent_doc])
+        rag._parent_map[parent_id] = parent_doc
+
+    logger.info("Milvus 写入成功 | chunk_id=%s", chunk_id)
+
+    repo.update_chunk_vector_status(
+        chunk_id=chunk_id,
+        status="indexed",
+        milvus_pk="",
+    )
 
 
 class ChunkSyncConsumer:
@@ -151,20 +188,22 @@ class ChunkSyncConsumer:
         dsn: str,
         api_key: str,
         rag_config: RAGConfig,
+        retry_limit: int = _DEFAULT_RETRY_LIMIT,
     ):
         self._mq_url = mq_url
         self._exchange = exchange
         self._dsn = dsn
         self._api_key = api_key
         self._rag_config = rag_config
+        self._retry_limit = retry_limit
         self._rag: Optional[RAGSystem] = None
         self._repo: Optional[ChunkRepository] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._retry_counts: OrderedDict = OrderedDict()
 
     def _init_dependencies(self) -> None:
         """初始化 RAG 系统和 PG 仓库。"""
-        # 初始化 RAG 系统（复用全局单例）
         if _tools_mod._RAG_SYSTEM is None:
             try:
                 init_rag_system(api_key=self._api_key, config=self._rag_config)
@@ -187,22 +226,40 @@ class ChunkSyncConsumer:
             logger.error("消费者依赖初始化失败: %s", exc)
             return
 
-        # 启动时补偿扫描：将 PG 中 pending 的本地消息重新发送到 MQ
         self._compensate_pending_messages()
 
         params = pika.URLParameters(self._mq_url)
         connection = pika.BlockingConnection(params)
         channel = connection.channel()
 
-        # 声明 exchange + queue（幂等）
         channel.exchange_declare(
             exchange=self._exchange,
             exchange_type="topic",
             durable=True,
         )
+
+        channel.exchange_declare(
+            exchange="chunk-sync-dlx",
+            exchange_type="topic",
+            durable=True,
+        )
+        channel.queue_declare(
+            queue="chunk-sync-dlq",
+            durable=True,
+            arguments={"x-queue-mode": "lazy"},
+        )
+        channel.queue_bind(
+            queue="chunk-sync-dlq",
+            exchange="chunk-sync-dlx",
+            routing_key="chunk.sync.dead",
+        )
         channel.queue_declare(
             queue="chunk-sync.queue",
             durable=True,
+            arguments={
+                "x-dead-letter-exchange": "chunk-sync-dlx",
+                "x-dead-letter-routing-key": "chunk.sync.dead",
+            },
         )
         channel.queue_bind(
             exchange=self._exchange,
@@ -210,18 +267,18 @@ class ChunkSyncConsumer:
             routing_key="chunk.sync.#",
         )
 
-        # prefetch_count=1: 每次只分发给消费者一条消息，处理完再下一条
         channel.basic_qos(prefetch_count=1)
 
-        # 设置消费者
         callback = _create_chunk_sync_callback(
             rag=self._rag,
             repo=self._repo,
+            retry_limit=self._retry_limit,
+            retry_counts=self._retry_counts,
         )
         channel.basic_consume(
             queue="chunk-sync.queue",
             on_message_callback=callback,
-            auto_ack=False,  # 手动 ACK
+            auto_ack=False,
         )
 
         logger.info("ChunkSyncConsumer 启动，等待 chunk-sync 消息...")
@@ -236,7 +293,8 @@ class ChunkSyncConsumer:
         """
         启动时扫描 PG 本地消息表中的 pending 消息，重新发送到 MQ。
 
-        这解决了"PG 事务已提交但 MQ 发送失败"的场景。
+        与 DLQ 重放不冲突：补偿扫的是 PG outbox 表 pending 记录，
+        DLQ 重放扫的是 RabbitMQ 死信队列中的消费失败消息。
         """
         if self._repo is None:
             return

@@ -36,25 +36,46 @@ class MQProducer:
         self._channel: Optional[Any] = None  # pika.channel.Channel
 
     def connect(self) -> None:
-        """建立 RabbitMQ 连接并声明 exchange + queue。"""
+        """建立 RabbitMQ 连接并声明 exchange + queue（含 DLX 死信拓扑）。
+
+        ⚠️ 若 chunk-sync.queue 已存在但无 DLX 参数，RabbitMQ 会报
+        PRECONDITION_FAILED，需先删除旧队列再以新参数重新声明。
+        """
         params = pika.URLParameters(self._url)
         self._connection = pika.BlockingConnection(params)
         self._channel = self._connection.channel()
 
-        # 声明 Topic Exchange（持久化）
         self._channel.exchange_declare(
             exchange=self._exchange,
             exchange_type="topic",
             durable=True,
         )
 
-        # 声明持久化 Queue
-        self._channel.queue_declare(
-            queue="chunk-sync.queue",
+        self._channel.exchange_declare(
+            exchange="chunk-sync-dlx",
+            exchange_type="topic",
             durable=True,
         )
 
-        # 绑定: chunk-sync exchange → chunk-sync.queue
+        self._channel.queue_declare(
+            queue="chunk-sync-dlq",
+            durable=True,
+            arguments={"x-queue-mode": "lazy"},
+        )
+        self._channel.queue_bind(
+            queue="chunk-sync-dlq",
+            exchange="chunk-sync-dlx",
+            routing_key="chunk.sync.dead",
+        )
+
+        self._channel.queue_declare(
+            queue="chunk-sync.queue",
+            durable=True,
+            arguments={
+                "x-dead-letter-exchange": "chunk-sync-dlx",
+                "x-dead-letter-routing-key": "chunk.sync.dead",
+            },
+        )
         self._channel.queue_bind(
             exchange=self._exchange,
             queue="chunk-sync.queue",

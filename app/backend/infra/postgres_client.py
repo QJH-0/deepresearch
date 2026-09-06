@@ -322,6 +322,18 @@ class ChunkRepository:
                         (status, chunk_id),
                     )
 
+    def get_chunk_status(self, chunk_id: str) -> str:
+        """查询单个 chunk 的向量化状态（幂等闸门用）。"""
+        pool = self._get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT vector_status FROM document_chunks WHERE id = %s",
+                    (chunk_id,),
+                )
+                row = cur.fetchone()
+        return row[0] if row else "pending"
+
     def get_pending_messages(self, limit: int = 100) -> List[dict]:
         """获取未发送到 MQ 的本地消息（用于补偿/重试）。"""
         pool = self._get_pool()
