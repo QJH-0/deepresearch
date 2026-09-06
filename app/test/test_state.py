@@ -71,7 +71,7 @@ class TestCreateInitialState:
 
     REQUIRED_FIELDS = {
         # ConversationState
-        "messages", "clarifications",
+        "chat_messages", "agent_messages", "clarifications",
         # ResearchState
         "query", "user_id", "tenant_id", "memory_context", "intent",
         "plan", "outline", "sub_questions", "research_questions",
@@ -100,7 +100,8 @@ class TestCreateInitialState:
         state = create_initial_state(
             query="test", max_iterations=3, user_id="u", tenant_id="t"
         )
-        assert state["messages"] == []
+        assert state["chat_messages"] == []
+        assert state["agent_messages"] == []
         assert state["clarifications"] == []
         assert state["intent"] == ""
         assert state["phase"] == "initialized"

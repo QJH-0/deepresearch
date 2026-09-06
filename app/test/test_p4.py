@@ -290,7 +290,7 @@ def _make_initial_state(hitl_enabled=True, plan_review=True, write_review=False,
     """创建测试用初始状态。"""
     return {
         "query": "测试查询", "user_id": "u1", "tenant_id": "t1", "memory_context": "",
-        "intent": "multiagent", "messages": [], "clarifications": [],
+        "intent": "multiagent", "chat_messages": [], "agent_messages": [], "clarifications": [],
         "plan": "", "outline": [], "sub_questions": ["子问题1", "子问题2"],
         "research_questions": [], "search_plan": [], "budget": {},
         "supplementary_queries": [], "web_search": "", "local_rag": "",
@@ -315,96 +315,101 @@ def _make_initial_state(hitl_enabled=True, plan_review=True, write_review=False,
 @pytest.mark.skipif(not HAS_PLAN_NODE, reason="plan_node 依赖加载失败")
 class TestPlanApproval:
 
-    def test_plan_approval_approve(self):
+    @pytest.mark.asyncio
+    async def test_plan_approval_approve(self):
         """T4-2: approve → 计划固化，返回正常 state dict。"""
         state = _make_initial_state(revision_count=0)
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "approve"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent") as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
                     {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
                      "budget": {}, "objective": "test"},
                     "content", [],
                 )
-                result = plan_node(state, mock_agent, "test_agent")
+                result = await plan_node(state, mock_agent, "test_agent")
 
         assert isinstance(result, dict)
         assert result.get("plan_revision_count") == 0
         assert result.get("user_feedback", {}).get("approved") is True
 
-    def test_plan_approval_revise_increments_count(self):
+    @pytest.mark.asyncio
+    async def test_plan_approval_revise_increments_count(self):
         """T4-3: revise → revision_count 递增，回 plan 节点。"""
         state = _make_initial_state(revision_count=1)
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "revise", "reason": "需要更多子问题"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent") as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
                     {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
                      "budget": {}, "objective": "test"},
                     "content", [],
                 )
-                result = plan_node(state, mock_agent, "test_agent")
+                result = await plan_node(state, mock_agent, "test_agent")
 
         assert hasattr(result, "goto")
         assert "plan" in result.goto
         assert result.update.get("plan_revision_count") == 2
         assert result.update.get("user_feedback", {}).get("feedback") == "需要更多子问题"
 
-    def test_plan_approval_revise_max_limit_force_adopt(self):
+    @pytest.mark.asyncio
+    async def test_plan_approval_revise_max_limit_force_adopt(self):
         """T4-4: 3 次 revise 后第 4 次 → 强制采纳。"""
         state = _make_initial_state(revision_count=3)
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "revise", "reason": "再改一次"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent") as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
                     {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
                      "budget": {}, "objective": "test"},
                     "content", [],
                 )
-                result = plan_node(state, mock_agent, "test_agent")
+                result = await plan_node(state, mock_agent, "test_agent")
 
         assert isinstance(result, dict)
         assert result.get("plan_revision_count") == 3
         assert result.get("user_feedback", {}).get("reason") == "max_revisions_reached"
 
-    def test_plan_approval_reject(self):
+    @pytest.mark.asyncio
+    async def test_plan_approval_reject(self):
         """T4-5: reject → END，保留已生成内容。"""
         state = _make_initial_state(revision_count=0)
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "reject", "reason": "方向不对"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent") as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
                     {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
                      "budget": {}, "objective": "test"},
                     "content", [],
                 )
-                result = plan_node(state, mock_agent, "test_agent")
+                result = await plan_node(state, mock_agent, "test_agent")
 
         assert hasattr(result, "goto")
         assert "__end__" in result.goto
         assert "否决" in result.update.get("final", "")
 
-    def test_plan_approval_no_hitl_skips_interrupt(self):
+    @pytest.mark.asyncio
+    async def test_plan_approval_no_hitl_skips_interrupt(self):
         """HITL 未启用 → 不 interrupt，直通。"""
         state = _make_initial_state(hitl_enabled=False)
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent") as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
                     {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
                      "budget": {}, "objective": "test"},
                     "content", [],
                 )
-                result = plan_node(state, mock_agent, "test_agent")
+                result = await plan_node(state, mock_agent, "test_agent")
 
             mock_intr.assert_not_called()
 

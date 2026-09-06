@@ -114,6 +114,10 @@ def test_stream_research_emits_started_and_completed():
 
     mock_app = MagicMock()
     mock_app.astream = mock_astream
+    mock_app.aupdate_state = AsyncMock(return_value=None)
+    mock_app.aget_state = AsyncMock(return_value=MagicMock(
+        values={"final": "hello world"}
+    ))
     mock_app.get_state = MagicMock(return_value=MagicMock(
         values={"final": "hello world"}
     ))

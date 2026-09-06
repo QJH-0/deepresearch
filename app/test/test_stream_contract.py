@@ -52,7 +52,7 @@ def test_writer_annotation_is_bare_streamwriter():
 
 BASE_STATE = {
     "query": "q", "sub_questions": [], "findings": [], "source_index": [],
-    "audit_flags": [], "sources": [], "messages": [],
+        "audit_flags": [], "sources": [], "chat_messages": [], "agent_messages": [],
     "web_retrieval_stats": {"query_count": 1, "raw_count": 3, "kept_count": 2},
     "local_retrieval_stats": {"query_count": 0, "raw_count": 0, "kept_count": 0},
     "hitl_enabled": False, "hitl_config": {}, "thread_id": "t",

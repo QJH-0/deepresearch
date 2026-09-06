@@ -47,7 +47,8 @@ def test_create_initial_state_has_all_fields():
     assert state["query"] == "test query"
     assert state["max_iterations"] == 3
     assert state["user_id"] == "user1"
-    assert state["messages"] == []
+    assert state["chat_messages"] == []
+    assert state["agent_messages"] == []
     assert state["clarifications"] == []
     assert state["intent"] == ""
     assert state["phase"] == "initialized"

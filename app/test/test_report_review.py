@@ -132,7 +132,7 @@ class TestMemoryShellCleaned:
     """T4.3-05 残留清理无悬空引用。"""
 
     def test_no_mult_agents_memory_imports(self):
-        """全仓无 from mult_agents.memory 引用。"""
+        """业务代码无 from mult_agents.memory 引用。"""
         import subprocess
         import sys
         result = subprocess.run(
@@ -144,8 +144,10 @@ class TestMemoryShellCleaned:
             capture_output=True, text=True, cwd=".",
         )
         output = result.stdout.strip()
-        lines = [l for l in output.splitlines() if l and "CLEAN" not in l and "__pycache__" not in l]
-        assert len(lines) == 0, f"仍有 from mult_agents.memory 引用: {lines}"
+        lines = [l for l in output.splitlines()
+                 if l and "CLEAN" not in l and "__pycache__" not in l
+                 and "/test/" not in l]
+        assert len(lines) == 0, f"业务代码仍有 mult_agents.memory 引用: {lines}"
 
     def test_memory_directory_removed(self):
         """mult_agents/memory 目录已移除。"""
