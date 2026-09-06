@@ -72,6 +72,8 @@ async def direct_answer_node(state: AgentState, agent, agent_name: str, writer: 
     if not full_content:
         result = await agent.ainvoke({"messages": [human]})
         full_content = _last_content(result).strip()
+        if full_content and writer:
+            writer({"type": "token", "node": "direct_answer", "text": full_content})
     content = full_content
     emit("direct_answer", content)
     if writer:

@@ -81,6 +81,7 @@ class InterruptRaisedData(BaseModel):
 class RunCompletedData(BaseModel):
     message_id: str
     final_state: str
+    final: str = ""
 
 
 class RunCancelledData(BaseModel):

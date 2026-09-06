@@ -171,11 +171,24 @@ export const useChatStore = defineStore('chat', () => {
     t.running = true
   }
 
-  function finish(threadId: string, _data: { message_id: string; final_state: string }): void {
+  function finish(threadId: string, data: { message_id: string; final_state: string; final?: string }): void {
     const t = getThread(threadId)
     if (t.streamingMessageId) {
       const msg = t.messages.find((m) => m.id === t.streamingMessageId)
-      if (msg) msg.status = 'done'
+      if (msg) {
+        msg.status = 'done'
+        if (!msg.content && data.final) {
+          msg.content = data.final
+        }
+      }
+    } else if (data.final) {
+      const id = data.message_id || `a-${Date.now()}`
+      t.messages.push({
+        id,
+        role: 'assistant',
+        content: data.final,
+        status: 'done',
+      })
     }
     t.streamingMessageId = null
     t.running = false

@@ -113,6 +113,7 @@ function skip() {
   margin: 12px 0;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
 }
 .card-header {
   display: flex;
@@ -149,5 +150,10 @@ function skip() {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+}
+
+.clarify-card {
+  max-height: 60vh;
+  overflow-y: auto;
 }
 </style>

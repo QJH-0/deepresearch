@@ -380,7 +380,7 @@ class ResearchService:
                 close_research_logger(thread_id, route=route, final=final)
                 logger.info("[TRACE] stream_research DONE | run=%s | thread=%s | route=%s | final_len=%d | elapsed=%.2fs",
                              run_id, thread_id, route, len(final), time.time() - t0)
-                yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
                 # P5: 后台记忆提取（run.completed 后异步触发，不阻塞）
                 self._trigger_memory_extract(runtime_config, query, final, thread_id)
                 # P6-6: LLM 标题生成（run.completed 后异步，不阻塞）
@@ -392,7 +392,7 @@ class ResearchService:
                 if final:
                     self._complete_thread(thread_id, intent=route)
                     close_research_logger(thread_id, route=route, final=final)
-                    yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                    yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
                     # P5: 后台记忆提取
                     self._trigger_memory_extract(runtime_config, query, final, thread_id)
                     # P6-6: LLM 标题生成
@@ -1001,7 +1001,7 @@ class ResearchService:
                 close_research_logger(thread_id, route="multiagent", final=final)
                 logger.info("[TRACE] resume_stream DONE | run=%s | thread=%s | final_len=%d",
                              run_id, thread_id, len(final))
-                yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
                 # P5: 后台记忆提取
                 await self._trigger_memory_extract_from_snapshot(thread_id, final, config)
             else:
@@ -1010,7 +1010,7 @@ class ResearchService:
                 if final:
                     self._complete_thread(thread_id, intent="multiagent")
                     close_research_logger(thread_id, route="multiagent", final=final)
-                    yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done"))
+                    yield sse(event("run.completed", message_id=f"{run_id}:write", final_state="done", final=final))
                     # P5: 后台记忆提取
                     await self._trigger_memory_extract_from_snapshot(thread_id, final, config)
                 else:

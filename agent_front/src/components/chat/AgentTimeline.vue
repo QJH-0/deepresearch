@@ -21,13 +21,13 @@ const props = defineProps<{
   running?: boolean
 }>()
 
-const expanded = ref(false)
+const expanded = ref(true)
 const expandedNodes = ref<Set<string>>(new Set())
 
 const visibleEntries = computed(() =>
-  expanded.value ? props.entries : props.entries.slice(-5)
+  expanded.value ? props.entries : props.entries.slice(-10)
 )
-const hiddenCount = computed(() => Math.max(0, props.entries.length - 5))
+const hiddenCount = computed(() => Math.max(0, props.entries.length - 10))
 
 /** 合并同一节点的连续条目（取最后状态） */
 const mergedEntries = computed(() => {

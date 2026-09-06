@@ -47,6 +47,13 @@ async function onSend(text: string) {
   const threadId = threads.currentThreadId
   if (!threadId) { threads.startNewThread() }
   const id = threads.currentThreadId
+
+  // 如果当前会话有未处理的 interrupt，走 resume 而非新 run
+  if (intr.has(id)) {
+    void resume(id, { kind: 'clarification', answers: [text] })
+    return
+  }
+
   await run(id, text, { hitl_enabled: hitlEnabled.value })
   scrollToBottom()
 }
@@ -62,6 +69,8 @@ async function onStop() {
 }
 
 async function openThread(threadId: string) {
+  // 前端临时会话 ID（thread_ 前缀）在后端不存在，跳过加载
+  if (threadId.startsWith('thread_')) return
   try {
     const data = await fetchThreadMessages(threadId)
     const loaded = toChatMessages(threadId, data.messages || [])
@@ -91,19 +100,31 @@ watch(() => threads.currentThreadId, (id) => { if (id) void openThread(id) })
 watch(() => threads.newChatSignal, () => handleNewChat())
 watch(() => route.params.threadId, (id) => {
   const next = Array.isArray(id) ? id[0] : id
-  if (next && next !== threads.currentThreadId) threads.selectThread(next)
+  if (next && next !== threads.currentThreadId) {
+    threads.selectThread(next)
+    // 切换会话时检查是否有未处理的 interrupt
+    void intr.rebuild(next).then((hasInterrupt) => {
+      if (!hasInterrupt) void openThread(next)
+    })
+  }
 }, { immediate: true })
 
 // ── lifecycle ────────────────────────────────────────
 onMounted(() => {
   void threads.load()
   const fromRoute = Array.isArray(route.params.threadId) ? route.params.threadId[0] : route.params.threadId
-  if (fromRoute) { threads.selectThread(fromRoute); return }
-  if (!threads.currentThreadId) {
-    chat.ensureThread('welcome')
-    chat.setMessages('welcome', [{ id: 'welcome', role: 'assistant', content: '你好，我是 DeepResearch。直接提问即可开始。' } as never])
-    threads.selectThread('welcome')
-  } else { void openThread(threads.currentThreadId) }
+  if (fromRoute) {
+    threads.selectThread(fromRoute)
+    // 切换到旧会话时检查是否有未处理的 interrupt
+    void intr.rebuild(fromRoute).then((hasInterrupt) => {
+      if (!hasInterrupt) void openThread(fromRoute)
+    })
+    return
+  }
+  // 路由无 threadId → 创建新会话，不加载任何旧会话
+  threads.startNewThread()
+  chat.ensureThread(threads.currentThreadId)
+  chat.setMessages(threads.currentThreadId, [])
 })
 
 onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })

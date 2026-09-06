@@ -97,6 +97,8 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     if not content:
         result = await agent.ainvoke({"messages": [human]})
         content = _last_content(result)
+        if content and writer:
+            writer({"type": "token", "node": "write", "text": content})
     
     # 强制清理可能的错误 JSON 代码块
     content = re.sub(r"^```json\s*", "", content)

@@ -53,11 +53,12 @@ body {
 
 /* 两个页面共用的头部 */
 .view-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 4px 4px 14px;
+display: flex;
+align-items: flex-start;
+justify-content: space-between;
+gap: 16px;
+padding: 4px 4px 14px;
+flex-shrink: 0;
 }
 
 .view-header h2 {

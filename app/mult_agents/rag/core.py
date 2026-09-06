@@ -306,7 +306,7 @@ class DashScopeReranker:
 
     MAX_DOCS = 20
     MAX_DOC_CHARS = 2000
-    _API_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+    _API_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank"
 
     def __init__(self, api_key: str, model: str = "gte-rerank", timeout: float = 15.0):
         self._api_key = api_key

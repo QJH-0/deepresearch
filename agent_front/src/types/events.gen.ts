@@ -69,6 +69,7 @@ export interface InterruptRaisedData {
 export interface RunCompletedData {
   message_id: string
   final_state: string
+  final?: string
 }
 
 export interface RunCancelledData {
