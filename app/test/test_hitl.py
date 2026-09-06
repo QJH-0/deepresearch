@@ -37,35 +37,25 @@ _INTERRUPT_TARGET = "mult_agents.nodes._shared.interrupt"
 
 
 class TestClarifyNode:
-    """澄清节点规则判断测试。"""
+    """澄清节点规则快速通道测试（R2.3 保留规则通道行为不变）。"""
 
     def test_short_query_needs_clarification(self):
-        from mult_agents.nodes.clarify import _check_needs_clarification
-        assert _check_needs_clarification("ai", []) is True
+        from mult_agents.nodes.clarify import _rule_needs_clarification
+        assert _rule_needs_clarification("ai") is True
 
     def test_normal_query_no_clarification(self):
-        from mult_agents.nodes.clarify import _check_needs_clarification
-        assert _check_needs_clarification("请调研2024年人工智能领域的技术发展趋势", []) is False
+        from mult_agents.nodes.clarify import _rule_needs_clarification
+        assert _rule_needs_clarification("请调研2024年人工智能领域的技术发展趋势") is False
 
     def test_ambiguous_query_needs_clarification(self):
-        from mult_agents.nodes.clarify import _check_needs_clarification
-        assert _check_needs_clarification("最近的一些热门趋势", []) is True
+        from mult_agents.nodes.clarify import _rule_needs_clarification
+        assert _rule_needs_clarification("最近的一些热门趋势") is True
 
     def test_generate_questions_for_short_query(self):
-        from mult_agents.nodes.clarify import _generate_clarify_questions
-        questions = _generate_clarify_questions("ai", [])
+        from mult_agents.nodes.clarify import _rule_questions
+        questions = _rule_questions("ai")
         assert len(questions) > 0
-        assert "id" in questions[0]
         assert "question" in questions[0]
-
-    def test_followup_check_empty_answers(self):
-        from mult_agents.nodes.clarify import _check_followup_needed
-        assert _check_followup_needed([]) is True
-        assert _check_followup_needed("") is True
-
-    def test_followup_check_sufficient_answers(self):
-        from mult_agents.nodes.clarify import _check_followup_needed
-        assert _check_followup_needed(["这是一个详细的回答"]) is False
 
 
 # ──────────────────────────────────────────────

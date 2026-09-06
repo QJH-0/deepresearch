@@ -71,6 +71,7 @@ class ResearchState(TypedDict):
     hitl_config: dict
     user_feedback: dict
     plan_revision_count: int  # P4: plan revise 轮次计数（防死循环上限 3）
+    clarify_rounds: int  # R2.3: LLM 澄清轮次计数（上限 2，防死循环）
 
 
 # ── 进度追踪 ──
@@ -148,6 +149,7 @@ def create_initial_state(
         },
         "user_feedback": {},
         "plan_revision_count": 0,
+        "clarify_rounds": 0,
         # ProgressState
         "phase": "initialized",
         "iteration": 0,

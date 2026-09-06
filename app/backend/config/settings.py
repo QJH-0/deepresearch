@@ -64,6 +64,7 @@ class BusinessSettings(BaseSettings):
         "plan_review": True,
         "analyze_clarify": True,
         "write_review": False,
+        "clarify_max_rounds": 2,
     }
     # ── 对话摘要压缩 ──
     summary_threshold: int = 20

@@ -102,7 +102,7 @@ def test_graph_topology_has_clarify():
     mock_agents = AgentBundle(
         intent_router=None, planner=None, scout_web=None,
         scout_local=None, evidence_judge=None, analyst=None,
-        direct_responder=None, writer=None,
+        direct_responder=None, writer=None, clarifier=None,
     )
     try:
         app = build_app(mock_agents, InMemorySaver())

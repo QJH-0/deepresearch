@@ -120,6 +120,9 @@ def _register_langgraph_mocks():
                 self.update = update or {}
                 self.resume = resume
 
+            def __class_getitem__(cls, item):
+                return cls
+
             def __repr__(self):
                 return f"Command(goto={self.goto})"
 
@@ -258,8 +261,8 @@ def _register_langchain_core_mocks():
 
         lcm.HumanMessage = _HumanMessage
         lcm.BaseMessage = type("BaseMessage", (), {})
-        lcm.AIMessage = type("AIMessage", (), {})
-        lcm.SystemMessage = type("SystemMessage", (), {"__init__": lambda self, content="", **kw: setattr(self, "content", content)})
+        lcm.AIMessage = type("AIMessage", (), {"__init__": lambda self, content="", **kw: (setattr(self, "content", content), setattr(self, "type", "ai"))[-1]})
+        lcm.SystemMessage = type("SystemMessage", (), {"__init__": lambda self, content="", **kw: (setattr(self, "content", content), setattr(self, "type", "system"))[-1]})
         lcm.RemoveMessage = type("RemoveMessage", (), {"__init__": lambda self, id=None: setattr(self, "id", id)})
         sys.modules["langchain_core.messages"] = lcm
         lc.messages = lcm

@@ -62,6 +62,7 @@ class AgentBundle:
     analyst: any
     direct_responder: any
     writer: any
+    clarifier: any
 
 
 def build_agent(model: str, api_key: str, prompt_key: str, temperature: float, tools: list):
@@ -81,6 +82,8 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         collection_name=config.milvus_collection,
     )
     init_rag_system(api_key=api_key, config=rag_config)
+    # clarify agent 使用轻量模型，判定类任务温度 0.0
+    clarify_model = "qwen-turbo"
     return AgentBundle(
         intent_router=build_agent(model, api_key, "intent_router", 0.0, []),
         planner=build_agent(model, api_key, "plan", 0.3, []),
@@ -90,6 +93,7 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         analyst=build_agent(model, api_key, "analyze", 0.3, []),
         direct_responder=build_agent(model, api_key, "direct_answer", 0.2, []),
         writer=build_agent(model, api_key, "write", 0.4, []),
+        clarifier=build_agent(clarify_model, api_key, "clarify", 0.0, []),
     )
 
 

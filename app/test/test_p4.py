@@ -189,9 +189,8 @@ from mult_agents.state import create_initial_state, AgentState
 from mult_agents.nodes._shared import raise_interrupt, colorize, emit, detect_intent
 from mult_agents.nodes.clarify import (
     clarify_node,
-    _check_needs_clarification,
-    _generate_clarify_questions,
-    _check_followup_needed,
+    _rule_needs_clarification,
+    _rule_questions,
 )
 
 # 尝试导入 plan_node 和 write_node
@@ -218,44 +217,31 @@ _INTERRUPT_TARGET = "mult_agents.nodes._shared.interrupt"
 
 
 def test_clarify_short_query_needs_clarification():
-    """短 query → 需要澄清。"""
-    assert _check_needs_clarification("ai", []) is True
+    """短 query → 需要澄清（规则快速通道）。"""
+    assert _rule_needs_clarification("ai") is True
 
 
 def test_clarify_normal_query_no_clarification():
     """正常 query → 不需要澄清。"""
-    assert _check_needs_clarification("请调研2024年人工智能领域的技术发展趋势", []) is False
+    assert _rule_needs_clarification("请调研2024年人工智能领域的技术发展趋势") is False
 
 
 def test_clarify_ambiguous_query_needs_clarification():
     """含模糊词的 query → 需要澄清。"""
-    assert _check_needs_clarification("最近的一些热门趋势", []) is True
+    assert _rule_needs_clarification("最近的一些热门趋势") is True
 
 
 def test_clarify_generate_questions_for_short_query():
     """短 query 生成澄清问题。"""
-    questions = _generate_clarify_questions("ai", [])
+    questions = _rule_questions("ai")
     assert len(questions) > 0
-    assert "id" in questions[0]
     assert "question" in questions[0]
 
 
 def test_clarify_generate_questions_for_time_query():
     """含时间模糊词的 query 生成时间澄清问题。"""
-    questions = _generate_clarify_questions("最新的AI趋势", [])
-    assert any(q["id"] == "q_time" for q in questions)
-
-
-def test_clarify_followup_check_empty_answers():
-    """空回答 → 需要追问。"""
-    assert _check_followup_needed([]) is True
-    assert _check_followup_needed("") is True
-
-
-def test_clarify_followup_check_sufficient_answers():
-    """充分回答 → 不需要追问。"""
-    assert _check_followup_needed(["这是一个详细的回答"]) is False
-    assert _check_followup_needed("这是足够长的回答") is False
+    questions = _rule_questions("最新的AI趋势")
+    assert any(q.get("id") == "q_time" for q in questions)
 
 
 def test_clarify_multi_round_limit():

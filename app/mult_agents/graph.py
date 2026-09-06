@@ -55,7 +55,7 @@ def build_app(agents, checkpointer):
     workflow = StateGraph(AgentState)
     workflow.add_node("intent", bind_agent(intent_node, agents.intent_router, "intent_router"))
     workflow.add_node("direct_answer", bind_agent(direct_answer_node, agents.direct_responder, "direct_responder"))
-    workflow.add_node("clarify", clarify_node)  # 占位：P4 改为 interrupt 节点
+    workflow.add_node("clarify", bind_agent(clarify_node, agents.clarifier, "clarifier"))
     workflow.add_node("plan", bind_agent(plan_node, agents.planner, "planner"))
     workflow.add_node("web_search", bind_agent(web_search_node, agents.scout_web, "scout_web"))
     workflow.add_node("local_rag", bind_agent(local_rag_node, agents.scout_local, "scout_local"))

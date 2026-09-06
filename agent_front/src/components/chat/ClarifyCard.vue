@@ -2,10 +2,17 @@
 /**
  * ClarifyCard — HITL 澄清卡片。
  *
- * 澄清问题列表 + 多输入框回答 + 提交
+ * 支持两种问题格式：
+ * - 纯字符串（旧格式，向下兼容）
+ * - {question: string, options: string[]}（R2.3 新格式，options 非空时渲染可点击 chips）
  */
 import { computed, ref } from 'vue'
-import { NInput, NButton } from 'naive-ui'
+import { NInput, NButton, NTag } from 'naive-ui'
+
+interface ClarifyQuestion {
+  question?: string
+  options?: string[]
+}
 
 const props = defineProps<{
   payload: Record<string, unknown>
@@ -14,12 +21,31 @@ const emit = defineEmits<{
   (e: 'resume', value: Record<string, unknown>): void
 }>()
 
-const questions = computed(() => {
-  const raw = props.payload.questions as string[] | undefined
-  return raw || []
+interface NormalizedQuestion {
+  text: string
+  options: string[]
+}
+
+const questions = computed<NormalizedQuestion[]>(() => {
+  const raw = props.payload.questions as ClarifyQuestion[] | string[] | undefined
+  if (!raw) return []
+  return raw.map((item) => {
+    if (typeof item === 'string') {
+      return { text: item, options: [] as string[] }
+    }
+    return {
+      text: item.question ?? '',
+      options: Array.isArray(item.options) ? item.options.map(String) : [],
+    }
+  })
 })
 
 const answers = ref<Record<number, string>>({})
+
+function selectOption(idx: number, option: string) {
+  const current = answers.value[idx] ?? ''
+  answers.value[idx] = current ? `${current}；${option}` : option
+}
 
 function submit() {
   const answerList = questions.value.map((_, idx) => answers.value[idx] || '')
@@ -42,7 +68,18 @@ function skip() {
       <p v-if="payload.message" class="card-message">{{ payload.message }}</p>
 
       <div v-for="(q, idx) in questions" :key="idx" class="question-item">
-        <p class="question-label">{{ idx + 1 }}. {{ q }}</p>
+        <p class="question-label">{{ idx + 1 }}. {{ q.text }}</p>
+        <div v-if="q.options.length > 0" class="option-chips">
+          <NTag
+            v-for="opt in q.options"
+            :key="opt"
+            checkable
+            :checked="answers[idx]?.includes(opt)"
+            @click="selectOption(idx, opt)"
+          >
+            {{ opt }}
+          </NTag>
+        </div>
         <NInput
           v-model:value="answers[idx]"
           type="textarea"
@@ -100,6 +137,12 @@ function skip() {
   font-size: 13px;
   color: #5f719b;
   margin-bottom: 4px;
+}
+.option-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 .no-questions { margin-bottom: 12px; }
 .card-actions {

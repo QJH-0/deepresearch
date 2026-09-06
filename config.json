@@ -28,7 +28,8 @@
   "hitl_config": {
     "plan_review": true,
     "analyze_clarify": true,
-    "write_review": false
+    "write_review": false,
+    "clarify_max_rounds": 2
   },
   "search_providers": ["ddgs", "tavily", "searxng"],
   "rerank_model_name": "gte-rerank",
