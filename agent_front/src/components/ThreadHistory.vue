@@ -4,22 +4,21 @@
  * 按 置顶 / 今天 / 昨天 / 近 7 天 / 更早 分组。
  */
 import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { ThreadItem } from '../types'
 import { groupThreadsByDate, formatThreadTime } from '../utils/datetime'
 import { useThreadsStore } from '../stores/threads'
 
 const emit = defineEmits<{ (e: 'select', threadId: string): void }>()
 
+const threadsStore = useThreadsStore()
 const {
   threads,
   currentThreadId,
   loading: threadsLoading,
   error: threadsError,
-  load,
-  renameThread,
-  togglePin,
-  removeThread,
-} = useThreadsStore()
+} = storeToRefs(threadsStore)
+const { load, renameThread, togglePin, removeThread } = threadsStore
 
 const keyword = ref('')
 const editingId = ref('')
@@ -32,7 +31,7 @@ function setEditInput(el: Element | ComponentPublicInstance | null): void {
   editInput.value = el as HTMLInputElement | null
 }
 
-const groups = computed(() => groupThreadsByDate(threads))
+const groups = computed(() => groupThreadsByDate(threads.value))
 
 const visibleGroups = computed(() => {
   const kw = keyword.value.trim().toLowerCase()

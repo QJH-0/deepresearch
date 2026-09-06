@@ -4,6 +4,7 @@
  * 接 threads store（Pinia），不再用模块级单例。
  */
 import { ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import ThreadHistory from './ThreadHistory.vue'
 import { useThreadsStore } from '../stores/threads'
 
@@ -12,7 +13,9 @@ const emit = defineEmits<{
   (e: 'select-thread', threadId: string): void
 }>()
 
-const { userId, changeUserId, load } = useThreadsStore()
+const threadsStore = useThreadsStore()
+const { userId } = storeToRefs(threadsStore)
+const { changeUserId, load } = threadsStore
 
 const navItems = [
   { to: '/chat', label: '研究对话', icon: '💬' },

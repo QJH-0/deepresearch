@@ -93,9 +93,7 @@ flex-shrink: 0;
   gap: 14px;
   box-shadow: 0 12px 40px rgba(35, 66, 145, 0.1);
   height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
+  overflow: hidden;
   flex-shrink: 0;
 }
 
@@ -280,10 +278,12 @@ flex-shrink: 0;
 /* ── 3. 会话历史 ───────────────────────────────────────────────────── */
 
 .thread-history {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .history-head {
@@ -358,6 +358,7 @@ flex-shrink: 0;
 }
 
 .thread-groups {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 10px;
