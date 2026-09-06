@@ -12,7 +12,7 @@
 #   - .env 文件需在项目根目录，包含 DASHSCOPE_API_KEY 等
 #   - 中间件地址用服务名（postgres/redis/milvus/minio/rabbitmq）
 #   - RabbitMQ 已包含在 middleware compose 中，此处不再重复
-#   - duckduckgo-search 是纯 pip 依赖，无搜索服务容器
+#   - ddgs 是纯 pip 依赖，无搜索服务容器
 # ──────────────────────────────────────────────
 
 name: deepresearch-app

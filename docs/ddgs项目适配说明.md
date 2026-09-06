@@ -104,3 +104,58 @@ if __name__ == "__main__":
 4. **异步场景**：使用 `AsyncDDGS`，不要在同步工具里跑异步。
 
 如果你需要，我给一份：带 `MemorySaver` 持久会话 + stream 流式输出的完整示例。
+
+---
+
+## DeepResearch 项目实际适配记录
+
+### 2026-09-06 修复：duckduckgo_search 8.1.1 bing 后端返回空结果
+
+#### 故障现象
+
+- 6 个搜索查询全部返回 0 条记录
+- 日志显示 `primp` 请求 `https://www.bing.com/search` 返回 HTTP 200，但解析结果为空
+- `RuntimeWarning: This package (duckduckgo_search) has been renamed to ddgs!`
+
+#### 根因
+
+`duckduckgo_search` 8.1.1 的 `text()` 方法中硬编码了 `backends = ["bing"]`（第 182 行），临时禁用了 html 和 lite 后端。`_text_bing` 方法用 XPath (`//li[contains(@class, 'b_algo')]`) 解析 Bing HTML 页面，但 Bing 页面结构变更或反爬机制导致**间歇性解析失败返回空列表**。
+
+独立测试可复现：同一查询首次调用可能成功，后续调用持续返回空。
+
+#### 修复方案
+
+| 变更项 | 说明 |
+|--------|------|
+| 安装 `ddgs` 9.16.0 | 从 PyPI 官方源安装到 `llmdev` conda 环境 |
+| `requirements.txt` | `duckduckgo-search>=7.0` → `ddgs>=9.0` |
+| `docker-compose.app.yml` 注释 | 同步更新包名引用 |
+| 代码改动 | 无需改动，`tools.py` 的 `_ddgs()` 已优先 `from ddgs import DDGS` |
+
+新版 `ddgs` 9.16.0 的 `text()` 返回值字段（`title`/`href`/`body`）与旧版完全兼容，`_normalize_web_record` 无需调整。
+
+#### 验证结果
+
+- 独立搜索测试：连续 3 次 `"rag GitHub"` 均稳定返回 5 条结果
+- 项目入口测试：`web_search_records("rag是什么")` 返回 5 条中文搜索结果
+- 单元测试：`test_search_provider.py` 27 passed，`test_p1.py` 10 passed
+
+#### 项目中的 Provider 链式降级架构
+
+```
+DuckDuckGoProvider (ddgs)
+  ↓ 无结果
+SearXNGProvider (自建，需 SEARX_URL)
+  ↓ 无结果
+TavilyProvider (商用兜底，需 TAVILY_API_KEY)
+  ↓ 无结果
+返回空列表 + warning 日志
+```
+
+配置方式：`config.json` 的 `search_providers` 字段控制 Provider 顺序，默认 `["ddgs", "searxng"]`。
+
+#### 踩坑补充
+
+5. **清华镜像源无 ddgs 包**：`pip install ddgs` 默认走清华镜像源会 404，需指定官方源 `-i https://pypi.org/simple`。
+6. **conda run 环境隔离**：`conda run -n llmdev pip install` 可能装到 base 环境，用 `<env>/python.exe -m pip install` 更可靠。
+7. **ddgs 9.x 不再支持 backend 参数选 "auto"**：默认聚合多源搜索，比旧版 bing-only 后端更稳定。
