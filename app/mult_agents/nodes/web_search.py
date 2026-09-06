@@ -100,6 +100,11 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
     logger.info("[web_search_node] LLM 返回证据 | evidence数量=%s", len(evidence))
     allowed_source_ids = {str(item.get("source_id")) for item in raw_records if item.get("source_id")}
     evidence = _prune_evidence_to_allowed_sources(evidence, allowed_source_ids)
+    # LLM 整理后 evidence 为空但 raw_records 非空时，降级使用 fallback（直接从 raw_records 构造）
+    if not evidence and raw_records:
+        logger.warning("[web_search_node] LLM 整理后 evidence 为空，降级使用 fallback | raw_records=%s", len(raw_records))
+        evidence = fallback["evidence"]
+        evidence = _prune_evidence_to_allowed_sources(evidence, allowed_source_ids)
     # 从原始记录补充 LLM 可能丢失的 url/domain/title 字段
     evidence = _enrich_evidence_from_raw(evidence, raw_records)
     

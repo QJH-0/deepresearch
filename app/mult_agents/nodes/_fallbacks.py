@@ -414,8 +414,20 @@ def _check_evidence_sufficiency(state: AgentState) -> tuple[bool, str]:
     if total >= 3:
         return True, ""
 
-    # 0 条证据 → 直接不够
+    # 0 条保留证据时，检查是否有原始检索记录（可能是 LLM 整理环节丢失了 evidence）
+    web_stats = state.get("web_retrieval_stats", {})
+    local_stats = state.get("local_retrieval_stats", {})
+    web_raw = web_stats.get("raw_count", 0)
+    local_raw = local_stats.get("raw_count", 0)
+    total_raw = web_raw + local_raw
+
     if total == 0:
+        if total_raw > 0:
+            # 原始检索有结果但全部在 LLM 整理/过滤环节丢失，不应判定为“没有检索到证据”
+            return False, (
+                f"检索到 {total_raw} 条原始结果但全部在 LLM 整理环节丢失"
+                f"（web raw={web_raw}, local raw={local_raw}），请检查 LLM 整理逻辑或 source_id 匹配"
+            )
         return False, "没有从任何来源检索到可用证据"
 
     all_evidence = web_evidence + local_evidence

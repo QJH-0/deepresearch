@@ -350,12 +350,14 @@ def _enrich_evidence_from_raw(evidence: list[dict], raw_records: list[dict]) -> 
 
 
 def _prune_evidence_to_allowed_sources(evidence: list[dict], allowed_source_ids: set[str]) -> list[dict]:
+    # 大小写不敏感匹配：LLM 整理时可能改写 source_id 的大小写
+    allowed_upper = {sid.upper() for sid in allowed_source_ids if sid}
     kept: list[dict] = []
     for item in evidence:
         if not isinstance(item, dict):
             continue
         source_id = str(item.get("source_id", "")).strip()
-        if source_id and source_id in allowed_source_ids:
+        if source_id and source_id.upper() in allowed_upper:
             kept.append(item)
     return kept
 
