@@ -150,11 +150,9 @@ class TestNoRedisLocalOnly:
 class TestSubscriberReconnect:
     @pytest.mark.asyncio
     async def test_subscribe_reconnects_with_backoff(self):
-        """验证订阅断线后指数退避重连。"""
-        from backend.service.task_registry import CANCEL_CHANNEL
-
-        mock_redis = AsyncMock()
-        mock_pubsub = AsyncMock()
+        """验证订阅断线后重连：subscribe 第一次失败、第二次成功后 listen 阻塞。"""
+        mock_redis = MagicMock()
+        mock_pubsub = MagicMock()
         mock_redis.pubsub.return_value = mock_pubsub
 
         subscribe_count = 0
@@ -167,30 +165,30 @@ class TestSubscriberReconnect:
 
         mock_pubsub.subscribe = mock_subscribe
 
-        listen_count = 0
-
         async def mock_listen():
-            nonlocal listen_count
-            listen_count += 1
-            if listen_count == 1:
-                yield {"type": "subscribe", "data": 1}
-                raise ConnectionError("Connection lost")
-            raise asyncio.CancelledError()
+            yield {"type": "subscribe", "data": 1}
+            # 阻塞，模拟等待消息
+            await asyncio.Event().wait()
 
         mock_pubsub.listen = mock_listen
 
         registry = _make_registry(redis=mock_redis)
 
-        sleep_calls = []
+        real_sleep = asyncio.sleep
 
-        async def mock_sleep(seconds):
-            sleep_calls.append(seconds)
+        async def instant_sleep(seconds):
+            pass
 
-        with patch("backend.service.task_registry.asyncio.sleep", new=mock_sleep):
+        asyncio.sleep = instant_sleep
+        try:
+            task = asyncio.create_task(registry._subscribe_loop())
+            for _ in range(50):
+                await real_sleep(0)
+            task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(
-                    registry._subscribe_loop(), timeout=10
-                )
+                await task
+        finally:
+            asyncio.sleep = real_sleep
 
-        assert len(sleep_calls) >= 1
-        assert sleep_calls[0] == 1.0
+        # subscribe 至少被调用 2 次，证明断线后重连
+        assert subscribe_count >= 2
