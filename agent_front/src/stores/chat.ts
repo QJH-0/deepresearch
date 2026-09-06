@@ -181,8 +181,23 @@ export const useChatStore = defineStore('chat', () => {
           msg.content = data.final
         }
       }
+    } else if (data.message_id) {
+      const existing = t.messages.find((m) => m.id === data.message_id)
+      if (existing) {
+        existing.status = 'done'
+        if (!existing.content && data.final) {
+          existing.content = data.final
+        }
+      } else if (data.final) {
+        t.messages.push({
+          id: data.message_id,
+          role: 'assistant',
+          content: data.final,
+          status: 'done',
+        })
+      }
     } else if (data.final) {
-      const id = data.message_id || `a-${Date.now()}`
+      const id = `a-${Date.now()}`
       t.messages.push({
         id,
         role: 'assistant',

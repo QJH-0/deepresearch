@@ -75,6 +75,7 @@ function exportMarkdown(): void {
           :content="message.content"
           :sources="message.sources"
           :show-export="isReport"
+          :streaming="message.status === 'streaming'"
           @export-markdown="exportMarkdown"
         />
       </div>

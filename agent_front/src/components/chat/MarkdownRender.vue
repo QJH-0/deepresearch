@@ -2,12 +2,11 @@
 /**
  * MarkdownRender — 使用 markdown-it + highlight.js + katex 渲染。
  *
- * P7 增强：
- * - [source_id] 角标渲染为上标可交互元素（hover tooltip）
- * - 代码块附带复制按钮
- * - 导出 Markdown 按钮
+ * 优化：streaming 状态下节流渲染，避免每个 delta 都全量重解析。
+ * - streaming 时：50ms 节流 + 容错渲染（未闭合标签自动修复）
+ * - 完成后：立即完整渲染
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
 import katex from '@vscode/markdown-it-katex'
@@ -19,6 +18,7 @@ const props = defineProps<{
   content: string
   sources?: SourceItem[]
   showExport?: boolean
+  streaming?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -61,11 +61,44 @@ function postProcessHtml(html: string): string {
   })
 }
 
-const html = computed(() => {
+// streaming 状态下节流渲染：避免每个 delta 都全量 md.render()
+const renderedHtml = ref('')
+let renderTimer: ReturnType<typeof setTimeout> | null = null
+
+function doRender(): void {
   const processed = preProcessContent(props.content || '')
   const rendered = md.render(processed)
-  return postProcessHtml(rendered)
+  renderedHtml.value = postProcessHtml(rendered)
+}
+
+function scheduleRender(): void {
+  if (props.streaming) {
+    if (renderTimer) return
+    renderTimer = setTimeout(() => {
+      renderTimer = null
+      doRender()
+    }, 50)
+  } else {
+    if (renderTimer) {
+      clearTimeout(renderTimer)
+      renderTimer = null
+    }
+    doRender()
+  }
+}
+
+watch(() => props.content, () => scheduleRender(), { immediate: true })
+watch(() => props.streaming, (streaming) => {
+  if (!streaming) {
+    if (renderTimer) {
+      clearTimeout(renderTimer)
+      renderTimer = null
+    }
+    doRender()
+  }
 })
+
+const html = computed(() => renderedHtml.value)
 
 // ── 代码块复制 ──────────────────────────────────────
 const copiedId = ref('')
