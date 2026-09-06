@@ -17,8 +17,12 @@ P3 交付物：替代旧 workflow_service.py 的 _cancel_flags 机制。
 """
 
 import asyncio
+import json
 import logging
+import os
+import socket
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,18 +47,24 @@ class RunningTask:
     started_at: float = field(default_factory=time.time)
 
 
+CANCEL_CHANNEL = "task:cancel"
+
+
 class TaskRegistry:
-    """thread_id → asyncio.Task 注册表；单进程权威 + Redis 兜底（多 worker）。
+    """thread_id → asyncio.Task 注册表；单进程权威 + Redis Pub/Sub 广播（多 worker）。
 
     用法：
         registry = TaskRegistry(redis=None)  # 单机模式
         task = await registry.register(thread_id, run_id, coro)
         success = await registry.cancel(thread_id)
+        await registry.start_subscriber()  # 启动后台订阅（lifespan 中调用）
     """
 
     def __init__(self, redis=None):
         self._tasks: dict[str, RunningTask] = {}
         self._redis = redis
+        self._instance_id = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+        self._subscriber_task: asyncio.Task | None = None
 
     @property
     def redis(self):
@@ -113,26 +123,34 @@ class TaskRegistry:
         """取消运行中的任务。
 
         Returns:
-            True: 本进程命中并已发送 cancel()
-            False: 本进程无该任务（已结束或不在本 worker），仅 Redis 兜底信号
+            True: 本进程命中并已 cancel，或广播发送成功
+            False: 本进程未命中且 Redis 不可用/广播失败
         """
         entry = self._tasks.get(thread_id)
-        if entry is None or entry.task.done():
-            # 本进程没有 → Redis 发兜底信号（多 worker 场景）
-            if self._redis is not None:
-                try:
-                    await self._redis.set(f"cancel:{thread_id}", "1")
-                except Exception as exc:
-                    logger.warning("Redis 兜底信号发送失败: %s", exc)
-            logger.info("TaskRegistry cancel 未命中本进程 | thread=%s", thread_id)
-            return False
+        if entry is not None and not entry.task.done():
+            entry.task.cancel()
+            logger.info(
+                "TaskRegistry cancel 命中 | thread=%s | run=%s",
+                thread_id, entry.run_id,
+            )
+            return True
 
-        entry.task.cancel()
-        logger.info(
-            "TaskRegistry cancel 命中 | thread=%s | run=%s",
-            thread_id, entry.run_id,
-        )
-        return True
+        if self._redis is not None:
+            try:
+                payload = json.dumps({
+                    "thread_id": thread_id,
+                    "instance_id": self._instance_id,
+                    "ts": int(time.time()),
+                })
+                await self._redis.publish(CANCEL_CHANNEL, payload)
+                await self._redis.setex(f"cancel:{thread_id}", 300, "1")
+                return True
+            except Exception as exc:
+                logger.warning("[task-registry] 取消广播失败 | thread=%s | %s", thread_id, exc)
+                return False
+
+        logger.info("TaskRegistry cancel 未命中本进程 | thread=%s", thread_id)
+        return False
 
     def is_running(self, thread_id: str) -> bool:
         """检查某 thread 是否有运行中的任务。"""
@@ -234,6 +252,49 @@ class TaskRegistry:
             await self._redis.delete(f"thread:{thread_id}:interrupted_by_restart")
         except Exception:
             pass
+
+    async def start_subscriber(self) -> None:
+        """启动后台 Pub/Sub 订阅（app lifespan 中调用一次）。"""
+        if self._redis is None or self._subscriber_task is not None:
+            return
+        self._subscriber_task = asyncio.create_task(self._subscribe_loop())
+
+    async def _subscribe_loop(self) -> None:
+        """订阅循环：断线指数退避重连（1s 起步，上限 30s）。"""
+        backoff = 1.0
+        while True:
+            try:
+                pubsub = self._redis.pubsub()
+                await pubsub.subscribe(CANCEL_CHANNEL)
+                backoff = 1.0
+                logger.info("[task-registry] 订阅 %s 已建立", CANCEL_CHANNEL)
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    await self._handle_cancel_broadcast(message.get("data"))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[task-registry] 订阅断开，%ss 后重连 | %s", backoff, exc)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    async def _handle_cancel_broadcast(self, raw) -> None:
+        """处理远端广播的取消消息。"""
+        try:
+            payload = json.loads(raw if isinstance(raw, str) else raw.decode())
+        except Exception:
+            return
+        thread_id = payload.get("thread_id", "")
+        if not thread_id:
+            return
+        entry = self._tasks.get(thread_id)
+        if entry is not None and not entry.task.done():
+            entry.task.cancel()
+            logger.info(
+                "[task-registry] 远端取消命中本实例任务 | thread=%s | from=%s",
+                thread_id, payload.get("instance_id"),
+            )
 
     def _cleanup(self, thread_id: str) -> None:
         """任务完成后的清理回调。"""

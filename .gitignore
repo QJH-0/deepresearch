@@ -9,6 +9,7 @@ data/test_documents
 
 # 知识文档目录（不提交）
 docs_konwledge/
+待删除/
 
 # Python
 __pycache__/

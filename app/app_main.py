@@ -226,6 +226,9 @@ async def lifespan(app: FastAPI):
     # P3-2: 初始化 TaskRegistry + 崩溃恢复扫描
     await _init_task_registry_and_scan(config)
 
+    # R3.2: 启动 Pub/Sub 订阅（多实例取消广播）
+    await get_task_registry().start_subscriber()
+
     # P5: 初始化 PostgresStore + MemoryService
     try:
         await init_store(
@@ -280,6 +283,12 @@ async def lifespan(app: FastAPI):
 
     # 关闭 Redis 连接
     registry = get_task_registry()
+    if registry._subscriber_task is not None:
+        registry._subscriber_task.cancel()
+        try:
+            await asyncio.wait_for(registry._subscriber_task, timeout=5)
+        except Exception:
+            pass
     if registry.redis is not None:
         try:
             await registry.redis.aclose()
