@@ -79,7 +79,7 @@ class BusinessSettings(BaseSettings):
     # ── Web 搜索 Provider 链 ──
     search_providers: list = ["ddgs", "searxng"]
     # ── DashScope 专用重排模型 ──
-    rerank_model_name: str = "gte-rerank"
+    rerank_model_name: str = "gte-rerank-v2"
     enable_rerank_model: bool = True
     # ── 证据评分 LLM 融合 ──
     evidence_llm_fusion: bool = True

@@ -32,7 +32,7 @@
     "clarify_max_rounds": 2
   },
   "search_providers": ["ddgs", "tavily", "searxng"],
-  "rerank_model_name": "gte-rerank",
+  "rerank_model_name": "gte-rerank-v2",
   "enable_rerank_model": true,
   "evidence_llm_fusion": true,
   "evidence_prior_weight": 0.4,

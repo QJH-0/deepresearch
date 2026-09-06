@@ -72,7 +72,7 @@ class RAGConfig:
     enable_reranker: bool = True
 
     # DashScope 专用重排模型
-    rerank_model_name: str = "gte-rerank"
+    rerank_model_name: str = "gte-rerank-v2"
     enable_rerank_model: bool = True
 
     # 是否启用 Parent-Child 上下文扩展
