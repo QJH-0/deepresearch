@@ -91,6 +91,17 @@ if not any(getattr(h, "_deepresearch_root", False) for h in _root_logger.handler
 
     logging.getLogger("app_main").info("日志已初始化 ➜ %s", _log_dir)
 
+# R4.1: 未标记 handler 检测告警（防御性统一）
+_unmarked = [
+    h for h in _root_logger.handlers
+    if isinstance(h, logging.StreamHandler) and not getattr(h, "_deepresearch_root", False)
+]
+if _unmarked:
+    logging.getLogger("app_main").warning(
+        "检测到 %d 个未带 _deepresearch_root 标记的 StreamHandler，存在重复挂载风险: %s",
+        len(_unmarked), [type(h).__name__ for h in _unmarked],
+    )
+
 logging.getLogger("mult_agents").setLevel(logging.INFO)
 logging.getLogger("backend").setLevel(logging.INFO)
 # uvicorn access 接入 root logger，控制台也能看到请求
