@@ -68,6 +68,18 @@ export function fetchThreads(keyword = '', limit = 100): Promise<{ threads: Thre
   return request(`/api/v1/research/threads?${params.toString()}`)
 }
 
+export interface ThreadState {
+  thread_id: string
+  status: string
+  resumable: boolean
+  next_nodes: string[]
+  interrupted_by_restart?: boolean
+}
+
+export function fetchThreadState(threadId: string): Promise<ThreadState> {
+  return request(`/api/v1/research/threads/${encodeURIComponent(threadId)}/state`)
+}
+
 export function fetchThreadMessages(threadId: string): Promise<{ thread_id: string; messages: { role: string; content: string }[] }> {
   return request(`/api/v1/research/threads/${encodeURIComponent(threadId)}/messages`)
 }

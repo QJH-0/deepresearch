@@ -41,6 +41,8 @@ interface ThreadChat {
   running: boolean
   /** 错误信息 */
   error: string
+  /** 是否正在重连（断线自动恢复中） */
+  reconnecting: boolean
 }
 
 function createThreadChat(): ThreadChat {
@@ -50,6 +52,7 @@ function createThreadChat(): ThreadChat {
     agentTimeline: [],
     running: false,
     error: '',
+    reconnecting: false,
   }
 }
 
@@ -83,6 +86,13 @@ export const useChatStore = defineStore('chat', () => {
 
   function startAssistantMessage(threadId: string, messageId?: string, nodeId?: string): string {
     const t = getThread(threadId)
+    // 防御性清理：同 node 存在 streaming 状态的旧消息时先移除（resume 续流场景）
+    if (nodeId) {
+      t.messages = t.messages.filter((m) => {
+        if (m.nodeId === nodeId && m.status === 'streaming') return false
+        return true
+      })
+    }
     const id = messageId || `a-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     t.messages.push({
       id,
@@ -140,9 +150,19 @@ export const useChatStore = defineStore('chat', () => {
     const t = getThread(threadId)
     const msg = t.messages.find((m) => m.id === t.streamingMessageId) ||
       [...t.messages].reverse().find((m) => m.role === 'assistant')
-    if (msg) {
-      if (!msg.sources) msg.sources = []
-      msg.sources.push(...sources)
+    if (!msg) return
+    if (!msg.sources) msg.sources = []
+    // 幂等去重：web 按 url 去重（同 url 不同 title 视为同一来源），kb 按 chunk_id
+    const existing = new Set(msg.sources.map((s) => {
+      if (s.chunk_id) return `kb:${s.chunk_id}`
+      return `web:${s.url || ''}`
+    }))
+    for (const s of sources) {
+      const key = s.chunk_id ? `kb:${s.chunk_id}` : `web:${s.url || ''}`
+      if (!existing.has(key)) {
+        msg.sources.push(s)
+        existing.add(key)
+      }
     }
   }
 
@@ -191,6 +211,29 @@ export const useChatStore = defineStore('chat', () => {
     t.streamingMessageId = null
   }
 
+  /** 整体替换 thread 消息（断线重连时以服务端为唯一事实） */
+  function replaceThreadMessages(threadId: string, messages: { role: string; content: string }[]): void {
+    const t = getThread(threadId)
+    t.messages = messages.map((m, idx) => ({
+      id: `sync-${threadId}-${idx}`,
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content,
+      status: 'done' as MessageStatus,
+    }))
+    t.streamingMessageId = null
+    t.running = false
+    t.error = ''
+    t.reconnecting = false
+  }
+
+  function setReconnecting(threadId: string, value: boolean): void {
+    getThread(threadId).reconnecting = value
+  }
+
+  function isReconnecting(threadId: string): boolean {
+    return getThread(threadId).reconnecting
+  }
+
   function clearThread(threadId: string): void {
     threads.delete(threadId)
   }
@@ -232,5 +275,8 @@ export const useChatStore = defineStore('chat', () => {
     isRunning,
     getError,
     getAgentTimeline,
+    replaceThreadMessages,
+    setReconnecting,
+    isReconnecting,
   }
 })

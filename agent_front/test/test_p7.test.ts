@@ -53,9 +53,8 @@ describe('T7-1: 来源去重与编号稳定', () => {
     const msg = msgs.find((m) => m.id === 'msg-1')
     expect(msg).toBeDefined()
     expect(msg!.sources).toBeDefined()
-    // 当前 chat store 不做去重（累加），前端展示层去重
-    // 这里验证数据已正确累积
-    expect(msg!.sources!.length).toBe(4)
+    // R2.2: chat store 现已做幂等去重（url+title），A 不重复追加
+    expect(msg!.sources!.length).toBe(3)
   })
 
   it('web + kb 混合来源各自独立', () => {

@@ -1,26 +1,66 @@
 /**
- * useEventStream — 统一事件 reducer（run/resume 共用）。
+ * useEventStream — 统一事件 reducer（run/resume 共用）+ 断线重连状态机。
  *
  * 核心设计：
  * 1. run 与 resume 共用 consume——两入口只是请求不同，事件处理链唯一
  * 2. 消息模型：thinking 与 sources 挂在消息上（消息级），不是全局块
  * 3. SSE 帧解析健壮性：跨 chunk 的半行 JSON 缓冲处理
  * 4. 未知 type 静默忽略（向前兼容，不变式③）
+ * 5. 断线重连：run 主入口非 AbortError 网络错误触发指数退避自动重连，
+ *    通过 GET /threads/{id}/state 检查可恢复性，消息对齐后调 resume 续流
  */
 import { useChatStore } from '../stores/chat'
 import { useInterruptStore } from '../stores/interrupt'
 import { useThreadsStore } from '../stores/threads'
 import { consumeSSE, postStream } from '../api/sse'
+import { fetchThreadState, fetchThreadMessages } from '../api/rest'
 import type { EventEnvelope, EventDataMap, EventType } from '../types/events.gen'
+
+const RECONNECT_MAX_ATTEMPTS = 5
+const RECONNECT_BASE_DELAY_MS = 1000
+const RECONNECT_MAX_DELAY_MS = 30000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError'
+}
 
 export function useEventStream() {
   const chat = useChatStore()
   const intr = useInterruptStore()
   const threads = useThreadsStore()
 
+  /** 每个线程的重连尝试次数 */
+  const reconnectAttempts = new Map<string, number>()
+
+  function getAttempts(threadId: string): number {
+    return reconnectAttempts.get(threadId) || 0
+  }
+
+  function setAttempts(threadId: string, n: number): void {
+    reconnectAttempts.set(threadId, n)
+  }
+
+  /** 判断用户是否已主动取消（chat store 存在被标记 cancelled 的消息） */
+  function isUserCancelled(threadId: string): boolean {
+    const t = chat.threads.get(threadId)
+    if (!t) return false
+    // 只有存在明确被标记为 cancelled 的 streaming 消息才算用户取消
+    const streaming = t.streamingMessageId
+    if (streaming) {
+      const msg = t.messages.find((m) => m.id === streaming)
+      return msg?.status === 'cancelled'
+    }
+    // 检查最后一条 assistant 消息是否为 cancelled
+    const lastAssistant = [...t.messages].reverse().find((m) => m.role === 'assistant')
+    return lastAssistant?.status === 'cancelled'
+  }
+
   /**
    * 统一事件分发器 — 根据事件类型调用对应 store 方法。
-   * 这就是消灭 ChatView 两段重复事件处理的唯一处理逻辑。
    */
   function dispatch(threadId: string, env: EventEnvelope): void {
     switch (env.type as EventType) {
@@ -37,7 +77,6 @@ export function useEventStream() {
       }
       case 'message.start': {
         const d = env.data as EventDataMap['message.start']
-        // 如果还没有 streaming 消息，创建一个
         if (!chat.getMessages(threadId).find((m) => m.id === d.message_id)) {
           chat.startAssistantMessage(threadId, d.message_id, d.node)
         }
@@ -66,7 +105,6 @@ export function useEventStream() {
       case 'run.completed': {
         const d = env.data as EventDataMap['run.completed']
         chat.finish(threadId, d)
-        // 事件驱动刷新会话列表（标题可能已自动生成）
         void threads.refresh(threadId)
         break
       }
@@ -82,26 +120,127 @@ export function useEventStream() {
         break
       }
       default:
-        // 不变式③：未知 type 静默忽略
         break
     }
   }
 
   /**
    * 消费 SSE Response — run/resume 共用。
+   * 不在此层捕获非 AbortError 错误，交给 runWithReconnect 决策。
    */
   async function consume(threadId: string, resp: Response): Promise<void> {
     await consumeSSE(
       resp,
       (env) => dispatch(threadId, env),
-      () => { /* onDone: 可选回调 */ },
+      () => { /* onDone */ },
       (err) => {
-        chat.markError(threadId, { code: 'CLIENT_ERROR', message: err.message })
+        if (!isAbortError(err)) {
+          chat.markError(threadId, { code: 'CLIENT_ERROR', message: err.message })
+        }
       },
     )
   }
 
-  /** 发起新研究 */
+  /**
+   * 消息对齐：以服务端返回为唯一事实，整体替换本地消息列表。
+   */
+  async function syncThreadMessages(threadId: string): Promise<void> {
+    try {
+      const data = await fetchThreadMessages(threadId)
+      chat.replaceThreadMessages(threadId, data.messages || [])
+    } catch {
+      // 消息同步失败不阻断重连流程
+    }
+  }
+
+  /**
+   * 指数退避重连调度：检查状态 → 消息对齐 → resume 续流。
+   */
+  async function scheduleReconnect(threadId: string): Promise<void> {
+    const attempts = getAttempts(threadId) + 1
+    setAttempts(threadId, attempts)
+
+    if (attempts > RECONNECT_MAX_ATTEMPTS) {
+      chat.markError(threadId, { code: 'RECONNECT_FAILED', message: '连接已断开，自动恢复失败' })
+      chat.setReconnecting(threadId, false)
+      return
+    }
+
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * 2 ** (attempts - 1),
+      RECONNECT_MAX_DELAY_MS,
+    )
+    chat.setReconnecting(threadId, true)
+    await sleep(delay)
+
+    // 重连前检查：用户可能已切走或发起新 run
+    if (threads.currentThreadId !== threadId) {
+      chat.setReconnecting(threadId, false)
+      return
+    }
+    if (isUserCancelled(threadId)) {
+      chat.setReconnecting(threadId, false)
+      return
+    }
+
+    // ① 状态检查：决定是否继续重连
+    let state
+    try {
+      state = await fetchThreadState(threadId)
+    } catch {
+      // 状态接口失败，继续递归重试
+      await scheduleReconnect(threadId)
+      return
+    }
+
+    if (state.status === 'awaiting_input') {
+      // HITL 中断态：中断卡片通过 interrupt store 重建，停止重连
+      chat.setReconnecting(threadId, false)
+      setAttempts(threadId, 0)
+      void intr.rebuild(threadId)
+      return
+    }
+
+    if (!state.resumable) {
+      // 已结束或不可恢复：拉一次消息对齐后停止
+      await syncThreadMessages(threadId)
+      chat.setReconnecting(threadId, false)
+      return
+    }
+
+    // ② 消息对齐：清除旧的半截 streaming 消息
+    await syncThreadMessages(threadId)
+
+    // ③ resume 续流（mode=continue）
+    try {
+      const resp = await postStream('/api/v1/research/resume', {
+        thread_id: threadId,
+        mode: 'continue',
+      })
+      chat.setReconnecting(threadId, false)
+      await consumeSSE(
+        resp,
+        (env) => dispatch(threadId, env),
+        () => {
+          setAttempts(threadId, 0)
+        },
+        (err) => {
+          if (!isAbortError(err)) {
+            chat.markError(threadId, { code: 'CLIENT_ERROR', message: err.message })
+          }
+        },
+      )
+      setAttempts(threadId, 0)
+    } catch (err) {
+      if (isAbortError(err) || isUserCancelled(threadId)) {
+        chat.setReconnecting(threadId, false)
+        return
+      }
+      await scheduleReconnect(threadId)
+    }
+  }
+
+  /** 发起新研究（含断线重连） */
   async function run(threadId: string, query: string, options?: {
     user_id?: string
     tenant_id?: string
@@ -111,19 +250,28 @@ export function useEventStream() {
     chat.addUserMessage(threadId, query)
     void threads.refresh()
 
-    const resp = await postStream('/api/v1/research/stream', {
-      query,
-      user_id: options?.user_id || threads.userId,
-      thread_id: threadId,
-      tenant_id: options?.tenant_id || 'default_tenant',
-      hitl_enabled: options?.hitl_enabled ?? false,
-    })
-    await consume(threadId, resp)
+    try {
+      const resp = await postStream('/api/v1/research/stream', {
+        query,
+        user_id: options?.user_id || threads.userId,
+        thread_id: threadId,
+        tenant_id: options?.tenant_id || 'default_tenant',
+        hitl_enabled: options?.hitl_enabled ?? false,
+      })
+      await consume(threadId, resp)
+      setAttempts(threadId, 0)
+    } catch (err) {
+      if (isAbortError(err) || isUserCancelled(threadId)) return
+      if (getAttempts(threadId) >= RECONNECT_MAX_ATTEMPTS) {
+        chat.markError(threadId, { code: 'RECONNECT_FAILED', message: '连接已断开，自动恢复失败' })
+        return
+      }
+      await scheduleReconnect(threadId)
+    }
   }
 
-  /** 恢复中断的研究 */
+  /** 恢复中断的研究（HITL 入口，不套重连状态机） */
   async function resume(threadId: string, payload: Record<string, unknown>): Promise<void> {
-    // 清除 interrupt 状态
     intr.clear(threadId)
     chat.ensureThread(threadId)
 
@@ -134,5 +282,5 @@ export function useEventStream() {
     await consume(threadId, resp)
   }
 
-  return { run, resume, consume, dispatch }
+  return { run, resume, consume, dispatch, scheduleReconnect, syncThreadMessages }
 }

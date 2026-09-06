@@ -15,6 +15,7 @@ import { useInterruptStore } from '../stores/interrupt'
 import { useEventStream } from '../composables/useEventStream'
 import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdfUrl } from '../api/rest'
 import type { InterruptKind } from '../types/events.gen'
+import { NAlert } from 'naive-ui'
 
 const route = useRoute()
 const chat = useChatStore()
@@ -25,6 +26,7 @@ const { run, resume } = useEventStream()
 const messageList = ref<HTMLElement | null>(null)
 const composer = ref<InstanceType<typeof Composer> | null>(null)
 const loading = computed(() => chat.isRunning(threads.currentThreadId))
+const isReconnecting = computed(() => chat.isReconnecting(threads.currentThreadId))
 const hitlEnabled = ref(false)
 
 const messages = computed(() => chat.getMessages(threads.currentThreadId))
@@ -124,6 +126,15 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
       </div>
     </header>
 
+    <NAlert
+      v-if="isReconnecting"
+      type="warning"
+      :bordered="false"
+      class="reconnecting-banner"
+    >
+      网络连接中断，正在自动恢复…
+    </NAlert>
+
     <div ref="messageList" class="message-list">
       <section v-if="isEmpty && !loading" class="welcome-panel">
         <div class="welcome-hero">
@@ -177,6 +188,10 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
 </template>
 
 <style scoped>
+.reconnecting-banner {
+  margin: 0 0 8px;
+  border-radius: 6px;
+}
 .export-pdf-btn {
   padding: 4px 12px;
   border: 1px solid #d9e3f9;
