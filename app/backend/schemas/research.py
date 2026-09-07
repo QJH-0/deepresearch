@@ -22,11 +22,11 @@ class ResearchResponse(BaseModel):
 
 class ResumeRequest(BaseModel):
     thread_id: str = Field(..., min_length=1)
-    # P3: mode 区分崩溃续研 vs HITL 回答
     # mode=continue: 崩溃续研，用 astream(None, config) 从最后 checkpoint 续跑
     # mode=answer: HITL 回答，用 Command(resume=resume_value) 从 interrupt 点继续
-    mode: str = Field(default="answer", pattern="^(continue|answer)$")
-    resume_value: dict | str | None = None  # mode=answer 时必填
+    # mode=modify: 用户补充/修改条件，先 aupdate_state 追加 HumanMessage，再 astream(None, config)
+    mode: str = Field(default="answer", pattern="^(continue|answer|modify)$")
+    resume_value: dict | str | None = None  # mode=answer 时必填，mode=modify 时为用户消息文本
 
 
 # ── P4: 结构化 resume payload（按 interrupt kind 校验） ──

@@ -1,15 +1,16 @@
 <script setup lang="ts">
 /**
- * MarkdownRender — 使用 markdown-it + highlight.js + katex 渲染。
+ * MarkdownRender — 使用 markdown-it + highlight.js + katex + remend 流式修复。
  *
- * 优化：streaming 状态下节流渲染，避免每个 delta 都全量重解析。
- * - streaming 时：50ms 节流 + 容错渲染（未闭合标签自动修复）
- * - 完成后：立即完整渲染
+ * 流式渲染优化：
+ * - streaming 时：50ms 节流 + remend 修复不完整 Markdown（未闭合代码块、截断的加粗等）
+ * - 完成后：立即完整渲染，不需要 remend 修复
  */
 import { computed, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
 import katex from '@vscode/markdown-it-katex'
+import remend from 'remend'
 import 'highlight.js/styles/github.css'
 import 'katex/dist/katex.min.css'
 import type { SourceItem } from '../../types/events.gen'
@@ -66,7 +67,9 @@ const renderedHtml = ref('')
 let renderTimer: ReturnType<typeof setTimeout> | null = null
 
 function doRender(): void {
-  const processed = preProcessContent(props.content || '')
+  const raw = props.content || ''
+  // 流式状态下用 remend 修复不完整 Markdown（补全未闭合的代码块、加粗等）
+  const processed = preProcessContent(props.streaming ? remend(raw) : raw)
   const rendered = md.render(processed)
   renderedHtml.value = postProcessHtml(rendered)
 }

@@ -16,6 +16,22 @@ import { consumeSSE, postStream } from '../api/sse'
 import { fetchThreadState, fetchThreadMessages } from '../api/rest'
 import type { EventEnvelope, EventDataMap, EventType } from '../types/events.gen'
 
+/** 每个线程的 messageId 映射表：将后端各节点的 message_id 映射到主气泡 ID，实现多节点 token 合并到一个气泡 */
+const messageIdMap = new Map<string, Map<string, string>>()
+
+function getMsgIdMap(threadId: string): Map<string, string> {
+  let m = messageIdMap.get(threadId)
+  if (!m) {
+    m = new Map()
+    messageIdMap.set(threadId, m)
+  }
+  return m
+}
+
+function clearMsgIdMap(threadId: string): void {
+  messageIdMap.delete(threadId)
+}
+
 const RECONNECT_MAX_ATTEMPTS = 5
 const RECONNECT_BASE_DELAY_MS = 1000
 const RECONNECT_MAX_DELAY_MS = 30000
@@ -61,12 +77,19 @@ export function useEventStream() {
 
   /**
    * 统一事件分发器 — 根据事件类型调用对应 store 方法。
+   *
+   * 多气泡合并策略：同一次 run 内各节点（plan/deep_dive/analyze/write）的
+   * message.start + message.delta 事件统一合并到第一个节点创建的主气泡上，
+   * 避免一次研究产出多个气泡。
    */
   function dispatch(threadId: string, env: EventEnvelope): void {
+    const idMap = getMsgIdMap(threadId)
+
     switch (env.type as EventType) {
       case 'run.started': {
         chat.ensureThread(threadId)
         chat.setRunning(threadId)
+        clearMsgIdMap(threadId)
         break
       }
       case 'agent.status': {
@@ -77,23 +100,40 @@ export function useEventStream() {
       }
       case 'message.start': {
         const d = env.data as EventDataMap['message.start']
-        if (!chat.getMessages(threadId).find((m) => m.id === d.message_id)) {
-          chat.startAssistantMessage(threadId, d.message_id, d.node)
+        if (!idMap.has(d.message_id)) {
+          if (idMap.size === 0) {
+            // 第一个 message.start → 创建主气泡
+            chat.startAssistantMessage(threadId, d.message_id, d.node)
+            idMap.set(d.message_id, d.message_id)
+          } else {
+            // 后续节点的 message.start → 映射到主气泡，不创建新气泡
+            const primaryId = idMap.values().next().value!
+            idMap.set(d.message_id, primaryId)
+          }
         }
         break
       }
       case 'message.delta': {
         const d = env.data as EventDataMap['message.delta']
-        // 容错：delta 先于 message.start 到达时惰性初始化
-        if (!chat.getMessages(threadId).find((m) => m.id === d.message_id)) {
-          chat.startAssistantMessage(threadId, d.message_id)
+        // 通过映射表找到主气泡 ID，没有则惰性初始化
+        let primaryId = idMap.get(d.message_id)
+        if (!primaryId) {
+          if (idMap.size === 0) {
+            chat.startAssistantMessage(threadId, d.message_id)
+            idMap.set(d.message_id, d.message_id)
+            primaryId = d.message_id
+          } else {
+            primaryId = idMap.values().next().value!
+            idMap.set(d.message_id, primaryId)
+          }
         }
-        chat.appendDelta(threadId, d.message_id, d.text)
+        chat.appendDelta(threadId, primaryId, d.text)
         break
       }
       case 'message.thinking': {
         const d = env.data as EventDataMap['message.thinking']
-        chat.appendThinking(threadId, d.message_id, d.text)
+        const primaryId = idMap.get(d.message_id) || d.message_id
+        chat.appendThinking(threadId, primaryId, d.text)
         break
       }
       case 'sources.found': {
@@ -109,17 +149,20 @@ export function useEventStream() {
       case 'run.completed': {
         const d = env.data as EventDataMap['run.completed']
         chat.finish(threadId, d)
+        clearMsgIdMap(threadId)
         void threads.refresh(threadId)
         break
       }
       case 'run.cancelled': {
         chat.markCancelled(threadId)
+        clearMsgIdMap(threadId)
         void threads.refresh(threadId)
         break
       }
       case 'run.error': {
         const d = env.data as EventDataMap['run.error']
         chat.markError(threadId, d)
+        clearMsgIdMap(threadId)
         void threads.refresh(threadId)
         break
       }
@@ -276,12 +319,12 @@ export function useEventStream() {
   }
 
   /**
-   * 智能续流入口：区分"续流上次任务"和"开始新任务"。
+   * 智能续流入口：区分三种用户意图。
    *
    * 逻辑：
-   * 1. 用户手动停止后（userStopped=true），再次输入含"继续/continue/resume"等关键词 → 续流
-   * 2. 用户手动停止后，输入其他内容 → 新任务
-   * 3. 非手动停止场景（如网络断开后的重连）→ 由 scheduleReconnect 处理，不走此入口
+   * 1. 用户手动停止后（userStopped=true），输入含“继续/continue/resume”等关键词 → mode=continue 续流
+   * 2. 用户手动停止后，输入新条件（非关键词） → mode=modify 追加消息后续跑
+   * 3. 非手动停止场景 → 走全新 run
    */
   const RESUME_KEYWORDS = ['继续', '续流', 'resume', 'continue', '接着', '接着来', 'go on', 'proceed']
 
@@ -295,34 +338,66 @@ export function useEventStream() {
     tenant_id?: string
     hitl_enabled?: boolean
   }): Promise<void> {
-    // 只有用户手动停止后，才需要判断是续流还是新任务
     if (chat.isUserStopped(threadId)) {
-      if (matchesResumeKeyword(query)) {
-        // 关键词匹配 → 尝试续流
-        try {
-          const state = await fetchThreadState(threadId)
-          if (state.resumable && state.status !== 'running') {
-            chat.ensureThread(threadId)
-            chat.addUserMessage(threadId, query)
-            void threads.refresh()
-            await syncThreadMessages(threadId)
-            const resp = await postStream('/api/v1/research/resume', {
-              thread_id: threadId,
-              mode: 'continue',
-            })
-            chat.setUserStopped(threadId, false)
-            await consume(threadId, resp)
-            setAttempts(threadId, 0)
-            return
-          }
-        } catch {
-          // 状态检查失败，降级走新 run
-        }
+      // 先检查 checkpoint 是否可恢复
+      let state
+      try {
+        state = await fetchThreadState(threadId)
+      } catch {
+        // 状态检查失败，降级走新 run
+        chat.setUserStopped(threadId, false)
+        await run(threadId, query, options)
+        return
       }
-      // 不匹配关键词 或 checkpoint 不可恢复 → 新任务，清除标记
+
+      if (!state.resumable || state.status === 'running') {
+        // checkpoint 不可恢复 → 新任务
+        chat.setUserStopped(threadId, false)
+        await run(threadId, query, options)
+        return
+      }
+
+      chat.ensureThread(threadId)
+      chat.addUserMessage(threadId, query)
+      void threads.refresh()
+
+      if (matchesResumeKeyword(query)) {
+        // 路1：关键词匹配 → mode=continue 从断点续流，旧数据保留
+        chat.setUserStopped(threadId, false)
+        await syncThreadMessages(threadId)
+        try {
+          const resp = await postStream('/api/v1/research/resume', {
+            thread_id: threadId,
+            mode: 'continue',
+          })
+          await consume(threadId, resp)
+          setAttempts(threadId, 0)
+        } catch (err) {
+          if (isAbortError(err) || isUserCancelled(threadId)) return
+          await scheduleReconnect(threadId)
+        }
+        return
+      }
+
+      // 路2：非关键词 → mode=modify 追加用户消息后重新执行
       chat.setUserStopped(threadId, false)
+      await syncThreadMessages(threadId)
+      try {
+        const resp = await postStream('/api/v1/research/resume', {
+          thread_id: threadId,
+          mode: 'modify',
+          resume_value: query,
+        })
+        await consume(threadId, resp)
+        setAttempts(threadId, 0)
+      } catch (err) {
+        if (isAbortError(err) || isUserCancelled(threadId)) return
+        await scheduleReconnect(threadId)
+      }
+      return
     }
-    // 非手动停止场景，或关键词不匹配 → 新任务
+
+    // 路3：非手动停止场景 → 新任务
     await run(threadId, query, options)
   }
 

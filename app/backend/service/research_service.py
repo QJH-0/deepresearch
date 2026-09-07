@@ -911,16 +911,20 @@ class ResearchService:
     ) -> AsyncGenerator[str, None]:
         """流式恢复中断的任务（P3 重写）。
 
-        两种模式：
+        三种模式：
         - mode=continue: 崩溃续研，用 astream(None, config) 从最后 checkpoint 续跑
           （None 输入 = 从断点节点开始，已检索的 sources/findings 全部保留）
         - mode=answer: HITL 回答，用 Command(resume=resume_value) 从 interrupt 点继续
           （P4 会扩展 resume_value 为结构化 payload）
+        - mode=modify: 用户补充/修改条件，先 aupdate_state 追加 HumanMessage 到
+          checkpoint 的 chat_messages，再 astream(None, config) 重新执行
+          （旧检索数据仍在 checkpoint 历史中，但流程基于新条件重新计算）
 
         Args:
             thread_id: 会话 ID
-            resume_value: HITL 回答值（mode=answer 时必填，mode=continue 时忽略）
-            mode: "continue" | "answer"
+            resume_value: HITL 回答值（mode=answer 时必填）；
+                          mode=modify 时为用户补充的文本消息
+            mode: "continue" | "answer" | "modify"
         """
         self._ensure_initialized()
         config = {"configurable": {"thread_id": thread_id}}
@@ -936,10 +940,24 @@ class ResearchService:
         last_token_node = ""
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
 
-        # 输入路由：mode=continue → None（从最后 checkpoint 续跑）；mode=answer → Command(resume=...)
+        # 输入路由：
+        # mode=continue → None（从最后 checkpoint 续跑）
+        # mode=answer → Command(resume=resume_value)（从 interrupt 点继续）
+        # mode=modify → 先 aupdate_state 追加 HumanMessage，再 astream(None, config)
         if mode == "continue":
             input_state = None
             logger.info("[TRACE] resume_stream CONTINUE | thread=%s | 从最后 checkpoint 续跑", thread_id)
+        elif mode == "modify":
+            if not resume_value:
+                yield sse(event("run.error", code="InvalidResume", message="mode=modify 需要 resume_value（用户消息文本）"))
+                return
+            user_text = str(resume_value)
+            await self._app.aupdate_state(
+                config,
+                {"chat_messages": [HumanMessage(content=user_text)]},
+            )
+            input_state = None
+            logger.info("[TRACE] resume_stream MODIFY | thread=%s | 追加用户消息后从 checkpoint 续跑", thread_id)
         else:
             if resume_value is None:
                 yield sse(event("run.error", code="InvalidResume", message="mode=answer 需要 resume_value"))
