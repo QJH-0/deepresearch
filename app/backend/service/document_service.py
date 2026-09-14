@@ -596,8 +596,8 @@ class DocumentService:
             "vector_errors": vector_errors,
         }
 
-    def delete_document(self, doc_id: str) -> dict:
-        """删除文档（PG + MinIO + 向量库）。
+    def delete_document(self, doc_id: str, user_id: str) -> dict:
+        """删除文档（PG + MinIO + 向量库），仅限 user_id 名下。
 
         PG 的 document_chunks 由外键级联删除，但 Milvus 与 BM25 中的切片不会随之消失，
         必须显式清理，否则已删文档仍会被检索命中。
@@ -606,7 +606,7 @@ class DocumentService:
         assert self._repo is not None
         assert self._minio is not None
 
-        object_key = self._repo.delete_document(doc_id)
+        object_key = self._repo.delete_document(doc_id, user_id=user_id)
         if object_key is None:
             return {
                 "deleted": False,

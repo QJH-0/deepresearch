@@ -24,6 +24,7 @@ from backend.schemas import (
     PlanApprovalResumePayload,
     ReportReviewResumePayload,
 )
+from backend.auth import User, get_current_user
 from backend.service import ResearchService, get_research_service
 from backend.service import get_task_registry, ConcurrentRunError
 from backend.service.task_registry import RunningTask
@@ -80,12 +81,13 @@ async def _stream_with_registry(
 @router.post("/run", response_model=ResearchResponse)
 async def run_research(
     payload: ResearchRequest,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ) -> ResearchResponse:
-    logger.info("[ROUTE] /run | user=%s | thread=%s | query=%s", payload.user_id, payload.thread_id, payload.query[:80])
+    logger.info("[ROUTE] /run | user=%s | thread=%s | query=%s", current_user.user_id, payload.thread_id, payload.query[:80])
     final = await research_service.run(
         query=payload.query,
-        user_id=payload.user_id,
+        user_id=current_user.user_id,
         thread_id=payload.thread_id,
         tenant_id=payload.tenant_id,
         max_iterations=payload.max_iterations,
@@ -94,7 +96,7 @@ async def run_research(
     )
     return ResearchResponse(
         query=payload.query,
-        user_id=payload.user_id,
+        user_id=current_user.user_id,
         thread_id=payload.thread_id,
         tenant_id=payload.tenant_id,
         final=final,
@@ -104,6 +106,7 @@ async def run_research(
 @router.post("/stream")
 async def stream_research(
     payload: ResearchRequest,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ) -> StreamingResponse:
     """P2/P3: 纯 async generator + graph.astream 实现 token 级流式 SSE。
@@ -111,7 +114,7 @@ async def stream_research(
     P3: 通过 TaskRegistry 实现并发拦截（409）和取消（task.cancel()）。
     """
     logger.info("[ROUTE] /stream | user=%s | thread=%s | query=%s",
-                payload.user_id, payload.thread_id, payload.query[:80])
+                current_user.user_id, payload.thread_id, payload.query[:80])
 
     # P3: 并发检查 — 同一 thread 已有运行中的任务 → 409
     registry = get_task_registry()
@@ -124,7 +127,7 @@ async def stream_research(
     run_id = uuid.uuid4().hex[:12]
     raw_gen = research_service.stream_research(
         query=payload.query,
-        user_id=payload.user_id,
+        user_id=current_user.user_id,
         thread_id=payload.thread_id,
         tenant_id=payload.tenant_id,
         max_iterations=payload.max_iterations,
@@ -143,6 +146,7 @@ async def stream_research(
 @router.post("/cancel")
 async def cancel_research(
     payload: CancelRequest,
+    current_user: User = Depends(get_current_user),
 ):
     """取消正在运行的研究任务（P3：走 TaskRegistry）。
 
@@ -169,6 +173,7 @@ async def cancel_research(
 @router.post("/resume")
 async def resume_research(
     payload: ResumeRequest,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ) -> StreamingResponse:
     """恢复被中断的任务（流式输出）。
@@ -249,7 +254,7 @@ def _validate_resume_payload(kind: str, resume_value) -> None:
 
 @router.get("/threads", response_model=ThreadListResponse)
 async def list_threads(
-    user_id: str = "default_user",
+    current_user: User = Depends(get_current_user),
     limit: int = 50,
     keyword: str = "",
     research_service: ResearchService = Depends(get_research_service),
@@ -260,7 +265,7 @@ async def list_threads(
     返回顺序：置顶优先，其余按最近活跃时间倒序（新会话在最上面）。
     keyword 用于按标题搜索，会话数超过 ~20 条后这是刚需。
     """
-    threads = research_service.list_threads(user_id, limit, keyword=keyword)
+    threads = research_service.list_threads(current_user.user_id, limit, keyword=keyword)
     return ThreadListResponse(
         threads=[ThreadItem(**t) for t in threads],
         total=len(threads),
@@ -273,15 +278,16 @@ async def list_threads(
 async def rename_thread(
     thread_id: str,
     payload: ThreadRenameRequest,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """重命名会话（自动生成的标题往往不够描述性，允许手动改）。"""
     research_service.rename_thread(
         thread_id=thread_id,
         title=payload.title,
-        user_id=payload.user_id or "default_user",
+        user_id=current_user.user_id,
     )
-    threads = research_service.list_threads(payload.user_id or "default_user", 200)
+    threads = research_service.list_threads(current_user.user_id, 200)
     matched = next((t for t in threads if t["thread_id"] == thread_id), None)
     return ThreadItem(**matched) if matched else None
 
@@ -290,15 +296,16 @@ async def rename_thread(
 async def pin_thread(
     thread_id: str,
     payload: ThreadPinRequest,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """置顶 / 取消置顶会话（置顶项固定在列表顶部）。"""
     research_service.set_thread_pinned(
         thread_id=thread_id,
         pinned=payload.pinned,
-        user_id=payload.user_id or "default_user",
+        user_id=current_user.user_id,
     )
-    threads = research_service.list_threads(payload.user_id or "default_user", 200)
+    threads = research_service.list_threads(current_user.user_id, 200)
     matched = next((t for t in threads if t["thread_id"] == thread_id), None)
     return ThreadItem(**matched) if matched else None
 
@@ -306,11 +313,11 @@ async def pin_thread(
 @router.delete("/threads/{thread_id}", response_model=ThreadDeleteResponse)
 async def delete_thread(
     thread_id: str,
-    user_id: str = "default_user",
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ) -> ThreadDeleteResponse:
     """删除会话（只删侧边栏记录，LangGraph checkpoint 保留以免影响可恢复状态）。"""
-    deleted = research_service.delete_thread(thread_id, user_id)
+    deleted = research_service.delete_thread(thread_id, current_user.user_id)
     return ThreadDeleteResponse(
         deleted=deleted,
         thread_id=thread_id,
@@ -321,6 +328,7 @@ async def delete_thread(
 @router.get("/threads/{thread_id}/messages")
 async def get_thread_messages(
     thread_id: str,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """获取某个会话的完整对话历史。"""
@@ -330,6 +338,7 @@ async def get_thread_messages(
 @router.get("/state/{thread_id}")
 async def get_state(
     thread_id: str,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """获取任务当前状态快照（P3 增强）。"""
@@ -353,18 +362,20 @@ async def get_state(
 @router.get("/threads/{thread_id}/state")
 async def get_thread_state(
     thread_id: str,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """P3: 会话级状态 API，返回完整的可恢复信息。
 
     与 /state/{thread_id} 功能相同，路径符合 RESTful 约定。
     """
-    return await get_state(thread_id, research_service)
+    return await get_state(thread_id, current_user, research_service)
 
 
 @router.get("/threads/{thread_id}/interrupt")
 async def get_interrupt(
     thread_id: str,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """P4-3: interrupt 状态重建 API。
@@ -382,6 +393,7 @@ async def get_interrupt(
 @router.get("/history/{thread_id}")
 async def get_history(
     thread_id: str,
+    current_user: User = Depends(get_current_user),
     limit: int = 20,
     research_service: ResearchService = Depends(get_research_service),
 ):
@@ -392,6 +404,7 @@ async def get_history(
 @router.post("/rollback")
 async def rollback(
     payload: RollbackRequest,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """回滚/更新任务状态到指定值。"""
@@ -404,7 +417,7 @@ async def rollback(
 
 @router.get("/memories")
 async def list_memories(
-    user_id: str = "default_user",
+    current_user: User = Depends(get_current_user),
     query: str = "",
     limit: int = 200,
 ):
@@ -425,7 +438,7 @@ async def list_memories(
         return {"memories": [], "message": "MemoryService 未初始化"}
 
     memories = await mem_service.list_memories(
-        user_id=user_id,
+        user_id=current_user.user_id,
         query=query,
         limit=min(limit, 500),
     )
@@ -437,6 +450,7 @@ async def list_memories(
 @router.get("/threads/{thread_id}/export/md")
 async def export_markdown(
     thread_id: str,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """P7-4: 导出会话最终报告为 Markdown 文件。
@@ -467,6 +481,7 @@ async def export_markdown(
 @router.get("/threads/{thread_id}/export/pdf")
 async def export_pdf(
     thread_id: str,
+    current_user: User = Depends(get_current_user),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """导出会话最终报告为 PDF（Playwright headless Chromium）。

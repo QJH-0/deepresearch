@@ -3,16 +3,15 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from backend.auth import User, require_admin
 from backend.config.settings import (
-    AppSettings,
     BusinessSettings,
     _diff_restart_required,
     _RESTART_REQUIRED_FIELDS,
     get_business_settings,
     _set_business_settings,
-    MiddlewareSettings,
 )
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -21,35 +20,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _CONFIG_JSON_PATH = _PROJECT_ROOT / "config.json"
 
 
-def _check_admin_token(x_admin_token: str | None) -> None:
-    """校验管理端令牌。
-
-    仅 development 环境保留「未配置 ADMIN_TOKEN 即放行」的本地开发便利；
-    其他环境一律 fail-closed，避免部署后管理端点裸奔。
-    """
-    expected = MiddlewareSettings().admin_token
-    if expected:
-        if x_admin_token != expected:
-            raise HTTPException(status_code=401, detail="invalid admin token")
-        return
-    if AppSettings().app_env != "development":
-        raise HTTPException(
-            status_code=401,
-            detail="ADMIN_TOKEN 未配置，管理端点在非 development 环境不可用",
-        )
-
-
 @router.get("/config")
-async def get_config(x_admin_token: str | None = Header(None)):
-    """当前生效业务配置。"""
-    _check_admin_token(x_admin_token)
+async def get_config(admin: User = Depends(require_admin)):
+    """当前生效业务配置（需管理员角色）。"""
     return get_business_settings().model_dump()
 
 
 @router.post("/config/reload")
-async def reload_config(x_admin_token: str | None = Header(None)):
-    """重读磁盘 config.json 并原子生效。校验失败返回 422。"""
-    _check_admin_token(x_admin_token)
+async def reload_config(admin: User = Depends(require_admin)):
+    """重读磁盘 config.json 并原子生效（需管理员角色）。校验失败返回 422。"""
 
     try:
         raw = json.loads(_CONFIG_JSON_PATH.read_text(encoding="utf-8"))

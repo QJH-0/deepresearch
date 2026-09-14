@@ -39,7 +39,14 @@ class MiddlewareSettings(BaseSettings):
     minio_endpoint: str = "localhost:9900"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
-    admin_token: str = ""
+
+    # ── JWT 认证 ──
+    # JWT_SECRET 为空时认证接口 fail-closed（拒绝签发/校验，返回 503），不会放行
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 720  # 12 小时
+    # 用户来源：user:pass[:role],user2:pass2；role 为 admin 时可访问管理端点
+    auth_users: str = ""
 
 
 class BusinessSettings(BaseSettings):

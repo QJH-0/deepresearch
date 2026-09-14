@@ -650,23 +650,29 @@ class ChunkRepository:
                 )
         return deleted
 
-    def delete_document(self, doc_id: str) -> Optional[str]:
+    def delete_document(self, doc_id: str, user_id: str) -> Optional[str]:
         """
         删除文档（级联删除 chunks 和 sync_messages）。
-        返回 object_key（用于 MinIO 清理），不存在返回 None。
+
+        只删 user_id 名下的文档 —— 与批量删除保持同一归属校验，
+        否则单条删除可以越权删除他人文档（历史缺陷）。
+        返回 object_key（用于 MinIO 清理），不存在或非本人返回 None。
         """
         pool = self._get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT object_key FROM documents WHERE id = %s",
-                    (doc_id,),
+                    "SELECT object_key FROM documents WHERE id = %s AND user_id = %s",
+                    (doc_id, user_id),
                 )
                 row = cur.fetchone()
                 if not row:
                     return None
                 object_key = row[0]
-                cur.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
+                cur.execute(
+                    "DELETE FROM documents WHERE id = %s AND user_id = %s",
+                    (doc_id, user_id),
+                )
                 # chunks 和 sync_messages 通过 ON DELETE CASCADE 自动删除
         return object_key
 

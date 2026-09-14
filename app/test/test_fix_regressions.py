@@ -453,54 +453,6 @@ class TestUploadSizeGuard:
 # ──────────────────────────────────────────────────────────────
 
 
-class TestAdminTokenFailClosed:
-    def test_production_without_token_denied(self, monkeypatch):
-        from importlib import import_module
-
-        ar = import_module("backend.router.admin_router")
-
-        monkeypatch.setattr(ar, "MiddlewareSettings", lambda: SimpleNamespace(admin_token=""))
-        monkeypatch.setattr(ar, "AppSettings", lambda: SimpleNamespace(app_env="production"))
-
-        with pytest.raises(HTTPException) as exc:
-            ar._check_admin_token(None)
-
-        assert exc.value.status_code == 401
-
-    def test_development_without_token_allowed(self, monkeypatch):
-        from importlib import import_module
-
-        ar = import_module("backend.router.admin_router")
-
-        monkeypatch.setattr(ar, "MiddlewareSettings", lambda: SimpleNamespace(admin_token=""))
-        monkeypatch.setattr(ar, "AppSettings", lambda: SimpleNamespace(app_env="development"))
-
-        ar._check_admin_token(None)  # 不抛异常
-
-    def test_token_mismatch_denied(self, monkeypatch):
-        from importlib import import_module
-
-        ar = import_module("backend.router.admin_router")
-
-        monkeypatch.setattr(ar, "MiddlewareSettings", lambda: SimpleNamespace(admin_token="secret"))
-        monkeypatch.setattr(ar, "AppSettings", lambda: SimpleNamespace(app_env="production"))
-
-        with pytest.raises(HTTPException) as exc:
-            ar._check_admin_token("wrong")
-
-        assert exc.value.status_code == 401
-
-    def test_token_match_allowed(self, monkeypatch):
-        from importlib import import_module
-
-        ar = import_module("backend.router.admin_router")
-
-        monkeypatch.setattr(ar, "MiddlewareSettings", lambda: SimpleNamespace(admin_token="secret"))
-        monkeypatch.setattr(ar, "AppSettings", lambda: SimpleNamespace(app_env="production"))
-
-        ar._check_admin_token("secret")  # 不抛异常
-
-
 # ──────────────────────────────────────────────────────────────
 # P2-3 interrupt kind 兜底值可序列化
 # ──────────────────────────────────────────────────────────────
@@ -876,7 +828,7 @@ class TestDocumentServiceVectorCleanup:
         svc = self._service(monkeypatch)
         svc._repo.delete_document.return_value = "obj/key"
 
-        out = svc.delete_document("docA")
+        out = svc.delete_document("docA", user_id="u1")
 
         svc._rag.delete_document_vectors.assert_called_once_with("docA")
         assert out["deleted"] is True
@@ -896,7 +848,7 @@ class TestDocumentServiceVectorCleanup:
         svc = self._service(monkeypatch)
         svc._repo.delete_document.return_value = None
 
-        out = svc.delete_document("nope")
+        out = svc.delete_document("nope", user_id="u1")
 
         assert out["deleted"] is False
         svc._rag.delete_document_vectors.assert_not_called()

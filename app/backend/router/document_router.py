@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from backend.schemas import (
     DocumentBatchDeleteRequest,
@@ -15,6 +15,7 @@ from backend.schemas import (
     DocumentStatusResponse,
     DocumentUploadResponse,
 )
+from backend.auth import User, get_current_user
 from backend.service.document_service import DocumentService, get_document_service
 
 logger = logging.getLogger("backend.document_router")
@@ -62,7 +63,7 @@ async def _read_within_limit(file: UploadFile) -> bytes:
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(..., description="要上传的文档文件"),
-    user_id: str = Form(default="default_user"),
+    current_user: User = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentUploadResponse:
     """
@@ -84,14 +85,14 @@ async def upload_document(
     result = service.upload_and_ingest(
         file_content=content,
         filename=filename,
-        user_id=user_id,
+        user_id=current_user.user_id,
     )
     return DocumentUploadResponse(**result)
 
 
 @router.get("/list", response_model=DocumentListResponse)
 async def list_documents(
-    user_id: str = "default_user",
+    current_user: User = Depends(get_current_user),
     keyword: str = "",
     with_stats: bool = True,
     service: DocumentService = Depends(get_document_service),
@@ -102,8 +103,8 @@ async def list_documents(
     keyword 用于文件名模糊搜索；with_stats 附带知识库总览统计，
     省掉前端再发一次统计请求。
     """
-    docs = service.list_documents(user_id=user_id, keyword=keyword)
-    stats = service.get_documents_stats(user_id=user_id) if with_stats else None
+    docs = service.list_documents(user_id=current_user.user_id, keyword=keyword)
+    stats = service.get_documents_stats(user_id=current_user.user_id) if with_stats else None
     return DocumentListResponse(
         documents=[DocumentInfo(**doc) for doc in docs],
         total=len(docs),
@@ -113,22 +114,23 @@ async def list_documents(
 
 @router.get("/stats", response_model=DocumentStatsResponse)
 async def get_documents_stats(
-    user_id: str = "default_user",
+    current_user: User = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentStatsResponse:
     """知识库总览统计：文档数 / 切片数 / 已进向量库数量 / 失败数。"""
-    return DocumentStatsResponse(**service.get_documents_stats(user_id=user_id))
+    return DocumentStatsResponse(**service.get_documents_stats(user_id=current_user.user_id))
 
 
 @router.delete("/batch", response_model=DocumentBatchDeleteResponse)
 async def batch_delete_documents(
     payload: DocumentBatchDeleteRequest,
+    current_user: User = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentBatchDeleteResponse:
     """批量删除文档（PG + MinIO）。"""
     result = service.delete_documents_batch(
         doc_ids=payload.doc_ids,
-        user_id=payload.user_id or "default_user",
+        user_id=current_user.user_id,
     )
     return DocumentBatchDeleteResponse(**result)
 
@@ -136,16 +138,18 @@ async def batch_delete_documents(
 @router.delete("/{doc_id}", response_model=DocumentDeleteResponse)
 async def delete_document(
     doc_id: str,
+    current_user: User = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentDeleteResponse:
-    """删除已上传的文档。"""
-    result = service.delete_document(doc_id)
+    """删除已上传的文档（仅限本人名下）。"""
+    result = service.delete_document(doc_id, user_id=current_user.user_id)
     return DocumentDeleteResponse(**result)
 
 
 @router.get("/status/{doc_id}", response_model=DocumentStatusResponse)
 async def get_document_status(
     doc_id: str,
+    current_user: User = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentStatusResponse:
     """查询文档向量化状态。"""
@@ -164,6 +168,7 @@ async def get_document_status(
 @router.post("/{doc_id}/retry", response_model=DocumentRetryResponse)
 async def retry_document_vectorization(
     doc_id: str,
+    current_user: User = Depends(get_current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentRetryResponse:
     """重试该文档向量化失败的切片（重置为 pending 并重新入队 MQ）。"""
@@ -172,7 +177,9 @@ async def retry_document_vectorization(
 
 
 @router.get("/extensions")
-async def get_supported_extensions() -> dict:
+async def get_supported_extensions(
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """返回支持的文件格式列表。"""
     return {
         "extensions": ALLOWED_EXTENSIONS,

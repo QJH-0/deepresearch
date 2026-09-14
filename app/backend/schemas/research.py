@@ -3,8 +3,13 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ResearchRequest(BaseModel):
+    """研究请求。
+
+    user_id 不在请求体里 —— 身份一律由 JWT 的 sub 派生，
+    否则调用方可以自由指定他人身份（越权访问）。
+    """
+
     query: str = Field(..., min_length=1)
-    user_id: str = Field(default="default_user", min_length=1)
     thread_id: str = Field(default="default_thread", min_length=1)
     tenant_id: str = Field(default="default_tenant", min_length=1)
     max_iterations: int | None = Field(default=None, ge=1, le=6)
@@ -133,17 +138,15 @@ class ThreadListResponse(BaseModel):
 
 
 class ThreadRenameRequest(BaseModel):
-    """重命名会话请求。"""
+    """重命名会话请求（user_id 由令牌派生）。"""
 
     title: str = Field(..., min_length=1, max_length=120)
-    user_id: str = "default_user"
 
 
 class ThreadPinRequest(BaseModel):
-    """置顶 / 取消置顶请求。"""
+    """置顶 / 取消置顶请求（user_id 由令牌派生）。"""
 
     pinned: bool
-    user_id: str = "default_user"
 
 
 class ThreadDeleteResponse(BaseModel):

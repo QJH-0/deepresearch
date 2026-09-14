@@ -57,6 +57,13 @@ def _make_mock_playwright(pdf_bytes=b"%PDF-1.4 mock"):
 
 # ── T3.3-01 正常导出 PDF ───────────────────────────────────────
 
+def _test_user():
+    """路由已要求认证，测试直接注入身份对象（鉴权行为由 test_auth.py 覆盖）。"""
+    from backend.auth import User
+
+    return User(user_id="default_user", role="user")
+
+
 class TestExportPdfSuccess:
     """Playwright 正常生成 PDF。"""
 
@@ -71,7 +78,7 @@ class TestExportPdfSuccess:
         get_pdf_export_service.cache_clear()
 
         with patch("playwright.async_api.async_playwright", return_value=mock_cm):
-            response = await export_pdf("test-thread-abc123", svc)
+            response = await export_pdf("test-thread-abc123", _test_user(), svc)
 
         assert isinstance(response, Response)
         assert response.media_type == "application/pdf"
@@ -112,7 +119,7 @@ class TestExportPdfFallbackMarkdown:
         mock_cm.__aexit__ = AsyncMock(return_value=None)
 
         with patch("playwright.async_api.async_playwright", return_value=mock_cm):
-            response = await export_pdf("fallback-thread", svc)
+            response = await export_pdf("fallback-thread", _test_user(), svc)
 
         assert isinstance(response, Response)
         assert response.media_type == "text/markdown; charset=utf-8"
@@ -134,7 +141,7 @@ class TestExportPdfNotFound:
 
         svc = _make_research_service_mock(messages=[])
         with pytest.raises(HTTPException) as exc_info:
-            await export_pdf("empty-thread", svc)
+            await export_pdf("empty-thread", _test_user(), svc)
         assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -145,7 +152,7 @@ class TestExportPdfNotFound:
             {"role": "user", "content": "只有用户消息"},
         ])
         with pytest.raises(HTTPException) as exc_info:
-            await export_pdf("no-report-thread", svc)
+            await export_pdf("no-report-thread", _test_user(), svc)
         assert exc_info.value.status_code == 404
 
 

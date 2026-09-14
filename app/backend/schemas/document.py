@@ -71,7 +71,6 @@ class DocumentBatchDeleteRequest(BaseModel):
     """批量删除请求。"""
 
     doc_ids: list[str]
-    user_id: str = "default_user"
 
 
 class DocumentBatchDeleteResponse(BaseModel):

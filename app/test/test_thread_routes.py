@@ -20,6 +20,13 @@ _APP_PATH = _PROJECT_ROOT / "app"
 sys.path.insert(0, str(_APP_PATH))
 
 
+def _test_user():
+    """路由已要求认证，测试直接注入身份对象（鉴权行为由 test_auth.py 覆盖）。"""
+    from backend.auth import User
+
+    return User(user_id="default_user", role="user")
+
+
 def _make_snapshot(*, next_nodes=(), interrupts=(), values=None, parent_config=None):
     """构造 mock graph snapshot。"""
     snap = MagicMock()
@@ -83,7 +90,7 @@ class TestGetThreadState:
     async def test_state_returns_required_fields(self, research_service):
         from backend.router.research_router import get_thread_state
 
-        state = await get_thread_state("test-thread", research_service)
+        state = await get_thread_state("test-thread", _test_user(), research_service)
 
         assert "status" in state
         assert "resumable" in state
@@ -106,7 +113,7 @@ class TestGetThreadState:
             "interrupts": [],
         })
 
-        state = await get_thread_state("test-thread", research_service)
+        state = await get_thread_state("test-thread", _test_user(), research_service)
 
         assert state["status"] == "awaiting_input"
         assert state["resumable"] is True
@@ -124,7 +131,7 @@ class TestGetThreadMessages:
     async def test_messages_returns_list(self, research_service):
         from backend.router.research_router import get_thread_messages
 
-        result = await get_thread_messages("test-thread", research_service)
+        result = await get_thread_messages("test-thread", _test_user(), research_service)
 
         assert result["thread_id"] == "test-thread"
         assert isinstance(result["messages"], list)
@@ -138,7 +145,7 @@ class TestGetThreadMessages:
 
         research_service.get_thread_messages = AsyncMock(return_value=[])
 
-        result = await get_thread_messages("empty-thread", research_service)
+        result = await get_thread_messages("empty-thread", _test_user(), research_service)
 
         assert result["thread_id"] == "empty-thread"
         assert result["messages"] == []

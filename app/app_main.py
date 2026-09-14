@@ -36,7 +36,13 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from backend.config import AppSettings
-from backend.router import health_router, research_router, document_router, admin_router
+from backend.router import (
+    admin_router,
+    auth_router,
+    document_router,
+    health_router,
+    research_router,
+)
 from backend.service import init_task_registry, get_task_registry, init_memory_service, get_memory_service, init_summary_service
 from backend.infra import init_store, close_store, get_store
 from mult_agents.config import AppConfig
@@ -310,9 +316,14 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = AppSettings()
+    # 非 development 环境不暴露 OpenAPI 文档 —— 接口清单本身也是攻击面
+    expose_docs = settings.app_env == "development"
     app = FastAPI(
         title=settings.app_name,
         lifespan=lifespan,
+        docs_url="/docs" if expose_docs else None,
+        redoc_url="/redoc" if expose_docs else None,
+        openapi_url="/openapi.json" if expose_docs else None,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -322,6 +333,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(health_router)
+    app.include_router(auth_router)
     app.include_router(research_router)
     app.include_router(document_router)
     app.include_router(admin_router)
