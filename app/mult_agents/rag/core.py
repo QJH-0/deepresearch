@@ -67,7 +67,8 @@ class RAGConfig:
     # 检索参数
     recall_k: int = 20          # 多路召回数量
     final_top_k: int = 5        # 最终返回数量
-    rerank_model: str = "qwen-plus"
+    # 辅助 LLM：用于查询重写与 LLM 降级精排（与 rerank_model_name 的专用重排模型区分）
+    aux_llm_model: str = "qwen-plus"
 
     # 是否启用查询重写
     enable_query_rewrite: bool = True
@@ -696,13 +697,13 @@ class RAGSystem:
     @property
     def query_rewriter(self) -> QueryRewriter:
         if self._query_rewriter is None:
-            self._query_rewriter = QueryRewriter(self.api_key, self.config.rerank_model)
+            self._query_rewriter = QueryRewriter(self.api_key, self.config.aux_llm_model)
         return self._query_rewriter
 
     @property
     def reranker(self) -> LLMReranker:
         if self._reranker is None:
-            self._reranker = LLMReranker(self.api_key, self.config.rerank_model)
+            self._reranker = LLMReranker(self.api_key, self.config.aux_llm_model)
         return self._reranker
 
     # ==================================================================

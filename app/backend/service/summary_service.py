@@ -21,6 +21,11 @@ from langchain_core.messages import (
 
 logger = logging.getLogger("backend.summary_service")
 
+# 摘要消息使用固定 id：chat_messages 的 reducer 是 add_messages，
+# 同 id 消息会被「替换」而非追加。不给 id 时每次压缩都会新增一条摘要，
+# 长会话里摘要消息会持续累积。
+CONVERSATION_SUMMARY_MESSAGE_ID = "conversation-summary"
+
 _SUMMARY_SYSTEM_PROMPT = (
     "请将以下多轮对话历史压缩为一段简洁的中文摘要，"
     "保留关键信息：用户的核心需求、已确定的研究方向、已得出的主要结论。"
@@ -74,7 +79,10 @@ class SummaryService:
             return messages, existing_summary
 
         summary_text = new_summary if not existing_summary else f"{existing_summary}\n\n{new_summary}"
-        summary_msg = SystemMessage(content=f"[对话摘要]\n{summary_text}")
+        summary_msg = SystemMessage(
+            content=f"[对话摘要]\n{summary_text}",
+            id=CONVERSATION_SUMMARY_MESSAGE_ID,
+        )
 
         logger.info(
             "对话摘要压缩完成 | 原始消息数=%d | 压缩后=%d | 摘要长度=%d",

@@ -80,7 +80,7 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     content = ""
     async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
         if isinstance(chunk, tuple) and len(chunk) == 2:
-            msg_chunk, metadata = chunk
+            msg_chunk, _ = chunk
             # R2.4: 深度思考 reasoning 增量捕获
             reasoning = getattr(msg_chunk, "reasoning_content", None)
             if not reasoning:
@@ -114,8 +114,8 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
     sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
     cited = sum(1 for s in sentences if re.search(r'\[([A-Z]+\d+_\d+-\d+)\]', s))
     coverage = cited / max(len(sentences), 1)
-    logger.info("[P7-2] 引用覆盖率 | 带角标论断=%d | 主要论断=%d | 覆盖率=%.1f%% | thread=%s",
-                cited, len(sentences), coverage * 100, state.get("thread_id", ""))
+    logger.info("[P7-2] 引用覆盖率 | 带角标论断=%d | 主要论断=%d | 覆盖率=%.1f%%",
+                cited, len(sentences), coverage * 100)
 
     final_content = _ensure_reference_section(content, state)
 

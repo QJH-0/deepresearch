@@ -14,6 +14,7 @@ import logging
 import logging.handlers
 import os
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -327,10 +328,19 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
-        logger.exception("Unhandled exception on %s %s: %s", request.method, request.url.path, exc)
+        """未捕获异常统一出口。
+
+        对外只返回通用文案 + trace_id，不携带 str(exc) —— 异常文本可能包含
+        数据库 DSN、文件路径、SQL 片段等内部信息，属信息泄露面。
+        细节仅落日志，排障时用 trace_id 关联。
+        """
+        trace_id = uuid.uuid4().hex[:12]
+        logger.exception(
+            "Unhandled exception | trace=%s | %s %s", trace_id, request.method, request.url.path
+        )
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Internal Server Error: {exc}"},
+            content={"detail": "Internal Server Error", "trace_id": trace_id},
         )
 
     return app

@@ -25,7 +25,7 @@ async def intent_node(state: AgentState, agent, agent_name: str, writer: StreamW
         f"规则引擎初判：{rule_route}\n"
         "请输出 JSON：{\"route\":\"direct|multiagent\",\"reason\":\"...\"}"
     )
-    payload, content, messages = await _invoke_json_agent(
+    payload, _, messages = await _invoke_json_agent(
         state,
         prompt,
         agent,
@@ -40,7 +40,7 @@ async def intent_node(state: AgentState, agent, agent_name: str, writer: StreamW
     logger.info("%s 路由: %s", colorize("[intent]", "green"), route)
     if writer:
         writer({"node": "intent", "message": f"意图判定完成: {route}"})
-    return {"intent": route, "draft": content, "agent_messages": messages}
+    return {"intent": route, "agent_messages": messages}
 
 
 
@@ -55,7 +55,7 @@ async def direct_answer_node(state: AgentState, agent, agent_name: str, writer: 
     full_content = ""
     async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
         if isinstance(chunk, tuple) and len(chunk) == 2:
-            msg_chunk, metadata = chunk
+            msg_chunk, _ = chunk
             # R2.4: 深度思考 reasoning 增量捕获
             reasoning = getattr(msg_chunk, "reasoning_content", None)
             if not reasoning:

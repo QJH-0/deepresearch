@@ -41,7 +41,8 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
             f"上一版计划已生成但不满足需求，请根据用户意见调整计划，输出修订后的规划 JSON。"
         )
 
-    payload, content, messages = await _invoke_json_agent(
+    # 第三元素是 LLM 原始文本，仅用于日志/调试，不进 state
+    payload, _, messages = await _invoke_json_agent(
         state,
         prompt,
         agent,
@@ -90,7 +91,6 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
                     "search_plan": search_plan,
                     "budget": budget,
                     "agent_messages": messages,
-                    "draft": content,
                     "iteration": 0,
                     "plan_revision_count": 0,
                     "user_feedback": {"approved": True},
@@ -111,7 +111,6 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
                         "search_plan": search_plan,
                         "budget": budget,
                         "agent_messages": messages,
-                        "draft": content,
                         "iteration": 0,
                         "plan_revision_count": plan_revision_count,
                         "user_feedback": {"approved": True, "reason": "max_revisions_reached"},
@@ -131,7 +130,6 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
                     "final": "研究计划被否决。",
                     "needs_more_research": False,
                     "plan": plan_summary,
-                    "draft": content,
                     "user_feedback": {"rejected": True, "reason": reason},
                 })
 
@@ -145,7 +143,6 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
         "search_plan": search_plan,
         "budget": budget,
         "agent_messages": messages,
-        "draft": content,
         "iteration": 0,
         "user_feedback": {},
         "plan_revision_count": 0,

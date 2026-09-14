@@ -84,7 +84,7 @@ async def _invoke_json_agent(state: AgentState, prompt: str, agent, agent_name: 
 
     async for chunk in agent.astream({"messages": [human]}, stream_mode="messages"):
         if isinstance(chunk, tuple) and len(chunk) == 2:
-            msg_chunk, metadata = chunk
+            msg_chunk, _ = chunk
             reasoning = _extract_reasoning_from_chunk(msg_chunk)
             if reasoning and writer:
                 writer({"type": "thinking", "node": node, "text": reasoning})

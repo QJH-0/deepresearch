@@ -4,6 +4,7 @@
 每个用例对应一个已修复缺陷，断言写成「失败即代表缺陷复现」的形式。
 """
 
+import json
 import pathlib
 import threading
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from langchain_core.messages import HumanMessage
 
 
 # ──────────────────────────────────────────────────────────────
@@ -618,3 +620,155 @@ class TestClarifyAnswerExtraction:
         assert _extract_answers({}) == [""]
         assert _extract_answers({"kind": "clarification"}) == [""]
         assert _extract_answers(None) == [""]
+
+
+# ──────────────────────────────────────────────────────────────
+# P1-3 全局异常处理器不得回吐内部异常详情
+# ──────────────────────────────────────────────────────────────
+
+
+class TestExceptionHandlerHidesInternals:
+    def _handler(self):
+        import app_main
+
+        for exc_type, handler in app_main.app.exception_handlers.items():
+            if exc_type is Exception:
+                return handler
+        raise AssertionError("未注册 Exception 处理器")
+
+    async def test_body_has_no_exception_text_and_carries_trace_id(self):
+        from starlette.requests import Request
+
+        request = Request({
+            "type": "http", "method": "GET", "path": "/boom",
+            "headers": [], "query_string": b"", "scheme": "http", "root_path": "",
+            "server": ("testserver", 80), "client": ("testclient", 1234),
+        })
+        secret = "postgresql://root:supersecret@db:5432/mydb"
+        response = await self._handler()(request, RuntimeError(secret))
+
+        body = json.loads(response.body)
+
+        assert response.status_code == 500
+        assert body["detail"] == "Internal Server Error"
+        assert body["trace_id"]
+        assert "supersecret" not in json.dumps(body)
+
+
+# ──────────────────────────────────────────────────────────────
+# P2-1 摘要消息使用稳定 id，避免长会话累积重复摘要
+# ──────────────────────────────────────────────────────────────
+
+
+class TestConversationSummaryMessageId:
+    async def _service(self, monkeypatch):
+        from backend.service.summary_service import SummaryService
+
+        svc = SummaryService(api_key="k", threshold=2, keep_recent=1)
+
+        async def fake_generate(messages, existing_summary):
+            return "摘要文本"
+
+        monkeypatch.setattr(svc, "_generate_summary", fake_generate)
+        return svc
+
+    async def test_summary_message_carries_stable_id(self, monkeypatch):
+        from backend.service.summary_service import CONVERSATION_SUMMARY_MESSAGE_ID
+
+        svc = await self._service(monkeypatch)
+        msgs = [HumanMessage(content=f"m{i}") for i in range(5)]
+
+        compressed, _ = await svc.summarize_if_needed(msgs, "")
+
+        assert compressed[0].id == CONVERSATION_SUMMARY_MESSAGE_ID
+
+    async def test_repeated_compression_keeps_single_summary_message(self, monkeypatch):
+        """回归：无 id 的 SystemMessage 每次压缩都被追加，摘要消息会持续累积。"""
+        from langgraph.graph.message import add_messages
+
+        svc = await self._service(monkeypatch)
+
+        state_msgs = []
+        for round_no in range(3):
+            incoming = [HumanMessage(content=f"r{round_no}-{i}") for i in range(4)]
+            compressed, _ = await svc.summarize_if_needed(state_msgs + incoming, "")
+            state_msgs = add_messages(state_msgs, compressed)
+
+        summary_count = sum(1 for m in state_msgs if getattr(m, "type", "") == "system")
+
+        assert summary_count == 1, f"摘要消息累积了 {summary_count} 条"
+
+
+# ──────────────────────────────────────────────────────────────
+# P3 语义污染与命名清理
+# ──────────────────────────────────────────────────────────────
+
+
+class TestNodesDoNotPolluteDraft:
+    async def test_intent_node_does_not_write_draft(self, monkeypatch):
+        """draft 语义是「报告草稿」，路由 JSON 不应写进去。"""
+        from mult_agents.nodes import intent
+
+        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
+            return {"route": "multiagent", "reason": "r"}, "raw llm text", []
+
+        monkeypatch.setattr(intent, "_invoke_json_agent", fake_invoke)
+
+        out = await intent.intent_node({"query": "q"}, None, "intent_router")
+
+        assert out["intent"] == "multiagent"
+        assert "draft" not in out
+
+    async def test_plan_node_does_not_write_draft(self, monkeypatch):
+        from mult_agents.nodes import plan
+
+        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
+            return (
+                {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
+                 "budget": {}, "objective": "o"},
+                "raw llm text",
+                [],
+            )
+
+        monkeypatch.setattr(plan, "_invoke_json_agent", fake_invoke)
+
+        out = await plan.plan_node({"query": "q", "hitl_enabled": False}, None, "planner")
+
+        assert "draft" not in out
+
+
+class TestRagAuxModelNaming:
+    def test_aux_llm_model_is_distinct_from_rerank_model_name(self):
+        from mult_agents.rag.core import RAGConfig
+
+        cfg = RAGConfig()
+
+        assert cfg.aux_llm_model
+        assert cfg.aux_llm_model != cfg.rerank_model_name
+
+
+class TestRerankFallbackChain:
+    def test_falls_back_to_llm_reranker_when_specialized_unavailable(self):
+        from mult_agents.rag.core import Document, RAGSystem, RerankUnavailable
+
+        rag = object.__new__(RAGSystem)  # 跳过 __init__，避免连接 Milvus
+        rag._reranker_model = MagicMock()
+        rag._reranker_model.rerank.side_effect = RerankUnavailable("boom")
+        rag._reranker = MagicMock()
+        rag._reranker.rerank.return_value = ["llm-result"]
+
+        out = rag._rerank("q", [Document(page_content="a", metadata={})], 3)
+
+        assert out == ["llm-result"]
+
+    def test_uses_llm_reranker_when_no_specialized_model(self):
+        from mult_agents.rag.core import Document, RAGSystem
+
+        rag = object.__new__(RAGSystem)
+        rag._reranker_model = None
+        rag._reranker = MagicMock()
+        rag._reranker.rerank.return_value = ["llm-result"]
+
+        out = rag._rerank("q", [Document(page_content="a", metadata={})], 3)
+
+        assert out == ["llm-result"]
