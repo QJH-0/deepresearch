@@ -141,10 +141,6 @@ class AppSettings(BaseSettings):
             self._business = BusinessSettings()
         return self._business
 
-    @property
-    def config_path(self) -> str:
-        return str(_CONFIG_JSON_PATH)
-
     def cors_origins(self) -> list[str]:
         values = [item.strip() for item in self.cors_allow_origins.split(",")]
         return [item for item in values if item]
@@ -194,9 +190,6 @@ _RELOAD_CALLBACKS: list[Callable] = []
 
 # 需要重启才生效的字段
 _RESTART_REQUIRED_FIELDS = {"model", "thinking_nodes", "checkpointer_backend"}
-
-# GET /config 脱敏排除字段
-_SENSITIVE_FIELDS: set[str] = set()
 
 
 def get_business_settings() -> BusinessSettings:

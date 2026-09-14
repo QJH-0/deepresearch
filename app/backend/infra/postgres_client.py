@@ -72,6 +72,19 @@ CREATE INDEX IF NOT EXISTS idx_chunks_content_hash
     ON document_chunks (content_hash);
 """
 
+# 全文检索列（PG 关键词召回路依赖）。
+#
+# 为什么单独一条 DDL 而不是写进 CREATE TABLE:
+#   CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，新增列必须靠 ALTER 才能落到存量库。
+#   生成列由 PG 自行维护，应用侧无需写入，content 更新即自动重算。
+DDL_DOCUMENT_CHUNKS_FULLTEXT = """
+ALTER TABLE document_chunks
+    ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED;
+CREATE INDEX IF NOT EXISTS idx_chunks_content_tsv
+    ON document_chunks USING GIN (content_tsv);
+"""
+
 DDL_CHUNK_SYNC_MESSAGES = """
 CREATE TABLE IF NOT EXISTS chunk_sync_messages (
     id              TEXT PRIMARY KEY,
@@ -122,6 +135,7 @@ def ensure_tables(dsn: str) -> None:
         with conn.cursor() as cur:
             cur.execute(DDL_DOCUMENTS)
             cur.execute(DDL_DOCUMENT_CHUNKS)
+            cur.execute(DDL_DOCUMENT_CHUNKS_FULLTEXT)
             cur.execute(DDL_CHUNK_SYNC_MESSAGES)
             cur.execute(DDL_CHAT_THREADS)
         logger.info(

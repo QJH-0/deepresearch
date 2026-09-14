@@ -41,12 +41,19 @@ except ImportError:
 # ==============================================================================
 # 配置
 # ==============================================================================
+
+# 知识库向量集合名：子块集合与父块集合是 RAG 读写链路的事实契约。
+# 集中定义，避免各调用点各写一份导致 collection 分叉（写入与检索落到不同集合）。
+DEFAULT_CHILD_COLLECTION = "mult_agent_knowledge"
+DEFAULT_PARENT_COLLECTION = "mult_agent_knowledge_parent"
+
+
 @dataclass(frozen=True)
 class RAGConfig:
     milvus_host: str = "127.0.0.1"
     milvus_port: int = 19530
-    collection_name: str = "mult_agent_knowledge"
-    parent_collection_name: str = "mult_agent_knowledge_parent"
+    collection_name: str = DEFAULT_CHILD_COLLECTION
+    parent_collection_name: str = DEFAULT_PARENT_COLLECTION
     embedding_model: str = "text-embedding-v3"
 
     # 子块参数（精确检索）
@@ -783,13 +790,8 @@ class RAGSystem:
                 text = path.read_text(encoding="utf-8")
             elif ext in loader_map:
                 module_path, class_name = loader_map[ext]
-                module = importlib.import_module(module_path)
-                loader_cls = getattr(module, class_name)
-                if ext in (".txt", ".md", ".markdown"):
-                    loader = loader_cls(str(path), encoding="utf-8")
-                else:
-                    loader = loader_cls(str(path))
-                docs = loader.load()
+                loader_cls = getattr(importlib.import_module(module_path), class_name)
+                docs = loader_cls(str(path)).load()
                 text = "\n\n".join(d.page_content for d in docs)
             else:
                 logger.warning("跳过不支持的格式: %s", path.name)
@@ -905,11 +907,14 @@ class RAGSystem:
             query_variants = [query]
         logger.info("查询重写: %s", query_variants)
 
-        # Step 2: 多路向量召回
-        all_vector_docs: List[Document] = []
-        for q in query_variants:
-            docs = self.vectorstore.similarity_search(q, k=self.config.recall_k)
-            all_vector_docs.extend(docs)
+        # Step 2: 多路向量召回 —— 每个查询变体是独立的一路，
+        # 必须作为独立列表交给 RRF；拍平成一个列表会让「变体顺序」混入 rank 维度，
+        # 后序变体天然吃亏，查询重写的多路召回优势被抵消。
+        vector_runs: List[List[Document]] = [
+            self.vectorstore.similarity_search(q, k=self.config.recall_k)
+            for q in query_variants
+        ]
+        all_vector_docs: List[Document] = [doc for run in vector_runs for doc in run]
 
         # Step 3: 关键词路（优先 PG，降级 BM25）
         keyword_docs: List[Document] = []
@@ -921,14 +926,14 @@ class RAGSystem:
         if not keyword_docs and self.config.enable_bm25 and self.bm25._documents:
             keyword_docs = [doc for doc, _ in self.bm25.search(query, k=self.config.recall_k)]
 
-        # Step 4: RRF 融合替代 hash 去重
+        # Step 4: RRF 融合（每路一个列表）
         merged_docs = rrf_fuse(
-            [all_vector_docs, keyword_docs],
+            [*vector_runs, keyword_docs],
             k=self.config.rrf_k,
         )
 
-        logger.info("多路召回: 向量=%d 关键词=%d RRF融合后=%d",
-                     len(all_vector_docs), len(keyword_docs), len(merged_docs))
+        logger.info("多路召回: 向量路数=%d 向量候选=%d 关键词=%d RRF融合后=%d",
+                     len(vector_runs), len(all_vector_docs), len(keyword_docs), len(merged_docs))
 
         # Step 5: 重排序（专用模型优先，降级 LLM）
         if self.config.enable_reranker and len(merged_docs) > k * 2:

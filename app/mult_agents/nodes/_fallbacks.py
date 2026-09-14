@@ -14,9 +14,9 @@ logger = logging.getLogger("mult_agents")
 
 def _fallback_audit(state: AgentState) -> dict:
     raw_evidence = state.get("web_evidence", []) + state.get("local_evidence", [])
-    scorer = _get_evidence_scorer(state)
+    scorer = _get_evidence_scorer()
     if scorer is not None:
-        evidence_pool = scorer.score_batch([dict(r) for r in raw_evidence])
+        evidence_pool = scorer.score_batch([dict(r) for r in raw_evidence], query=state.get("query", ""))
     else:
         evidence_pool = []
         for record in raw_evidence:
@@ -54,24 +54,59 @@ def _fallback_audit(state: AgentState) -> dict:
     }
 
 
-def _get_evidence_scorer(state: AgentState):
-    """从配置/环境中获取 EvidenceScorer；拿不到 LLM 或开关关闭时返回 None。"""
-    import os
-    fusion_enabled = os.getenv("EVIDENCE_LLM_FUSION", "true").lower() in ("true", "1", "yes")
-    if not fusion_enabled:
-        return None
+_scorer_llm = None
+_scorer_llm_unavailable = False
+
+
+def _get_scorer_llm():
+    """构建并缓存证据评分用 LLM（进程内单例）。
+
+    首次失败后不再重试，避免每个 deep_dive 都重新尝试建连。
+    """
+    global _scorer_llm, _scorer_llm_unavailable
+    if _scorer_llm is not None or _scorer_llm_unavailable:
+        return _scorer_llm
     try:
-        from mult_agents.runtime import get_research_service
-        service = get_research_service()
-        if service is None or not hasattr(service, "bundle"):
+        from langchain_community.chat_models import ChatTongyi
+
+        from backend.config.settings import AppSettings, get_business_settings
+
+        api_key = AppSettings().dashscope_api_key
+        if not api_key:
+            logger.warning("[evidence_scorer] 缺少 DASHSCOPE_API_KEY，证据评分降级为纯先验")
+            _scorer_llm_unavailable = True
             return None
-        bundle = service.bundle
-        llm = getattr(bundle, "review_llm", None) or getattr(bundle, "llm", None)
-        if llm is None:
-            return None
-        return EvidenceScorer(llm)
-    except Exception:
+        _scorer_llm = ChatTongyi(
+            model=get_business_settings().model,
+            temperature=0.0,
+            dashscope_api_key=api_key,
+        )
+        logger.info("[evidence_scorer] 评分 LLM 就绪 | model=%s", get_business_settings().model)
+    except Exception as exc:
+        logger.warning("[evidence_scorer] 评分 LLM 构建失败，降级为纯先验 | %s", exc)
+        _scorer_llm_unavailable = True
+    return _scorer_llm
+
+
+def _get_evidence_scorer():
+    """获取 EvidenceScorer；配置关闭或 LLM 不可用时返回 None（降级纯先验评分）。
+
+    评分开关与权重统一取自 BusinessSettings（config.json），不再另读环境变量，
+    避免同一配置项出现两个事实源。
+    """
+    try:
+        from backend.config.settings import get_business_settings
+
+        biz = get_business_settings()
+    except Exception as exc:
+        logger.warning("[evidence_scorer] 业务配置不可用，降级为纯先验 | %s", exc)
         return None
+    if not biz.evidence_llm_fusion:
+        return None
+    llm = _get_scorer_llm()
+    if llm is None:
+        return None
+    return EvidenceScorer(llm, prior_weight=biz.evidence_prior_weight)
 
 
 

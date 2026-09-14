@@ -74,7 +74,9 @@ class SourcesFoundData(BaseModel):
 
 class InterruptRaisedData(BaseModel):
     interrupt_id: str
-    kind: Literal["plan_approval", "clarification", "report_review"]
+    # "unknown" 是防御性兜底：interrupt 载荷未携带 kind 时（如历史 checkpoint）
+    # 不应因 Literal 校验失败而中断整条 SSE 流
+    kind: Literal["plan_approval", "clarification", "report_review", "unknown"]
     payload: dict
 
 

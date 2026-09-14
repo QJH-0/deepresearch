@@ -388,9 +388,9 @@ def run_single_query(app, config, query, token_acc, memory_manager=None):
     return final, dict(result), elapsed, token_acc.total_tokens
 
 
-def run_eval(config_path, output_path, max_queries=0):
+def run_eval(output_path, max_queries=0):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-    config = AppConfig.from_file(config_path)
+    config = AppConfig.from_file()
     agents = build_agents(config.model, config.api_key, config)
     checkpointer = build_checkpointer(config)
     app = build_workflow_app(agents, checkpointer)
@@ -565,13 +565,8 @@ def print_summary(report):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepResearch 自动化评测")
-    parser.add_argument("--config", type=str, default=None, help="配置文件路径")
     parser.add_argument("--output", type=str, default="eval_report.json", help="输出报告路径")
     parser.add_argument("--max-queries", type=int, default=0, help="最大评测题数 (0=全部)")
     args = parser.parse_args()
 
-    config_path = args.config
-    if not config_path:
-        config_path = str(_PROJECT_ROOT / "config.json")
-
-    run_eval(config_path, args.output, args.max_queries)
+    run_eval(args.output, args.max_queries)

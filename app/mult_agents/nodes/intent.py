@@ -82,7 +82,6 @@ async def direct_answer_node(state: AgentState, agent, agent_name: str, writer: 
         "intent": "direct",
         "final": content,
         "draft": content,
-        "analysis_summary": content,
         "needs_more_research": False,
         "agent_messages": [human],
     }

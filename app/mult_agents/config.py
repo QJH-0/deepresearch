@@ -83,11 +83,7 @@ class AppConfig:
         return replace(self, **cleaned)
 
     @staticmethod
-    def _default_config_path() -> Path:
-        return _PROJECT_ROOT / "config.json"
-
-    @staticmethod
-    def from_file(path: str | Path | None = None) -> "AppConfig":
+    def from_file() -> "AppConfig":
         """从 .env + config.json 构建 AppConfig（通过 pydantic-settings）。"""
         from backend.config.settings import MiddlewareSettings, get_business_settings
 
@@ -166,4 +162,4 @@ class AppConfig:
     @staticmethod
     def from_env() -> "AppConfig":
         """从纯环境变量构建（不读 config.json）。"""
-        return AppConfig.from_file(None)
+        return AppConfig.from_file()

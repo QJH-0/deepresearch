@@ -328,7 +328,7 @@ def _assign_source_ids(records: list[dict], prefix: str) -> list[dict]:
 
 
 def _enrich_evidence_from_raw(evidence: list[dict], raw_records: list[dict]) -> list[dict]:
-    """从原始记录中补充 evidence 中可能丢失的 url、domain 等字段"""
+    """从原始记录中补充 evidence 中可能丢失的 url、domain、relevance_score 等字段"""
     raw_lookup = {str(r.get("source_id", "")).strip(): r for r in raw_records if r.get("source_id")}
     enriched = []
     for ev in evidence:
@@ -344,6 +344,10 @@ def _enrich_evidence_from_raw(evidence: list[dict], raw_records: list[dict]) -> 
         # 补充 title（如 LLM 没有保留）
         if not item.get("title") and raw.get("title"):
             item["title"] = raw["title"]
+        # 补充 relevance_score：证据是重新构造的，不显式透传则下游
+        # _check_evidence_sufficiency 读不到相关性，会误判「证据显著不足」
+        if item.get("relevance_score") is None and raw.get("relevance_score") is not None:
+            item["relevance_score"] = raw["relevance_score"]
         enriched.append(item)
     return enriched
 
@@ -454,8 +458,21 @@ def _fallback_local_evidence(records: list[dict]) -> dict:
 
 
 def _is_official_domain(domain: str) -> bool:
-    value = domain.lower()
-    return value.endswith(".gov.cn") or value.endswith(".gov") or value.endswith(".edu") or value.endswith(".edu.cn") or "gov" in value or "official" in value
+    """官方/权威域名判定（按顶级域后缀，不做子串匹配）。
+
+    早期实现用 `"gov" in value`，会把 govtech.com 之类的普通商业域名误判为官方，
+    使其豁免相关性过滤并获得 0.88 高分，因此收紧为后缀精确匹配。
+    """
+    value = domain.lower().strip().rstrip(".")
+    if not value:
+        return False
+    host = value.split("/")[0].split(":")[0]
+    return host.endswith(_OFFICIAL_DOMAIN_SUFFIXES)
+
+
+_OFFICIAL_DOMAIN_SUFFIXES = (
+    ".gov", ".gov.cn", ".edu", ".edu.cn", ".ac.cn", ".mil",
+)
 
 
 
@@ -505,14 +522,19 @@ class EvidenceScorer:
         self._prior_weight = prior_weight
         self._llm_weight = 1.0 - prior_weight
 
-    def score_batch(self, records: list[dict]) -> list[dict]:
-        """批量评分入口：返回带 reliability_score / reliability_reason 的新记录列表。"""
+    def score_batch(self, records: list[dict], query: str = "") -> list[dict]:
+        """批量评分入口：返回带 reliability_score / reliability_reason 的新记录列表。
+
+        query 需由调用方显式传入 —— 证据记录本身不含研究问题字段，
+        早期实现从 batch[0].get("query") 取，导致评分 prompt 里的问题恒为空、
+        「相关性」维度失效。
+        """
         if not records:
             return []
         scored = []
         for start in range(0, len(records), self.BATCH_SIZE):
             batch = records[start: start + self.BATCH_SIZE]
-            llm_scores = self._llm_score_batch(batch)
+            llm_scores = self._llm_score_batch(batch, query)
             for record in batch:
                 prior, prior_reason = _score_evidence(record)
                 sid = record.get("source_id", "")
@@ -529,7 +551,7 @@ class EvidenceScorer:
                 scored.append(item)
         return scored
 
-    def _llm_score_batch(self, batch: list[dict]) -> dict:
+    def _llm_score_batch(self, batch: list[dict], query: str) -> dict:
         """调用 LLM 批量评估，返回 {source_id: {score, reason}}；失败返回 {}。"""
         lines = []
         for r in batch:
@@ -539,7 +561,6 @@ class EvidenceScorer:
             snippet = str(r.get("snippet", ""))[:200]
             lines.append(f"[{sid}] {title} | {locator} | {snippet}")
         evidence_list = "\n".join(lines)
-        query = batch[0].get("query", "") if batch else ""
         prompt = _EVIDENCE_SCORE_PROMPT.format(query=query, evidence_list=evidence_list)
         try:
             resp = self._llm.invoke(prompt)

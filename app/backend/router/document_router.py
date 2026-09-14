@@ -34,6 +34,29 @@ ALLOWED_EXTENSIONS = [
 MAX_FILE_SIZE_MB = 50
 MAX_FILES_PER_BATCH = 20
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+_READ_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_within_limit(file: UploadFile) -> bytes:
+    """分块读取上传内容，超过上限立即中断。
+
+    直接 `await file.read()` 会先把整个文件读进内存再判断大小，上限拦不住内存占用；
+    分块读取把峰值限制在「上限 + 一个分块」以内。
+    """
+    buf = bytearray()
+    while True:
+        chunk = await file.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > MAX_FILE_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"文件过大，单个文件上限 {MAX_FILE_SIZE_MB} MB",
+            )
+    if not buf:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    return bytes(buf)
 
 
 @router.post("/upload", response_model=DocumentUploadResponse)
@@ -57,17 +80,7 @@ async def upload_document(
             detail=f"不支持的文件格式: {file_ext}，支持: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="文件内容为空")
-    if len(content) > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"文件过大: {len(content) / 1024 / 1024:.1f} MB，"
-                f"单个文件上限 {MAX_FILE_SIZE_MB} MB"
-            ),
-        )
+    content = await _read_within_limit(file)
     result = service.upload_and_ingest(
         file_content=content,
         filename=filename,

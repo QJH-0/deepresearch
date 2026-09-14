@@ -92,10 +92,12 @@ def build_agent(model: str, api_key: str, prompt_key: str, temperature: float, t
 
 def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
     """构建全部节点 Agent。"""
+    # collection 名走 RAGConfig 默认常量，与 app_main / document_service 保持一致；
+    # postgres_dsn 用于启用 PG 关键词召回，缺失时该路静默降级
     rag_config = RAGConfig(
         milvus_host=config.milvus_host,
         milvus_port=config.milvus_port,
-        collection_name=config.milvus_collection,
+        postgres_dsn=config.postgres_dsn,
     )
     init_rag_system(api_key=api_key, config=rag_config)
     # clarify agent 使用轻量模型，判定类任务温度 0.0

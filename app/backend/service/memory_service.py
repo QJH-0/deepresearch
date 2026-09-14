@@ -26,6 +26,19 @@ from backend.infra.store_client import get_store
 
 logger = logging.getLogger("backend.memory_service")
 
+# 记忆命名空间：写入（langmem manager）与读取（hot_path_search / list_memories）
+# 必须解析到同一个前缀，否则后台提取的记忆永远检索不到。
+# manager 侧是模板，由 langmem NamespaceTemplate 按 configurable.user_id 格式化；
+# 读取侧是字面量，因此两者共用同一份常量定义。
+MEMORY_NAMESPACE_USER = "{user_id}"
+MEMORY_NAMESPACE_SUFFIX = "memories"
+
+
+def _user_namespace(user_id: str) -> tuple[str, str]:
+    """读取侧命名空间字面量（与 manager 模板解析结果一致）。"""
+    return (user_id, MEMORY_NAMESPACE_SUFFIX)
+
+
 
 class MemoryService:
     """记忆服务：langmem 双通道（后台提取 + 热路径检索）。
@@ -66,7 +79,7 @@ class MemoryService:
 
         self._manager = create_memory_store_manager(
             llm,
-            namespace=("memories", "{user_id}"),
+            namespace=(MEMORY_NAMESPACE_USER, MEMORY_NAMESPACE_SUFFIX),
             store=store,
             enable_inserts=True,
         )
@@ -90,7 +103,7 @@ class MemoryService:
             logger.warning("[memory] hot_path_search 跳过: PostgresStore 未初始化")
             return ""
 
-        namespace = (user_id, "memories")
+        namespace = _user_namespace(user_id)
         try:
             items = await store.asearch(
                 namespace, query=query, limit=self._hot_path_top_k
@@ -217,7 +230,7 @@ class MemoryService:
             return ""
 
         key = uuid.uuid4().hex
-        namespace = (user_id, "memories")
+        namespace = _user_namespace(user_id)
         await store.aput(
             namespace,
             key,
@@ -249,7 +262,7 @@ class MemoryService:
         if store is None:
             return []
 
-        namespace = (user_id, "memories")
+        namespace = _user_namespace(user_id)
         try:
             items = await store.asearch(
                 namespace,

@@ -13,12 +13,11 @@ P2 重写：替换 workflow_service.py 的 Thread+Queue 桥接为纯 async gener
 
 import asyncio
 import logging
-import os
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from threading import Lock
-from typing import Optional, AsyncIterator, Tuple, Any
+from typing import Optional, AsyncIterator
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -29,21 +28,15 @@ from mult_agents.runtime import build_checkpointer, get_checkpointer
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 from mult_agents.research_logger import get_research_logger, close_research_logger
-from backend.schemas.events import event, sse, EventEnvelope
+from backend.schemas.events import event, sse
 from backend.infra import ThreadRepository, generate_thread_title
 from backend.service.memory_service import get_memory_service
 from backend.service.summary_service import get_summary_service
-
-# ── P6-6: 会话标题 LLM 自动生成 ───────────────────────────────────
-import asyncio as _asyncio
-
-_title_gen_lock = _asyncio.Lock()
 
 
 async def _generate_llm_title(query: str, report_summary: str, api_key: str) -> str:
     """P6-6: 用 qwen-turbo 从用户问题+报告摘要生成 ≤20 字标题。"""
     from langchain_community.chat_models import ChatTongyi
-    from langchain_core.messages import HumanMessage as _HM
 
     llm = ChatTongyi(model="qwen-turbo", temperature=0.1, dashscope_api_key=api_key)
     prompt = (
@@ -53,7 +46,7 @@ async def _generate_llm_title(query: str, report_summary: str, api_key: str) -> 
         f"报告摘要：{report_summary[:500]}"
     )
     try:
-        resp = await llm.ainvoke([_HM(content=prompt)])
+        resp = await llm.ainvoke([HumanMessage(content=prompt)])
         title = resp.content.strip().strip('"\'').strip()
         if title and len(title) <= 30:
             return title
@@ -139,8 +132,7 @@ class ResearchService:
     替代旧 WorkflowService 的核心流式逻辑，不含后台线程/队列。
     """
 
-    def __init__(self, config_path: str):
-        self._config_path = config_path
+    def __init__(self):
         self._lock = Lock()
         self._initialized = False
         self._base_config: AppConfig | None = None
@@ -153,7 +145,7 @@ class ResearchService:
         with self._lock:
             if self._initialized:
                 return
-            base_config = AppConfig.from_file(self._config_path)
+            base_config = AppConfig.from_file()
             agents = build_agents(base_config.model, base_config.api_key, base_config)
             # P2-2: 优先复用 lifespan 初始化的异步 checkpointer（AsyncPostgresSaver），
             # 未初始化（测试/独立调用）则降级到同步工厂（内存）。
@@ -256,8 +248,7 @@ class ResearchService:
             hitl_config=runtime_config.hitl_config,
         )
         # R4.4: 用户真实输入写入 chat_messages（前端可见）
-        from langchain_core.messages import HumanMessage as _HM
-        input_state["chat_messages"] = [_HM(content=query)]
+        input_state["chat_messages"] = [HumanMessage(content=query)]
         input_state["agent_messages"] = []
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
@@ -474,8 +465,7 @@ class ResearchService:
             hitl_config=runtime_config.hitl_config,
         )
         # R4.4: 用户真实输入写入 chat_messages（前端可见）
-        from langchain_core.messages import HumanMessage as _HM
-        input_state["chat_messages"] = [_HM(content=query)]
+        input_state["chat_messages"] = [HumanMessage(content=query)]
         input_state["agent_messages"] = []
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
@@ -538,8 +528,7 @@ class ResearchService:
             hitl_config=runtime_config.hitl_config,
         )
         # R4.4: 用户真实输入写入 chat_messages
-        from langchain_core.messages import HumanMessage as _HM
-        input_state["chat_messages"] = [_HM(content=query)]
+        input_state["chat_messages"] = [HumanMessage(content=query)]
         input_state["agent_messages"] = []
         config = {"configurable": {"thread_id": runtime_config.thread_id}}
 
@@ -1085,7 +1074,5 @@ _SERVICE: ResearchService | None = None
 def get_research_service() -> ResearchService:
     global _SERVICE
     if _SERVICE is None:
-        import os
-        config_path = os.getenv("CONFIG_PATH", "app/config.json")
-        _SERVICE = ResearchService(config_path=config_path)
+        _SERVICE = ResearchService()
     return _SERVICE

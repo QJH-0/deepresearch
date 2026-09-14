@@ -453,7 +453,16 @@ class TestT58LangmemSignature:
             args, kwargs = mock_factory.call_args
             # 只允许 1 个位置参数（llm），其余必须 keyword
             assert len(args) == 1, f"期望 1 个位置参数，实际 {len(args)}"
-            assert kwargs.get("namespace") == ("memories", "{user_id}")
+            assert kwargs.get("namespace") == (
+                memory_service.MEMORY_NAMESPACE_USER,
+                memory_service.MEMORY_NAMESPACE_SUFFIX,
+            )
+            # 写入侧是模板、读取侧是字面量，两者解析结果必须一致，
+            # 否则后台提取的记忆永远检索不到（历史缺陷：顺序写反）
+            resolved_write_ns = tuple(
+                part.format(user_id="u1") for part in kwargs.get("namespace")
+            )
+            assert resolved_write_ns == memory_service._user_namespace("u1")
             assert kwargs.get("store") is mock_store
             assert kwargs.get("enable_inserts") is True
 

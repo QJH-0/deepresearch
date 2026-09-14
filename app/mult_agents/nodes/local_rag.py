@@ -2,6 +2,7 @@
 
 纪律：纯搬迁，零行为变更。每个文件只负责一类节点或辅助函数。
 """
+import asyncio
 import json
 import logging
 
@@ -16,7 +17,7 @@ from ._evidence import (
     _build_queries, _assign_source_ids, _dedupe_sources, _minimal_record_filter,
     _summarize_records, _format_raw_records, _fallback_local_evidence,
     _prune_evidence_to_allowed_sources, _enrich_evidence_from_raw,
-    _finalize_query_traces,
+    _finalize_query_traces, _filter_local_records,
 )
 
 logger = logging.getLogger("mult_agents")
@@ -36,7 +37,11 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
     for query_index, item in enumerate(queries, 1):
         if writer:
             writer({"node": "local_rag", "message": f"正在检索本地知识库 {query_index}/{len(queries)}: {str(item.get('query', ''))[:50]}"})
-        records = search_knowledge_base_records(str(item.get("query", "")), limit=4)
+        # RAG 检索链路内部为同步实现（LLM 重写 + Milvus + rerank），
+        # 必须放到线程池执行，否则会阻塞事件循环、拖死同进程其他 SSE 流
+        records = await asyncio.to_thread(
+            search_knowledge_base_records, str(item.get("query", "")), 4
+        )
         records = _assign_source_ids(records, f"{prefix}_{query_index}")
         for record in records:
             record["section_id"] = item.get("section_id")
@@ -56,6 +61,10 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
         )
     raw_records = _dedupe_sources(raw_records, ["doc_id", "snippet"])
     raw_records = _minimal_record_filter(raw_records, ["snippet", "title", "doc_id"])
+    # 相关性硬过滤：写入 relevance_score 供证据充分性判定使用，并剔除低相关文档
+    raw_records, relevance_stats = _filter_local_records(state["query"], raw_records)
+    logger.info("[local_rag_node] 相关性过滤后 | 保留=%s | 丢弃无关=%s",
+                len(raw_records), relevance_stats["dropped_irrelevant"])
     
     local_retrieval_stats = state.get("local_retrieval_stats", {})
     local_retrieval_stats["query_count"] = local_retrieval_stats.get("query_count", 0) + len(queries)
@@ -91,6 +100,11 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
     
     local_retrieval_stats["kept_count"] = local_retrieval_stats.get("kept_count", 0) + len(evidence)
     local_retrieval_stats["dropped_count"] = local_retrieval_stats.get("dropped_count", 0) + max(len(raw_records) - len(evidence), 0)
+    local_retrieval_stats["dropped_irrelevant"] = (
+        local_retrieval_stats.get("dropped_irrelevant", 0) + relevance_stats["dropped_irrelevant"]
+    )
+    # 透传 url/doc_id/relevance_score 等原始字段（与 web_search_node 一致）
+    evidence = _enrich_evidence_from_raw(evidence, raw_records)
     
     kept_ids = {str(item.get("source_id")) for item in evidence if item.get("source_id")}
     query_traces = _finalize_query_traces(

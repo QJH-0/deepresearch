@@ -20,7 +20,7 @@ from mult_agents.models import build_agents
 
 
 async def main() -> None:
-    cfg = AppConfig.from_file("config.json")
+    cfg = AppConfig.from_file()
     thread_id = "p2_2_persist_verify"
 
     # 1. 初始化 checkpointer

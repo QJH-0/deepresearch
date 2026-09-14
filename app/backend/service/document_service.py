@@ -99,8 +99,7 @@ class DocumentService:
       上传 → MinIO → 解析切块 → PG 本地事务 → MQ 发送
     """
 
-    def __init__(self, config_path: str):
-        self._config_path = config_path
+    def __init__(self):
         self._config: Optional[AppConfig] = None
         self._rag: Optional[RAGSystem] = None
         self._minio: Optional[MinIOStorage] = None
@@ -111,7 +110,7 @@ class DocumentService:
     def _ensure_initialized(self) -> None:
         if self._initialized:
             return
-        self._config = AppConfig.from_file(self._config_path)
+        self._config = AppConfig.from_file()
 
         # 初始化 PG 表结构
         ensure_tables(self._config.postgres_dsn)
@@ -143,11 +142,10 @@ class DocumentService:
             logger.warning("MQ 连接失败（后续可由补偿任务补发）: %s", exc)
 
         # 初始化 RAG 系统（复用全局实例，用于解析切块）
+        # collection 名走 RAGConfig 默认常量，与 app_main / runtime.build_agents 保持一致
         rag_config = RAGConfig(
             milvus_host=self._config.milvus_host,
             milvus_port=self._config.milvus_port,
-            collection_name="mult_agent_knowledge",
-            parent_collection_name="mult_agent_knowledge_parent",
             postgres_dsn=self._config.postgres_dsn,
         )
         if _tools_mod._RAG_SYSTEM is None:
@@ -672,6 +670,4 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def get_document_service() -> DocumentService:
-    from backend.config import AppSettings
-    settings = AppSettings()
-    return DocumentService(config_path=settings.config_path)
+    return DocumentService()

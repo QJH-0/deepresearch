@@ -118,19 +118,19 @@ def _init_infra() -> None:
     """初始化基础设施: PG 表 + RAG + MQ 消费者。"""
     global _chunk_consumer
 
-    settings = AppSettings()
-    config = AppConfig.from_file(settings.config_path)
+    config = AppConfig.from_file()
 
     # 1. 初始化 PG 表结构
     from backend.infra.postgres_client import ensure_tables
     ensure_tables(config.postgres_dsn)
 
     # 2. 初始化 RAG 系统
+    # collection 名取 RAGConfig 默认值（rag.core 中的常量），三处调用点必须一致，
+    # 否则写入与检索会落到不同集合；postgres_dsn 用于启用 PG 关键词召回。
     rag_config = RAGConfig(
         milvus_host=config.milvus_host,
         milvus_port=config.milvus_port,
-        collection_name="mult_agent_knowledge",
-        parent_collection_name="mult_agent_knowledge_parent",
+        postgres_dsn=config.postgres_dsn,
     )
     rag_init_ok = True
     try:
@@ -227,8 +227,7 @@ async def lifespan(app: FastAPI):
     # 启动
     _init_infra()
 
-    settings = AppSettings()
-    config = AppConfig.from_file(settings.config_path)
+    config = AppConfig.from_file()
 
     # P2-2: 异步初始化 checkpointer（须在崩溃恢复扫描之前，二者复用同一单例）
     from mult_agents.runtime import init_checkpointer

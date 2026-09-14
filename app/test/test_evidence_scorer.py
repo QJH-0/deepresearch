@@ -38,7 +38,6 @@ def _make_web_record(sid="WEB1_1-1", domain="example.com", title="t", snippet="s
         "title": title,
         "snippet": snippet,
         "url": f"https://{domain}/page",
-        "query": "test query",
     }
 
 
@@ -49,7 +48,6 @@ def _make_local_record(sid="LOC-1", doc_id="doc1", title="t", snippet="s"):
         "source_type": "local",
         "title": title,
         "snippet": snippet,
-        "query": "test query",
     }
 
 
@@ -206,7 +204,7 @@ def test_prompt_structure():
     llm_json = json.dumps([{"source_id": "WEB1_1-1", "score": 0.8, "reason": "ok"}])
     llm = _mock_llm(llm_json)
     scorer = EvidenceScorer(llm, prior_weight=0.4)
-    scorer.score_batch([record])
+    scorer.score_batch([record], query="test query")
     prompt_arg = llm.invoke.call_args[0][0]
     assert "test query" in prompt_arg
     assert "WEB1_1-1" in prompt_arg

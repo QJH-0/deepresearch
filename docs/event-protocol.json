@@ -176,7 +176,8 @@
         "enum": [
           "plan_approval",
           "clarification",
-          "report_review"
+          "report_review",
+          "unknown"
         ],
         "title": "Kind",
         "type": "string"

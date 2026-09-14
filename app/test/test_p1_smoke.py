@@ -59,8 +59,7 @@ def research_service():
     """Initialize ResearchService, skipping RAG init if Milvus unavailable."""
     from backend.service import ResearchService
     with patch("mult_agents.models.init_rag_system", return_value=None):
-        config_path = str(_PROJECT_ROOT / "app" / "config.json")
-        svc = ResearchService(config_path=config_path)
+        svc = ResearchService()
         svc._ensure_initialized()
     return svc
 

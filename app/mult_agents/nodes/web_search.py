@@ -2,6 +2,7 @@
 
 纪律：纯搬迁，零行为变更。每个文件只负责一类节点或辅助函数。
 """
+import asyncio
 import json
 import logging
 
@@ -16,7 +17,7 @@ from ._evidence import (
     _build_queries, _assign_source_ids, _dedupe_sources, _minimal_record_filter,
     _summarize_records, _format_raw_records, _fallback_web_evidence,
     _prune_evidence_to_allowed_sources, _enrich_evidence_from_raw,
-    _finalize_query_traces,
+    _finalize_query_traces, _filter_web_records,
 )
 
 logger = logging.getLogger("mult_agents")
@@ -41,7 +42,9 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
         logger.info("[web_search_node] 执行第 %s/%s 个查询 | query=%s | section_id=%s", query_index, len(queries), query_text, item.get("section_id"))
         if writer:
             writer({"node": "web_search", "message": f"正在执行第 {query_index}/{len(queries)} 个查询: {query_text[:50]}"})
-        records = web_search_records(query_text, count=4)
+        # 搜索链是同步阻塞实现（内部 future.result 等待），放到线程池执行，
+        # 否则会阻塞事件循环、拖死同进程其他 SSE 流
+        records = await asyncio.to_thread(web_search_records, query_text, 4)
         logger.info("[web_search_node] 查询 %s 返回 | 记录数=%s", query_index, len(records))
         if writer:
             writer({"node": "web_search", "message": f"查询 {query_index} 返回 {len(records)} 条结果"})
@@ -64,11 +67,21 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
         )
     raw_records = _dedupe_sources(raw_records, ["url", "title"])
     raw_records = _minimal_record_filter(raw_records, ["title", "snippet", "url"])
+    # 相关性硬过滤：写入 relevance_score 供证据充分性判定使用，并剔除无关/垃圾域名结果
+    raw_records, relevance_stats = _filter_web_records(state["query"], raw_records)
+    logger.info("[web_search_node] 相关性过滤后 | 保留=%s | 丢弃无关=%s | 丢弃域名=%s",
+                len(raw_records), relevance_stats["dropped_irrelevant"], relevance_stats["dropped_domain"])
     logger.info("[web_search_node] 数据清洗后 | 去重过滤后记录数=%s", len(raw_records))
     
     web_retrieval_stats = state.get("web_retrieval_stats", {})
     web_retrieval_stats["query_count"] = web_retrieval_stats.get("query_count", 0) + len(queries)
     web_retrieval_stats["raw_count"] = web_retrieval_stats.get("raw_count", 0) + len(raw_records)
+    web_retrieval_stats["dropped_irrelevant"] = (
+        web_retrieval_stats.get("dropped_irrelevant", 0) + relevance_stats["dropped_irrelevant"]
+    )
+    web_retrieval_stats["dropped_domain"] = (
+        web_retrieval_stats.get("dropped_domain", 0) + relevance_stats["dropped_domain"]
+    )
     
     log_inputs("web_search", agent_name, {"query_count": str(len(queries)), "raw_count": str(len(raw_records))})
     if not raw_records:

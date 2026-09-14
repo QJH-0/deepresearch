@@ -11,6 +11,7 @@ import json
 import logging
 
 from langchain_core.messages import HumanMessage
+from langgraph.graph import END
 from langgraph.types import StreamWriter, Command
 
 from ..state import AgentState
@@ -126,7 +127,7 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
 
             case "reject":
                 logger.info("[plan] 用户否决计划")
-                return Command(goto="__end__", update={
+                return Command(goto=END, update={
                     "final": "研究计划被否决。",
                     "needs_more_research": False,
                     "plan": plan_summary,

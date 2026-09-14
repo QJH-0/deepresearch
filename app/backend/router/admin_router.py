@@ -6,10 +6,10 @@ from pathlib import Path
 from fastapi import APIRouter, Header, HTTPException
 
 from backend.config.settings import (
+    AppSettings,
     BusinessSettings,
     _diff_restart_required,
     _RESTART_REQUIRED_FIELDS,
-    _SENSITIVE_FIELDS,
     get_business_settings,
     _set_business_settings,
     MiddlewareSettings,
@@ -22,21 +22,28 @@ _CONFIG_JSON_PATH = _PROJECT_ROOT / "config.json"
 
 
 def _check_admin_token(x_admin_token: str | None) -> None:
-    """非空 ADMIN_TOKEN 时校验请求头，为空时放行（本地开发场景）。"""
+    """校验管理端令牌。
+
+    仅 development 环境保留「未配置 ADMIN_TOKEN 即放行」的本地开发便利；
+    其他环境一律 fail-closed，避免部署后管理端点裸奔。
+    """
     expected = MiddlewareSettings().admin_token
-    if expected and x_admin_token != expected:
-        raise HTTPException(status_code=401, detail="invalid admin token")
+    if expected:
+        if x_admin_token != expected:
+            raise HTTPException(status_code=401, detail="invalid admin token")
+        return
+    if AppSettings().app_env != "development":
+        raise HTTPException(
+            status_code=401,
+            detail="ADMIN_TOKEN 未配置，管理端点在非 development 环境不可用",
+        )
 
 
 @router.get("/config")
 async def get_config(x_admin_token: str | None = Header(None)):
-    """当前生效业务配置（脱敏视图）。"""
+    """当前生效业务配置。"""
     _check_admin_token(x_admin_token)
-    biz = get_business_settings()
-    data = biz.model_dump()
-    for field in _SENSITIVE_FIELDS:
-        data.pop(field, None)
-    return data
+    return get_business_settings().model_dump()
 
 
 @router.post("/config/reload")

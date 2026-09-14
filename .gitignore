@@ -65,6 +65,7 @@ data/knowledge/gen_docs/generated/
 
 # AI 工具配置
 .workbuddy/
+.workbuddy-ai/
 
 # 临时文件
 *.tmp
