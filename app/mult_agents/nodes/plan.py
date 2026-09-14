@@ -1,5 +1,8 @@
 """plan 节点（P4: plan_approval 三分支 approve/revise/reject）。
 
+注意：plan_node 不重置 iteration。该字段表示已完成的检索轮次，
+由 reflect_node 与 write_node 递增；全新任务时由 create_initial_state 初始化为 0。
+
 P4 改造：
 - interrupt(kind=plan_approval) 载荷含 kind 键
 - approve → 计划固化，进入检索
@@ -91,7 +94,6 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
                     "search_plan": search_plan,
                     "budget": budget,
                     "agent_messages": messages,
-                    "iteration": 0,
                     "plan_revision_count": 0,
                     "user_feedback": {"approved": True},
                 }
@@ -111,7 +113,6 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
                         "search_plan": search_plan,
                         "budget": budget,
                         "agent_messages": messages,
-                        "iteration": 0,
                         "plan_revision_count": plan_revision_count,
                         "user_feedback": {"approved": True, "reason": "max_revisions_reached"},
                     }
@@ -143,7 +144,6 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
         "search_plan": search_plan,
         "budget": budget,
         "agent_messages": messages,
-        "iteration": 0,
         "user_feedback": {},
         "plan_revision_count": 0,
     }

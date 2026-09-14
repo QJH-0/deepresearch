@@ -1109,3 +1109,213 @@ class TestAgentBuilderConsolidation:
         for key in ("rag_agent", "python_agent", "amap_agent",
                     "file_agent", "sql_agent", "terminal_agent", "web_search_agent"):
             assert key not in PROMPTS, f"{key} 描述的是不存在的工具，应已删除"
+
+
+# ──────────────────────────────────────────────────────────────
+# 流式事件翻译器：两条入口共用一套实现
+# ──────────────────────────────────────────────────────────────
+
+
+class TestStreamTranslator:
+    def _translator(self, **kwargs):
+        from backend.service.research_service import _StreamTranslator
+
+        return _StreamTranslator("run1", **kwargs)
+
+    def test_token_emits_start_then_delta_once(self):
+        t = self._translator()
+
+        first = t.translate("custom", {"type": "token", "node": "write", "text": "A"})
+        second = t.translate("custom", {"type": "token", "node": "write", "text": "B"})
+
+        assert sum("message.start" in f for f in first) == 1
+        assert sum("message.delta" in f for f in first) == 1
+        # 同一节点后续 token 不再重复发 message.start
+        assert not any("message.start" in f for f in second)
+        assert any("message.delta" in f for f in second)
+        assert t.last_token_node == "write"
+
+    def test_thinking_and_sources_and_progress(self):
+        t = self._translator()
+
+        assert any("message.thinking" in f for f in t.translate(
+            "custom", {"type": "thinking", "node": "analyze", "text": "推理"}))
+        assert any("agent.status" in f for f in t.translate(
+            "custom", {"type": "progress", "node": "plan"}))
+        assert any("sources.found" in f for f in t.translate(
+            "custom", {"type": "sources", "sources": [{"title": "t"}]}))
+
+    def test_legacy_node_message_format_still_translated(self):
+        t = self._translator()
+
+        frames = t.translate("custom", {"node": "web_search", "message": "检索中"})
+
+        assert any("agent.status" in f for f in frames)
+
+    def test_updates_extracts_final_and_route(self):
+        t = self._translator()
+
+        frames = t.translate("updates", {"write": {"final": "报告正文"}})
+        t.translate("updates", {"intent": {"intent": "direct"}})
+
+        assert any("agent.status" in f for f in frames)
+        assert t.final == "报告正文"
+        assert t.route == "direct"
+
+    def test_interrupt_frame_is_emitted_and_stops_processing(self):
+        t = self._translator()
+
+        class _Intr:
+            id = "i1"
+            value = {"kind": "plan_approval"}
+
+        frames = t.translate("updates", {"__interrupt__": [_Intr()]})
+
+        assert len(frames) == 1
+        assert "interrupt.raised" in frames[0]
+        assert "plan_approval" in frames[0]
+
+    def test_node_completion_is_logged_when_logger_present(self):
+        logger = MagicMock()
+        t = self._translator(research_logger=logger)
+
+        t.translate("updates", {"plan": {"plan": "x"}})
+
+        logger.log_event.assert_called_once_with("node_complete", {"node": "plan"})
+
+    def test_non_dict_chunk_is_ignored(self):
+        t = self._translator()
+
+        assert t.translate("custom", "not a dict") == []
+        assert t.translate("updates", None) == []
+        assert t.translate("unknown-mode", {}) == []
+
+
+# ──────────────────────────────────────────────────────────────
+# iteration 语义：plan_node 不再重置轮次计数
+# ──────────────────────────────────────────────────────────────
+
+
+class TestIterationSemantics:
+    async def test_plan_node_preserves_iteration(self, monkeypatch):
+        """回归：plan_node 曾无条件把 iteration 归零，使 write_node 的
+        「已达迭代上限」守卫永远无法触发（write 的 +1 会被 plan 覆盖）。"""
+        from mult_agents.nodes import plan
+
+        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
+            return (
+                {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
+                 "budget": {}, "objective": "o"},
+                "raw",
+                [],
+            )
+
+        monkeypatch.setattr(plan, "_invoke_json_agent", fake_invoke)
+
+        out = await plan.plan_node(
+            {"query": "q", "hitl_enabled": False, "iteration": 2}, None, "planner"
+        )
+
+        assert "iteration" not in out, "plan_node 不应重置 iteration"
+
+
+# ──────────────────────────────────────────────────────────────
+# 父子分块：父块内容必须是父块文本，而不是子块副本
+# ──────────────────────────────────────────────────────────────
+
+
+class TestParentChildSplit:
+    def _split(self):
+        from mult_agents.rag.core import (
+            create_parent_splitter,
+            create_semantic_chunker,
+            split_parent_child,
+        )
+
+        markdown_splitter, child_splitter = create_semantic_chunker(chunk_size=200, chunk_overlap=20)
+        parent_splitter = create_parent_splitter(parent_chunk_size=600, parent_chunk_overlap=50)
+        text = "# 标题\n\n" + "。".join(f"第{i}段内容" * 6 for i in range(30)) + "。"
+        return split_parent_child(
+            text, "/tmp/手册.md",
+            markdown_splitter=markdown_splitter,
+            parent_splitter=parent_splitter,
+            child_splitter=child_splitter,
+        )
+
+    def test_parent_content_is_the_parent_text_not_a_child_copy(self):
+        parents, children = self._split()
+
+        assert parents and children
+        parent_by_id = {p.metadata["parent_id"]: p for p in parents}
+        multi_child_parents = {
+            pid for pid in parent_by_id
+            if sum(1 for c in children if c.metadata["parent_id"] == pid) > 1
+        }
+        assert multi_child_parents, "构造的文本应产生至少一个含多个子块的父块"
+
+        for child in children:
+            pid = child.metadata["parent_id"]
+            if pid not in multi_child_parents:
+                continue
+            assert child.page_content != parent_by_id[pid].page_content, (
+                "父块内容不应等于子块内容"
+            )
+            assert child.metadata["parent_content"] == parent_by_id[pid].page_content
+
+    def test_children_carry_parent_content_for_async_consumer(self):
+        _parents, children = self._split()
+
+        assert all(c.metadata.get("parent_content") for c in children), (
+            "子块必须携带 parent_content，否则异步向量化只能把子块内容当父块"
+        )
+
+    def test_document_service_uses_the_shared_implementation(self):
+        """回归：document_service 曾另抄一份切分逻辑，把父块内容写成了子块内容。"""
+        from importlib import import_module
+
+        ds_mod = import_module("backend.service.document_service")
+        svc = object.__new__(ds_mod.DocumentService)
+        svc._rag = None  # 走本地降级切分器
+
+        chunks = svc._semantic_split("# 标题\n\n" + "内容。" * 200, "/tmp/手册.md", "手册.md")
+
+        assert chunks
+        for content, metadata in chunks:
+            assert metadata["source_name"] == "手册.md"
+            assert metadata.get("parent_content"), "应携带 parent_content"
+            assert metadata["chunk_type"] == "child"
+
+
+class TestChunkConsumerParentContent:
+    def _run(self, payload_metadata):
+        import json
+
+        from backend.infra.chunk_consumer import _process_message
+
+        rag = MagicMock()
+        rag._parent_map = {}
+        repo = MagicMock()
+        repo.get_chunk_status.return_value = "pending"
+
+        body = json.dumps({
+            "chunk_id": "c1", "doc_id": "d1", "content": "子块正文",
+            "parent_id": "p1", "section_path": "H1 > H2",
+            "source_name": "手册.md", "chunk_idx": 0,
+            "metadata": payload_metadata,
+        }).encode("utf-8")
+
+        _process_message(rag, repo, body)
+        return rag
+
+    def test_uses_parent_content_when_present(self):
+        """回归：父块此前用子块 content 构造，父子扩展退化为返回子块副本。"""
+        rag = self._run({"child_id": "c1", "parent_content": "父块完整正文"})
+
+        parent_doc = rag.parent_store.add_documents.call_args.args[0][0]
+        assert parent_doc.page_content == "父块完整正文"
+
+    def test_falls_back_to_child_content_for_legacy_payload(self):
+        rag = self._run({"child_id": "c1"})
+
+        parent_doc = rag.parent_store.add_documents.call_args.args[0][0]
+        assert parent_doc.page_content == "子块正文"

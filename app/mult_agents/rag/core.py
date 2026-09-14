@@ -627,6 +627,81 @@ def create_parent_splitter(
     )
 
 
+def split_parent_child(
+    text: str,
+    source: str,
+    *,
+    markdown_splitter,
+    parent_splitter,
+    child_splitter,
+) -> Tuple[List[Document], List[Document]]:
+    """按 Markdown 结构切分，返回 (父块列表, 子块列表)。
+
+    这是父子分块的**唯一实现** —— 此前 document_service 里另抄了一份，
+    结果把父块内容写成了子块内容，父子上下文扩展退化为返回子块副本。
+
+    子块 metadata 额外带 `parent_content`：父块文本没有落库，
+    异步向量化的消费者（MQ 消费者 / 同步降级路径）只有拿到它才能构造出正确的父块。
+    """
+    source_name = Path(source).name if source else "unknown"
+
+    try:
+        md_chunks = markdown_splitter.split_text(text)
+    except Exception:
+        # 非 Markdown 文本，直接作为单个块
+        md_chunks = [Document(page_content=text, metadata={})]
+
+    parent_docs: List[Document] = []
+    child_docs: List[Document] = []
+
+    for md_chunk in md_chunks:
+        section_path = " > ".join(
+            v for v in [
+                md_chunk.metadata.get('h1'),
+                md_chunk.metadata.get('h2'),
+                md_chunk.metadata.get('h3'),
+                md_chunk.metadata.get('h4'),
+            ] if v
+        )
+
+        parent_chunks = parent_splitter.split_text(md_chunk.page_content)
+        for p_idx, p_chunk in enumerate(parent_chunks):
+            parent_id = hashlib.md5(f"{source_name}:{section_path}:{p_idx}".encode()).hexdigest()[:12]
+            parent_docs.append(Document(
+                page_content=p_chunk,
+                metadata={
+                    **md_chunk.metadata,
+                    "source": source,
+                    "source_name": source_name,
+                    "section_path": section_path,
+                    "parent_id": parent_id,
+                    "chunk_type": "parent",
+                    "doc_id": source,
+                },
+            ))
+
+            child_chunks = child_splitter.split_text(p_chunk)
+            for c_idx, c_chunk in enumerate(child_chunks):
+                child_id = hashlib.md5(f"{parent_id}:{c_idx}".encode()).hexdigest()[:12]
+                child_docs.append(Document(
+                    page_content=c_chunk,
+                    metadata={
+                        **md_chunk.metadata,
+                        "source": source,
+                        "source_name": source_name,
+                        "section_path": section_path,
+                        "parent_id": parent_id,
+                        "child_id": child_id,
+                        "chunk_type": "child",
+                        "chunk_idx": c_idx,
+                        "doc_id": source,
+                        "parent_content": p_chunk,
+                    },
+                ))
+
+    return parent_docs, child_docs
+
+
 # ==============================================================================
 # 高级 RAG 系统
 # ==============================================================================
@@ -834,68 +909,13 @@ class RAGSystem:
 
     def _semantic_split(self, text: str, source: str) -> Tuple[List[Document], List[Document]]:
         """语义切分文本，返回 (父块列表, 子块列表)。"""
-        source_name = Path(source).name if source else "unknown"
-
-        # Step 1: 按 Markdown 标题切分
-        try:
-            md_chunks = self.markdown_splitter.split_text(text)
-        except Exception:
-            # 非 Markdown 文本，直接作为单个块
-            md_chunks = [Document(page_content=text, metadata={})]
-
-        parent_docs: List[Document] = []
-        child_docs: List[Document] = []
-
-        for md_chunk in md_chunks:
-            # 构建层级路径
-            section_path = " > ".join(
-                v for v in [
-                    md_chunk.metadata.get('h1'),
-                    md_chunk.metadata.get('h2'),
-                    md_chunk.metadata.get('h3'),
-                    md_chunk.metadata.get('h4'),
-                ] if v
-            )
-
-            # Step 2: 父块切分
-            parent_chunks = self.parent_splitter.split_text(md_chunk.page_content)
-            for p_idx, p_chunk in enumerate(parent_chunks):
-                parent_id = hashlib.md5(f"{source_name}:{section_path}:{p_idx}".encode()).hexdigest()[:12]
-                parent_doc = Document(
-                    page_content=p_chunk,
-                    metadata={
-                        **md_chunk.metadata,
-                        "source": source,
-                        "source_name": source_name,
-                        "section_path": section_path,
-                        "parent_id": parent_id,
-                        "chunk_type": "parent",
-                        "doc_id": source,
-                    }
-                )
-                parent_docs.append(parent_doc)
-
-                # Step 3: 子块切分
-                child_chunks = self.child_splitter.split_text(p_chunk)
-                for c_idx, c_chunk in enumerate(child_chunks):
-                    child_id = hashlib.md5(f"{parent_id}:{c_idx}".encode()).hexdigest()[:12]
-                    child_doc = Document(
-                        page_content=c_chunk,
-                        metadata={
-                            **md_chunk.metadata,
-                            "source": source,
-                            "source_name": source_name,
-                            "section_path": section_path,
-                            "parent_id": parent_id,
-                            "child_id": child_id,
-                            "chunk_type": "child",
-                            "chunk_idx": c_idx,
-                            "doc_id": source,
-                        }
-                    )
-                    child_docs.append(child_doc)
-
-        return parent_docs, child_docs
+        return split_parent_child(
+            text,
+            source,
+            markdown_splitter=self.markdown_splitter,
+            parent_splitter=self.parent_splitter,
+            child_splitter=self.child_splitter,
+        )
 
     # ==================================================================
     # 检索

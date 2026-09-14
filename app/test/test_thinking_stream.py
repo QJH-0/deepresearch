@@ -317,16 +317,33 @@ class TestCustomThinkingForwarding:
 
 
 class TestResumeStreamThinking:
-    """resume_stream 的 custom 通道同样有 thinking 分支。"""
+    """resume_stream 与 stream_research 共用同一套事件翻译，thinking 分支不会只补一边。
 
-    def test_resume_has_thinking_branch(self):
-        """验证 resume_stream 代码中包含 thinking 分支。"""
+    历史写法是断言 resume_stream 的源码里含 "thinking" 字符串 ——
+    这类按源码文本的断言会把实现细节锁死，重构时误报失败，
+    却抓不住真正的风险（两条入口各自实现、补了一边漏另一边）。
+    """
+
+    def test_shared_translator_emits_thinking_event(self):
+        from backend.service.research_service import _StreamTranslator
+
+        translator = _StreamTranslator("run1")
+
+        frames = translator.translate(
+            "custom", {"type": "thinking", "node": "write", "text": "推理中"}
+        )
+
+        assert any("message.thinking" in f for f in frames), "thinking 分块应转发 message.thinking"
+        assert any("message.start" in f for f in frames), "节点首次出现时应先发 message.start"
+
+    def test_both_entry_points_use_the_shared_translator(self):
         import inspect
+
         from backend.service.research_service import ResearchService
 
-        src = inspect.getsource(ResearchService.resume_stream)
-        assert "thinking" in src, "resume_stream 应包含 thinking 分支"
-        assert "message.thinking" in src, "resume_stream 应转发 message.thinking 事件"
+        for method in (ResearchService.stream_research, ResearchService.resume_stream):
+            src = inspect.getsource(method)
+            assert "_StreamTranslator(" in src, f"{method.__name__} 应使用共用翻译器"
 
 
 # ──────────────────────────────────────────────

@@ -120,8 +120,10 @@ def _build_documents(doc_id: str, rows: list) -> tuple[list, list]:
 
         parent_id = row["parent_id"]
         if parent_id and parent_id not in parents_by_id:
+            # 父块文本优先取切分阶段写入的 parent_content；
+            # 老数据没有该字段时退回子块内容（与旧行为一致）
             parents_by_id[parent_id] = Document(
-                page_content=row["content"],
+                page_content=meta.get("parent_content") or row["content"],
                 metadata={
                     "source": doc_id,
                     "source_name": source_name,

@@ -126,6 +126,118 @@ NODE_LABELS = {
 }
 
 
+
+class _StreamTranslator:
+    """把 graph.astream 的 (mode, chunk) 翻译成 SSE 帧。
+
+    stream_research 与 resume_stream 共用同一套翻译逻辑 —— 两条入口此前各写一份
+    近乎相同的实现，已经出现过「一边补了旧格式兼容分支、另一边没补」的分歧。
+    可变状态（seen_nodes / last_token_node / final / route）由实例持有，
+    调用方只需把 translate() 的返回值逐个 yield 出去。
+    """
+
+    def __init__(self, run_id: str, research_logger=None):
+        self.run_id = run_id
+        self.research_logger = research_logger
+        self.seen_nodes: set[str] = set()
+        self.last_token_node = ""
+        self.final = ""
+        self.route = "multiagent"
+
+    def translate(self, mode: str, chunk) -> list[str]:
+        """返回该 chunk 应发出的 SSE 帧列表（可能为空）。"""
+        if mode == "custom":
+            return self._custom_frames(chunk)
+        if mode == "updates":
+            return self._update_frames(chunk)
+        return []
+
+    # ── custom 通道：节点内 StreamWriter 发出的自定义事件 ──
+
+    def _custom_frames(self, chunk) -> list[str]:
+        if not isinstance(chunk, dict):
+            return []
+
+        evt_type = chunk.get("type", "")
+        frames: list[str] = []
+
+        if evt_type == "token":
+            frames.extend(self._start_message_if_needed(chunk.get("node", "")))
+            frames.append(sse(event("message.delta", message_id=self._message_id(chunk), text=chunk.get("text", ""))))
+        elif evt_type == "thinking":
+            frames.extend(self._start_message_if_needed(chunk.get("node", "")))
+            frames.append(sse(event("message.thinking", message_id=self._message_id(chunk), text=chunk.get("text", ""))))
+        elif evt_type == "progress":
+            frames.append(self._status_frame(chunk.get("node", ""), "running"))
+        elif "node" in chunk and "message" in chunk and "type" not in chunk:
+            # 旧格式兼容：{node: "...", message: "..."}
+            frames.append(self._status_frame(chunk.get("node", ""), "running"))
+        elif evt_type == "sources":
+            frames.append(sse(event("sources.found", sources=chunk.get("sources", []))))
+
+        return frames
+
+    def _message_id(self, chunk: dict) -> str:
+        node = chunk.get("node", "")
+        self.last_token_node = node
+        return f"{self.run_id}:{node}"
+
+    def _start_message_if_needed(self, node: str) -> list[str]:
+        if node in self.seen_nodes:
+            return []
+        self.seen_nodes.add(node)
+        return [sse(event("message.start", message_id=f"{self.run_id}:{node}", node=node))]
+
+    @staticmethod
+    def _status_frame(node: str, phase: str) -> str:
+        return sse(event("agent.status", node=node, label=NODE_LABELS.get(node, node), phase=phase))
+
+    # ── updates 通道：节点完成与 interrupt ──
+
+    def _update_frames(self, chunk) -> list[str]:
+        if not isinstance(chunk, dict):
+            return []
+
+        if "__interrupt__" in chunk:
+            frames = []
+            for intr in chunk["__interrupt__"]:
+                intr_value = intr.value if isinstance(intr.value, dict) else {"value": intr.value}
+                intr_kind = intr_value.get("kind", "unknown")
+                frames.append(sse(event(
+                    "interrupt.raised",
+                    interrupt_id=intr.id,
+                    kind=intr_kind,
+                    payload=intr_value,
+                )))
+            return frames
+
+        frames = []
+        for node_name, node_output in chunk.items():
+            if node_name == "__interrupt__":
+                continue
+
+            frames.append(self._status_frame(node_name, "completed"))
+
+            if not isinstance(node_output, dict):
+                continue
+
+            if self.research_logger is not None:
+                self.research_logger.log_event("node_complete", {"node": node_name})
+
+            if node_name == "intent":
+                detected = str(node_output.get("intent", self.route)).strip().lower()
+                if detected in {"direct", "multiagent"}:
+                    self.route = detected
+                if self.research_logger is not None:
+                    self.research_logger.update_content("intent", self.route)
+
+            value = node_output.get("final")
+            if value:
+                self.final = str(value)
+
+        return frames
+
+
 class ResearchService:
     """研究服务：管理图执行、流式输出与会话元数据。
 
@@ -267,12 +379,11 @@ class ResearchService:
 
         final = ""
         route = "multiagent"
-        seen_nodes: set[str] = set()
-        last_token_node = ""
 
         # 1. 发送 run.started
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
 
+        translator = _StreamTranslator(run_id, research_logger=research_logger)
         heartbeat_interval = _get_heartbeat_interval()
         try:
             async for mode, chunk in _astream_with_heartbeat(
@@ -284,93 +395,12 @@ class ResearchService:
                 if mode == "heartbeat":
                     yield HEARTBEAT_FRAME
                     continue
-                if mode == "custom":
-                    # 节点内 StreamWriter 发出的自定义事件
-                    if isinstance(chunk, dict):
-                        evt_type = chunk.get("type", "")
+                for frame in translator.translate(mode, chunk):
+                    yield frame
 
-                        # token 级流式：LLM 输出的增量 text
-                        if evt_type == "token":
-                            node = chunk.get("node", "")
-                            text = chunk.get("text", "")
-                            mid = f"{run_id}:{node}"
-                            last_token_node = node
-                            # 首次出现该节点时发 message.start
-                            if node not in seen_nodes:
-                                seen_nodes.add(node)
-                                yield sse(event("message.start", message_id=mid, node=node))
-                            yield sse(event("message.delta", message_id=mid, text=text))
-
-                        # R2.4: 深度思考 reasoning 增量
-                        elif evt_type == "thinking":
-                            node = chunk.get("node", "")
-                            text = chunk.get("text", "")
-                            mid = f"{run_id}:{node}"
-                            last_token_node = node
-                            if node not in seen_nodes:
-                                seen_nodes.add(node)
-                                yield sse(event("message.start", message_id=mid, node=node))
-                            yield sse(event("message.thinking", message_id=mid, text=text))
-
-                        # 进度消息
-                        elif evt_type == "progress":
-                            node = chunk.get("node", "")
-                            message = chunk.get("message", "")
-                            label = NODE_LABELS.get(node, node)
-                            yield sse(event("agent.status", node=node, label=label, phase="running"))
-
-                        # 旧格式兼容：{node: "...", message: "..."}
-                        elif "node" in chunk and "message" in chunk and "type" not in chunk:
-                            node = chunk.get("node", "")
-                            message = chunk.get("message", "")
-                            label = NODE_LABELS.get(node, node)
-                            yield sse(event("agent.status", node=node, label=label, phase="running"))
-
-                        # sources.found
-                        elif evt_type == "sources":
-                            sources = chunk.get("sources", [])
-                            yield sse(event("sources.found", sources=sources))
-
-                    continue
-
-                if mode == "updates":
-                    if not isinstance(chunk, dict):
-                        continue
-
-                    # interrupt 检测
-                    if "__interrupt__" in chunk:
-                        interrupts = chunk["__interrupt__"]
-                        for intr in interrupts:
-                            # P4: 从 interrupt payload 中提取实际 kind（不再硬编码）
-                            intr_value = intr.value if isinstance(intr.value, dict) else {"value": intr.value}
-                            intr_kind = intr_value.get("kind", "unknown") if isinstance(intr_value, dict) else "unknown"
-                            yield sse(event("interrupt.raised",
-                                            interrupt_id=intr.id,
-                                            kind=intr_kind,
-                                            payload=intr_value))
-                        break
-
-                    for node_name, node_output in chunk.items():
-                        if node_name == "__interrupt__":
-                            continue
-
-                        label = NODE_LABELS.get(node_name, node_name)
-                        yield sse(event("agent.status", node=node_name, label=label, phase="completed"))
-
-                        if isinstance(node_output, dict):
-                            research_logger.log_event("node_complete", {"node": node_name})
-
-                            # 提取 intent
-                            if node_name == "intent":
-                                detected = str(node_output.get("intent", route)).strip().lower()
-                                if detected in {"direct", "multiagent"}:
-                                    route = detected
-                                research_logger.update_content("intent", route)
-
-                            # 提取 final
-                            value = node_output.get("final")
-                            if value:
-                                final = str(value)
+            final = translator.final
+            route = translator.route
+            last_token_node = translator.last_token_node
 
             # 2. 正常结束：发 run.completed + P5 后台记忆提取
             if final:
@@ -925,36 +955,9 @@ class ResearchService:
 
         logger.info("[TRACE] resume_stream START | run=%s | thread=%s | mode=%s", run_id, thread_id, mode)
 
-        seen_nodes: set[str] = set()
-        last_token_node = ""
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
 
-        # 输入路由：
-        # mode=continue → None（从最后 checkpoint 续跑）
-        # mode=answer → Command(resume=resume_value)（从 interrupt 点继续）
-        # mode=modify → 先 aupdate_state 追加 HumanMessage，再 astream(None, config)
-        if mode == "continue":
-            input_state = None
-            logger.info("[TRACE] resume_stream CONTINUE | thread=%s | 从最后 checkpoint 续跑", thread_id)
-        elif mode == "modify":
-            if not resume_value:
-                yield sse(event("run.error", code="InvalidResume", message="mode=modify 需要 resume_value（用户消息文本）"))
-                return
-            user_text = str(resume_value)
-            await self._app.aupdate_state(
-                config,
-                {"chat_messages": [HumanMessage(content=user_text)]},
-            )
-            input_state = None
-            logger.info("[TRACE] resume_stream MODIFY | thread=%s | 追加用户消息后从 checkpoint 续跑", thread_id)
-        else:
-            if resume_value is None:
-                yield sse(event("run.error", code="InvalidResume", message="mode=answer 需要 resume_value"))
-                return
-            input_state = Command(resume=resume_value)
-            logger.info("[TRACE] resume_stream ANSWER | thread=%s | resume_value=%s",
-                        thread_id, str(resume_value)[:100])
-
+        translator = _StreamTranslator(run_id, research_logger=get_research_logger(thread_id))
         heartbeat_interval = _get_heartbeat_interval()
         try:
             async for mode_chunk, chunk in _astream_with_heartbeat(
@@ -966,62 +969,11 @@ class ResearchService:
                 if mode_chunk == "heartbeat":
                     yield HEARTBEAT_FRAME
                     continue
-                if mode_chunk == "custom":
-                    if isinstance(chunk, dict):
-                        evt_type = chunk.get("type", "")
-                        if evt_type == "token":
-                            node = chunk.get("node", "")
-                            text = chunk.get("text", "")
-                            mid = f"{run_id}:{node}"
-                            last_token_node = node
-                            if node not in seen_nodes:
-                                seen_nodes.add(node)
-                                yield sse(event("message.start", message_id=mid, node=node))
-                            yield sse(event("message.delta", message_id=mid, text=text))
-                        elif evt_type == "thinking":
-                            node = chunk.get("node", "")
-                            text = chunk.get("text", "")
-                            mid = f"{run_id}:{node}"
-                            last_token_node = node
-                            if node not in seen_nodes:
-                                seen_nodes.add(node)
-                                yield sse(event("message.start", message_id=mid, node=node))
-                            yield sse(event("message.thinking", message_id=mid, text=text))
-                        elif evt_type == "progress":
-                            node = chunk.get("node", "")
-                            label = NODE_LABELS.get(node, node)
-                            yield sse(event("agent.status", node=node, label=label, phase="running"))
-                        elif evt_type == "sources":
-                            sources = chunk.get("sources", [])
-                            yield sse(event("sources.found", sources=sources))
-                    continue
+                for frame in translator.translate(mode_chunk, chunk):
+                    yield frame
 
-                if mode_chunk == "updates":
-                    if not isinstance(chunk, dict):
-                        continue
-
-                    # interrupt 检测
-                    if "__interrupt__" in chunk:
-                        interrupts = chunk["__interrupt__"]
-                        for intr in interrupts:
-                            # P4: 从 interrupt payload 中提取实际 kind（不再硬编码）
-                            intr_value = intr.value if isinstance(intr.value, dict) else {"value": intr.value}
-                            intr_kind = intr_value.get("kind", "unknown") if isinstance(intr_value, dict) else "unknown"
-                            yield sse(event("interrupt.raised",
-                                            interrupt_id=intr.id,
-                                            kind=intr_kind,
-                                            payload=intr_value))
-                        break
-
-                    for node_name, node_output in chunk.items():
-                        if node_name == "__interrupt__":
-                            continue
-                        label = NODE_LABELS.get(node_name, node_name)
-                        yield sse(event("agent.status", node=node_name, label=label, phase="completed"))
-                        if isinstance(node_output, dict):
-                            value = node_output.get("final")
-                            if value:
-                                final = str(value)
+            final = translator.final
+            last_token_node = translator.last_token_node
 
             # 尝试获取 final
             if final:

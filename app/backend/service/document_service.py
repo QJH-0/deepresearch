@@ -38,7 +38,14 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 
 from mult_agents.config import AppConfig
-from mult_agents.rag.core import RAGConfig, RAGSystem, PDFParser
+from mult_agents.rag.core import (
+    RAGConfig,
+    RAGSystem,
+    PDFParser,
+    create_parent_splitter,
+    create_semantic_chunker,
+    split_parent_child,
+)
 import mult_agents.tools as _tools_mod
 from mult_agents.tools import init_rag_system
 
@@ -420,88 +427,39 @@ class DocumentService:
 
         return self._semantic_split(full_text, str(file_path), filename)
 
+    def _get_splitters(self):
+        """取切分器：优先复用 RAG 系统的实例，RAG 未初始化时降级为本地构造。"""
+        if self._rag is not None:
+            return self._rag.markdown_splitter, self._rag.parent_splitter, self._rag.child_splitter
+
+        logger.warning("RAG 系统未初始化，使用本地降级切分器")
+        markdown_splitter, child_splitter = create_semantic_chunker()
+        return markdown_splitter, create_parent_splitter(), child_splitter
+
     def _semantic_split(
         self,
         text: str,
         source: str,
         source_name: str,
     ) -> list[tuple[str, dict]]:
+        """切分文本，返回 (子块内容, metadata) 列表。
+
+        复用 rag.core 的 split_parent_child —— 父子分块只保留一份实现。
+        历史上这里另抄了一份，把父块内容写成了子块内容，
+        导致父子上下文扩展退化为返回子块副本。
         """
-        语义切分文本，返回 (chunk_content, metadata) 列表。
-
-        复用 RAG 系统的 Markdown 标题切分 + 递归子切分 + 父子分块策略，
-        但只返回切分结果，不执行向量入库。
-
-        如果 RAG 系统未初始化（Milvus 不可用），自动降级为本地切分器。
-        """
-        # 优先使用 RAG 系统的切分器；如果 RAG 未初始化则降级为本地切分
-        if self._rag is not None:
-            markdown_splitter: MarkdownHeaderTextSplitter = self._rag.markdown_splitter
-            child_splitter: RecursiveCharacterTextSplitter = self._rag.child_splitter
-            parent_splitter: RecursiveCharacterTextSplitter = self._rag.parent_splitter
-        else:
-            logger.warning("RAG 系统未初始化，使用本地降级切分器")
-            from langchain_text_splitters import MarkdownHeaderTextSplitter as _MHS
-            markdown_splitter = _MHS(
-                headers_to_split_on=[
-                ("#", "h1"),
-                ("##", "h2"),
-                ("###", "h3"),
-                ("####", "h4"),
-                ]
-            )
-            child_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=512, chunk_overlap=64
-            )
-            parent_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=2048, chunk_overlap=100
-            )
-
-        # Step 1: 按 Markdown 标题切分
-        try:
-            md_chunks = markdown_splitter.split_text(text)
-        except Exception:
-            md_chunks = [Document(page_content=text, metadata={})]
-
-        results: list[tuple[str, dict]] = []
-
-        for md_chunk in md_chunks:
-            section_path = " > ".join(
-                v for v in [
-                    md_chunk.metadata.get('h1'),
-                    md_chunk.metadata.get('h2'),
-                    md_chunk.metadata.get('h3'),
-                    md_chunk.metadata.get('h4'),
-                ] if v
-            )
-
-            # Step 2: 父块切分
-            parent_chunks = parent_splitter.split_text(md_chunk.page_content)
-            for p_idx, p_chunk in enumerate(parent_chunks):
-                parent_id = hashlib.md5(
-                    f"{source_name}:{section_path}:{p_idx}".encode()
-                ).hexdigest()[:12]
-
-                # Step 3: 子块切分
-                child_chunks = child_splitter.split_text(p_chunk)
-                for c_idx, c_chunk in enumerate(child_chunks):
-                    child_id = hashlib.md5(
-                        f"{parent_id}:{c_idx}".encode()
-                    ).hexdigest()[:12]
-                    metadata = {
-                        **md_chunk.metadata,
-                        "source": source,
-                        "source_name": source_name,
-                        "section_path": section_path,
-                        "parent_id": parent_id,
-                        "child_id": child_id,
-                        "chunk_type": "child",
-                        "chunk_idx": c_idx,
-                        "doc_id": source,
-                    }
-                    results.append((c_chunk, metadata))
-
-        return results
+        markdown_splitter, parent_splitter, child_splitter = self._get_splitters()
+        _, child_docs = split_parent_child(
+            text,
+            source,
+            markdown_splitter=markdown_splitter,
+            parent_splitter=parent_splitter,
+            child_splitter=child_splitter,
+        )
+        for doc in child_docs:
+            # source 是临时文件路径，这里用真实文件名覆盖
+            doc.metadata["source_name"] = source_name
+        return [(doc.page_content, doc.metadata) for doc in child_docs]
 
     def _sync_vectorize_chunks(
         self,
@@ -531,7 +489,7 @@ class DocumentService:
                 self._rag.bm25.add_documents([child_doc])
                 if chunk.parent_id and chunk.parent_id not in self._rag._parent_map:
                     parent_doc = LCDocument(
-                        page_content=chunk.content,
+                        page_content=chunk.metadata.get("parent_content") or chunk.content,
                         metadata={
                             "source": chunk.doc_id,
                             "source_name": source_name,

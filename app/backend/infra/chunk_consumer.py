@@ -137,6 +137,9 @@ def _process_message(rag: RAGSystem, repo: ChunkRepository, body: bytes) -> None
 
     raw_metadata = payload.get("metadata", {})
     child_id = raw_metadata.get("child_id", "")
+    # 父块文本由切分阶段写入 child metadata（parent_content）；
+    # 历史消息没有该字段时退回子块内容，与旧行为保持一致
+    parent_content = str(raw_metadata.get("parent_content") or content)
 
     child_doc = Document(
         page_content=content,
@@ -156,7 +159,7 @@ def _process_message(rag: RAGSystem, repo: ChunkRepository, body: bytes) -> None
 
     if parent_id and parent_id not in rag._parent_map:
         parent_doc = Document(
-            page_content=content,
+            page_content=parent_content,
             metadata={
                 "source": doc_id,
                 "source_name": source_name,
