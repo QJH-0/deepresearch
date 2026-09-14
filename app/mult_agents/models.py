@@ -48,10 +48,14 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
     P1-3: 支持从 config.json 的 node_models 字段按节点配模型。
     未配置的节点使用默认 model。
     """
+    # collection 名走 RAGConfig 默认常量（rag.core 中的单一事实源），
+    # 不再从 config.milvus_collection 取 —— 该配置项指向的集合与
+    # app_main / document_service 使用的集合不一致，会造成写入与检索分叉。
+    # postgres_dsn 用于启用 PG 关键词召回。
     rag_config = RAGConfig(
         milvus_host=config.milvus_host,
         milvus_port=config.milvus_port,
-        collection_name=config.milvus_collection,
+        postgres_dsn=config.postgres_dsn,
     )
     init_rag_system(api_key=api_key, config=rag_config)
 

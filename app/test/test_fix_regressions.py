@@ -772,3 +772,340 @@ class TestRerankFallbackChain:
         out = rag._rerank("q", [Document(page_content="a", metadata={})], 3)
 
         assert out == ["llm-result"]
+
+
+# ──────────────────────────────────────────────────────────────
+# P1-2 删除文档时同步清理向量与关键词索引
+# ──────────────────────────────────────────────────────────────
+
+
+class TestBm25RemoveDocuments:
+    def _retriever(self):
+        from mult_agents.rag.core import BM25Retriever, Document
+
+        r = BM25Retriever()
+        r.add_documents([
+            Document(page_content="alpha beta", metadata={"doc_id": "A"}),
+            Document(page_content="alpha gamma", metadata={"doc_id": "A"}),
+            Document(page_content="delta epsilon", metadata={"doc_id": "B"}),
+        ])
+        return r
+
+    def test_removes_only_target_doc_and_rebuilds_stats(self):
+        r = self._retriever()
+
+        removed = r.remove_documents("A")
+
+        assert removed == 2
+        assert len(r._documents) == 1
+        assert r._documents[0].metadata["doc_id"] == "B"
+        # df 必须重算：alpha 原只出现在被删文档中，删除后不应残留
+        assert "alpha" not in r._df
+        assert "delta" in r._df
+
+    def test_unknown_doc_id_is_noop(self):
+        r = self._retriever()
+
+        assert r.remove_documents("NOPE") == 0
+        assert len(r._documents) == 3
+
+
+class TestRagDeleteDocumentVectors:
+    def _rag(self):
+        from mult_agents.rag.core import Document, RAGSystem
+
+        rag = object.__new__(RAGSystem)  # 跳过 __init__，避免连接 Milvus
+        rag.vectorstore = MagicMock()
+        rag.parent_store = MagicMock()
+        rag.bm25 = MagicMock()
+        rag.bm25.remove_documents.return_value = 3
+        rag._parent_map = {
+            "p1": Document(page_content="x", metadata={"doc_id": "docA"}),
+            "p2": Document(page_content="y", metadata={"doc_id": "docB"}),
+        }
+        return rag
+
+    def test_deletes_both_collections_and_evicts_parent_map(self):
+        rag = self._rag()
+
+        result = rag.delete_document_vectors("docA")
+
+        assert result["child_deleted"] is True
+        assert result["parent_deleted"] is True
+        assert result["bm25_removed"] == 3
+        assert result["parents_evicted"] == 1
+        assert "p1" not in rag._parent_map
+        assert "p2" in rag._parent_map
+        assert rag.vectorstore.delete.call_args.kwargs["expr"] == 'doc_id == "docA"'
+
+    def test_failure_on_one_path_does_not_abort_the_other(self):
+        rag = self._rag()
+        rag.vectorstore.delete.side_effect = RuntimeError("milvus down")
+
+        result = rag.delete_document_vectors("docA")
+
+        assert result["child_deleted"] is False
+        assert result["parent_deleted"] is True
+        assert any("milvus down" in err for err in result["errors"])
+
+    def test_empty_doc_id_is_noop(self):
+        rag = self._rag()
+
+        result = rag.delete_document_vectors("")
+
+        rag.vectorstore.delete.assert_not_called()
+        assert result["errors"] == []
+
+
+class TestDocumentServiceVectorCleanup:
+    def _service(self, monkeypatch):
+        from importlib import import_module
+
+        ds_mod = import_module("backend.service.document_service")
+        svc = object.__new__(ds_mod.DocumentService)
+        svc._config = None
+        svc._repo = MagicMock()
+        svc._minio = MagicMock()
+        svc._rag = MagicMock()
+        svc._mq = None
+        svc._initialized = True
+        svc._rag.delete_document_vectors.return_value = {"child_deleted": True, "errors": []}
+        return svc
+
+    def test_single_delete_cleans_vectors(self, monkeypatch):
+        svc = self._service(monkeypatch)
+        svc._repo.delete_document.return_value = "obj/key"
+
+        out = svc.delete_document("docA")
+
+        svc._rag.delete_document_vectors.assert_called_once_with("docA")
+        assert out["deleted"] is True
+        assert out["vectors"]["child_deleted"] is True
+
+    def test_batch_delete_cleans_vectors_for_each_deleted_doc(self, monkeypatch):
+        svc = self._service(monkeypatch)
+        svc._repo.delete_documents_batch.return_value = [("d1", "k1"), ("d2", "k2")]
+
+        out = svc.delete_documents_batch(["d1", "d2"], "u1")
+
+        assert out["deleted"] == 2
+        called = [c.args[0] for c in svc._rag.delete_document_vectors.call_args_list]
+        assert called == ["d1", "d2"]
+
+    def test_missing_document_skips_vector_cleanup(self, monkeypatch):
+        svc = self._service(monkeypatch)
+        svc._repo.delete_document.return_value = None
+
+        out = svc.delete_document("nope")
+
+        assert out["deleted"] is False
+        svc._rag.delete_document_vectors.assert_not_called()
+
+
+# ──────────────────────────────────────────────────────────────
+# Milvus 动态字段必须显式开启（否则 metadata 被静默丢弃）
+# ──────────────────────────────────────────────────────────────
+
+
+class TestMilvusDynamicFieldEnabled:
+    def test_rag_system_enables_dynamic_field_for_both_collections(self, monkeypatch):
+        """回归：默认 False 时 langchain_milvus 会从首批 metadata 推断真实列；
+        对已存在的集合不再走建表流程，schema 未覆盖的 metadata 键被静默丢弃，
+        导致 doc_id / section_path 丢失、引用无法定位、父子扩展失效。
+        """
+        from mult_agents.rag import core
+
+        captured = []
+
+        def fake_vectorstore(**kwargs):
+            captured.append(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(core, "_MilvusVectorStore", fake_vectorstore)
+        monkeypatch.setattr(core.RAGSystem, "_connect_to_milvus", lambda self: None)
+
+        core.RAGSystem(api_key="k", config=core.RAGConfig())
+
+        assert len(captured) == 2, "应为子块与父块各建一个向量库"
+        assert all(item["enable_dynamic_field"] is True for item in captured)
+
+
+class TestParentResolveFallback:
+    def _rag(self, query_result):
+        from mult_agents.rag.core import RAGSystem
+
+        rag = object.__new__(RAGSystem)  # 跳过 __init__，避免连接 Milvus
+        rag._parent_map = {}
+        rag.parent_store = MagicMock()
+        rag.parent_store.col.query.return_value = query_result
+        return rag
+
+    def test_resolves_parent_from_store_on_cache_miss(self):
+        """回归：_parent_map 只在写入时填充，进程重启后为空，
+        不回查则父子上下文扩展在重启后完全不生效。"""
+        rag = self._rag([{
+            "text": "父块正文", "doc_id": "d1", "source": "d1",
+            "source_name": "手册.md", "section_path": "H1 > H2",
+            "parent_id": "p1", "chunk_type": "parent",
+        }])
+
+        doc = rag._resolve_parent("p1")
+
+        assert doc is not None
+        assert doc.page_content == "父块正文"
+        assert doc.metadata["section_path"] == "H1 > H2"
+        assert "text" not in doc.metadata, "text 应作为正文而非 metadata"
+        assert rag._parent_map["p1"] is doc
+
+    def test_second_call_uses_cache(self):
+        rag = self._rag([{"text": "x", "parent_id": "p1"}])
+
+        rag._resolve_parent("p1")
+        rag._resolve_parent("p1")
+
+        assert rag.parent_store.col.query.call_count == 1
+
+    def test_returns_none_when_parent_not_found(self):
+        rag = self._rag([])
+
+        assert rag._resolve_parent("missing") is None
+
+    def test_returns_none_when_store_has_no_collection(self):
+        from mult_agents.rag.core import RAGSystem
+
+        rag = object.__new__(RAGSystem)
+        rag._parent_map = {}
+        rag.parent_store = MagicMock()
+        del rag.parent_store.col  # 取不到底层集合
+
+        assert rag._resolve_parent("p1") is None
+
+    def test_query_failure_is_swallowed(self):
+        rag = self._rag([])
+        rag.parent_store.col.query.side_effect = RuntimeError("milvus down")
+
+        assert rag._resolve_parent("p1") is None
+
+
+class TestLocalSourceTitle:
+    @pytest.mark.parametrize(
+        "metadata,expected",
+        [
+            ({"source_name": "手册.md", "source": "uuid-1234"}, "手册.md"),
+            ({"source": "/data/docs/手册.md"}, "手册.md"),
+            ({}, "本地知识片段-3"),
+        ],
+    )
+    def test_title_prefers_filename_over_source_id(self, metadata, expected):
+        """回归：source 是文档 id、source_name 才是文件名，
+        只取 source 会让引用列表显示一串 uuid。"""
+        from mult_agents.rag.core import RAGSystem
+
+        assert RAGSystem._local_title(metadata, 3) == expected
+
+
+# ──────────────────────────────────────────────────────────────
+# P1-4 / P2-10 agent 构建收敛：唯一实现 + collection 单一事实源
+# ──────────────────────────────────────────────────────────────
+
+
+def _minimal_app_config(**overrides):
+    from mult_agents.config import AppConfig
+
+    base = dict(
+        api_key="test-key",
+        model="qwen-plus",
+        thread_id="t",
+        user_id="u",
+        tenant_id="t",
+        max_iterations=3,
+        enable_memory=False,
+        memory_embedding_model="",
+        memory_hot_path_top_k=5,
+        memory_background_enabled=False,
+        memory_extract_model="qwen-turbo",
+        save_conversation_task=False,
+        checkpointer_backend="memory",
+        enable_milvus=False,
+        redis_url="",
+        postgres_dsn="postgresql://example/db",
+        milvus_host="localhost",
+        milvus_port=19530,
+        milvus_collection="mult_agent_memory",  # 指向一个并不存在的集合
+    )
+    base.update(overrides)
+    return AppConfig(**base)
+
+
+class TestAgentBuilderConsolidation:
+    def test_models_build_agents_uses_shared_collection_constants(self, monkeypatch):
+        """回归：生产路径走 models.build_agents，它曾用 config.milvus_collection
+        （值为 mult_agent_memory，Milvus 中并不存在），与写入侧集合分叉。"""
+        from mult_agents import models
+        from mult_agents.rag.core import DEFAULT_CHILD_COLLECTION, DEFAULT_PARENT_COLLECTION
+
+        captured = {}
+        monkeypatch.setattr(
+            models, "init_rag_system",
+            lambda api_key, config: captured.update(cfg=config),
+        )
+        monkeypatch.setattr(models, "build_agent", lambda *a, **kw: MagicMock())
+
+        config = _minimal_app_config()
+        models.build_agents("qwen-plus", "test-key", config)
+
+        cfg = captured["cfg"]
+        assert cfg.collection_name == DEFAULT_CHILD_COLLECTION
+        assert cfg.parent_collection_name == DEFAULT_PARENT_COLLECTION
+        assert cfg.postgres_dsn == config.postgres_dsn
+
+    def test_runtime_no_longer_duplicates_the_builder(self):
+        """回归：runtime 与 models 曾各有一份 build_agents，修复只落在一处导致分叉。"""
+        from mult_agents import runtime
+
+        assert not hasattr(runtime, "build_agents"), "runtime 不应再重复实现 build_agents"
+        assert not hasattr(runtime, "build_agent"), "runtime 不应再重复实现 build_agent"
+        assert hasattr(runtime, "AgentBundle"), "AgentBundle 仍由 runtime 提供"
+
+    def test_no_agent_is_built_with_tools(self, monkeypatch):
+        """不变量：节点直调函数、不经过 agent tool-calling，因此所有 agent 的 tools 必须为空。
+
+        若将来真的启用工具调用，此断言会失败 —— 那时应同时恢复 tools.py 的 @tool 层。
+        """
+        from mult_agents import models
+
+        captured_tools = []
+
+        def fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False):
+            captured_tools.append((prompt_key, tools))
+            return MagicMock()
+
+        monkeypatch.setattr(models, "build_agent", fake_build_agent)
+        monkeypatch.setattr(models, "init_rag_system", lambda **kw: None)
+
+        models.build_agents("qwen-plus", "test-key", _minimal_app_config())
+
+        assert captured_tools, "未捕获到任何 agent 构建调用"
+        assert all(tools == [] for _key, tools in captured_tools), (
+            f"存在被绑定工具的 agent: {[k for k, t in captured_tools if t]}"
+        )
+
+    def test_tools_module_keeps_no_unwired_tool_layer(self):
+        """回归：tools.py 曾保留一层未被任何 agent 绑定的 @tool 定义与占位桩函数。"""
+        from mult_agents import tools
+
+        for removed in ("web_search_stub", "amap_weather", "sql_inter",
+                        "python_inter", "safe_write_file", "search_knowledge_base"):
+            assert not hasattr(tools, removed), f"{removed} 应已随未接线工具层删除"
+
+        for kept in ("web_search_records", "search_knowledge_base_records",
+                     "init_rag_system", "SearchProviderChain"):
+            assert hasattr(tools, kept), f"{kept} 是仍在使用的入口，不应被删除"
+
+    def test_prompts_do_not_describe_nonexistent_tools(self):
+        """回归：prompt 曾告诉 agent 可以使用并不存在的工具，会诱发幻觉调用。"""
+        from mult_agents.prompts import PROMPTS
+
+        for key in ("rag_agent", "python_agent", "amap_agent",
+                    "file_agent", "sql_agent", "terminal_agent", "web_search_agent"):
+            assert key not in PROMPTS, f"{key} 描述的是不存在的工具，应已删除"

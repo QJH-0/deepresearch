@@ -607,36 +607,42 @@ class DocumentService:
         }
 
     def delete_documents_batch(self, doc_ids: list[str], user_id: str) -> dict:
-        """批量删除文档（PG + MinIO）。"""
+        """批量删除文档（PG + MinIO + 向量库）。"""
         self._ensure_initialized()
         assert self._repo is not None
         assert self._minio is not None
 
-        object_keys = self._repo.delete_documents_batch(doc_ids, user_id=user_id)
-        if not object_keys:
+        deleted = self._repo.delete_documents_batch(doc_ids, user_id=user_id)
+        if not deleted:
             return {
                 "deleted": 0,
                 "doc_ids": doc_ids,
                 "message": "没有可删除的文档",
             }
 
-        for object_key in object_keys:
+        for _doc_id, object_key in deleted:
             try:
                 self._minio.delete_file(object_key)
             except Exception as exc:  # pragma: no cover - 外部存储
                 logger.warning("MinIO 删除失败 | key=%s | %s", object_key, exc)
 
+        vector_errors = []
+        for doc_id, _object_key in deleted:
+            result = self._delete_vectors(doc_id)
+            vector_errors.extend(result.get("errors", []))
+
         return {
-            "deleted": len(object_keys),
+            "deleted": len(deleted),
             "doc_ids": doc_ids,
-            "message": f"已删除 {len(object_keys)} 个文档（PG + MinIO）",
+            "message": f"已删除 {len(deleted)} 个文档（PG + MinIO + 向量库）",
+            "vector_errors": vector_errors,
         }
 
     def delete_document(self, doc_id: str) -> dict:
-        """
-        删除文档（PG + MinIO）。
+        """删除文档（PG + MinIO + 向量库）。
 
-        注意: Milvus 中的向量索引需要异步清理（发送删除消息到 MQ）。
+        PG 的 document_chunks 由外键级联删除，但 Milvus 与 BM25 中的切片不会随之消失，
+        必须显式清理，否则已删文档仍会被检索命中。
         """
         self._ensure_initialized()
         assert self._repo is not None
@@ -651,11 +657,27 @@ class DocumentService:
             }
 
         self._minio.delete_file(object_key)
+        vector_result = self._delete_vectors(doc_id)
+        message = "文档已删除（PG + MinIO + 向量库）"
+        if vector_result.get("errors"):
+            message += "，但向量清理存在失败项，请检查日志"
         return {
             "deleted": True,
             "doc_id": doc_id,
-            "message": "文档已删除（PG + MinIO），向量索引需异步清理",
+            "message": message,
+            "vectors": vector_result,
         }
+
+    def _delete_vectors(self, doc_id: str) -> dict:
+        """清理该文档在 Milvus 与 BM25 中的切片；RAG 不可用时返回 skipped。"""
+        if self._rag is None:
+            logger.warning("RAG 系统不可用，跳过向量清理 | doc_id=%s", doc_id)
+            return {"skipped": "RAG 系统不可用"}
+        try:
+            return self._rag.delete_document_vectors(doc_id)
+        except Exception as exc:  # pragma: no cover - 外部存储
+            logger.warning("向量清理失败 | doc_id=%s | %s", doc_id, exc)
+            return {"errors": [str(exc)]}
 
     def get_document_status(self, doc_id: str) -> dict:
         """查询文档向量化状态。"""

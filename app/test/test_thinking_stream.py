@@ -58,10 +58,10 @@ class TestThinkingNodesConfig:
     """build_agent 的 enable_thinking 参数按 thinking_nodes 配置注入。"""
 
     def test_thinking_nodes_empty_disables_all(self):
-        from mult_agents.runtime import build_agent
+        from mult_agents.models import build_agent
 
-        with patch("mult_agents.runtime.build_agent", wraps=build_agent) as mock_build:
-            from mult_agents.runtime import build_agents
+        with patch("mult_agents.models.build_agent", wraps=build_agent) as mock_build:
+            from mult_agents.models import build_agents
             from mult_agents.config import AppConfig
 
             config = AppConfig(
@@ -104,9 +104,9 @@ class TestThinkingNodesConfig:
             call_log.append({"prompt_key": prompt_key, "enable_thinking": enable_thinking})
             return MagicMock()
 
-        with patch("mult_agents.runtime.build_agent", side_effect=_fake_build_agent), \
-             patch("mult_agents.runtime.init_rag_system"):
-            from mult_agents.runtime import build_agents
+        with patch("mult_agents.models.build_agent", side_effect=_fake_build_agent), \
+             patch("mult_agents.models.init_rag_system"):
+            from mult_agents.models import build_agents
 
             config = AppConfig(
                 api_key="test",

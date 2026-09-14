@@ -19,7 +19,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import psycopg
 from psycopg_pool import ConnectionPool
@@ -620,16 +620,17 @@ class ChunkRepository:
         logger.info("重试向量化 | doc_id=%s | 重置切片=%d", doc_id, len(msg_rows))
         return [m[3] for m in msg_rows]
 
-    def delete_documents_batch(self, doc_ids: List[str], user_id: str) -> List[str]:
+    def delete_documents_batch(self, doc_ids: List[str], user_id: str) -> List[Tuple[str, str]]:
         """
-        批量删除文档，返回被删文档的 object_key 列表（供 MinIO 清理）。
+        批量删除文档，返回被删文档的 (doc_id, object_key) 列表。
 
-        只删 user_id 名下的文档，避免越权删除他人数据。
+        返回 doc_id 是为了让调用方能据此清理 Milvus / BM25 中的对应切片；
+        object_key 供 MinIO 清理。只删 user_id 名下的文档，避免越权删除他人数据。
         """
         if not doc_ids:
             return []
         pool = self._get_pool()
-        object_keys: List[str] = []
+        deleted: List[Tuple[str, str]] = []
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -642,12 +643,12 @@ class ChunkRepository:
                 rows = cur.fetchall()
                 if not rows:
                     return []
-                object_keys = [r[1] for r in rows]
+                deleted = [(r[0], r[1]) for r in rows]
                 cur.execute(
                     "DELETE FROM documents WHERE id = ANY(%s) AND user_id = %s",
                     ([r[0] for r in rows], user_id),
                 )
-        return object_keys
+        return deleted
 
     def delete_document(self, doc_id: str) -> Optional[str]:
         """

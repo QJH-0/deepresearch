@@ -63,6 +63,8 @@ class DocumentDeleteResponse(BaseModel):
     deleted: bool
     doc_id: str
     message: str
+    # 向量清理结果（Milvus 子块/父块、BM25 命中数、失败项）
+    vectors: dict = {}
 
 
 class DocumentBatchDeleteRequest(BaseModel):
@@ -78,6 +80,8 @@ class DocumentBatchDeleteResponse(BaseModel):
     deleted: int
     doc_ids: list[str]
     message: str
+    # 向量清理失败项（成功时为空）
+    vector_errors: list[str] = []
 
 
 class DocumentRetryResponse(BaseModel):

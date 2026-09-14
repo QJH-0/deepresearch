@@ -9,17 +9,10 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from langchain_community.chat_models import ChatTongyi
-from langchain.agents import create_agent
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .config import AppConfig
-from .prompts import PROMPTS
-from .tools import init_rag_system
-from .rag.core import RAGConfig
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -64,56 +57,6 @@ class AgentBundle:
     direct_responder: any
     writer: any
     clarifier: any
-
-
-def build_agent(model: str, api_key: str, prompt_key: str, temperature: float, tools: list, enable_thinking: bool = False):
-    """构建单个 Agent。
-
-    enable_thinking=True 时使用 ChatOpenAI 兼容模式接入 DashScope 深度思考；
-    False 时保持 ChatTongyi 原生构建（行为不变）。
-    """
-    if api_key:
-        os.environ["DASHSCOPE_API_KEY"] = api_key
-    prompt = PROMPTS[prompt_key]
-
-    if enable_thinking:
-        llm = ChatOpenAI(
-            api_key=api_key or os.getenv("DASHSCOPE_API_KEY", ""),
-            model=model,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            temperature=temperature,
-            extra_body={"enable_thinking": True},
-        )
-    else:
-        llm = ChatTongyi(model=model, temperature=temperature)
-
-    return create_agent(model=llm, tools=tools, system_prompt=prompt)
-
-
-def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
-    """构建全部节点 Agent。"""
-    # collection 名走 RAGConfig 默认常量，与 app_main / document_service 保持一致；
-    # postgres_dsn 用于启用 PG 关键词召回，缺失时该路静默降级
-    rag_config = RAGConfig(
-        milvus_host=config.milvus_host,
-        milvus_port=config.milvus_port,
-        postgres_dsn=config.postgres_dsn,
-    )
-    init_rag_system(api_key=api_key, config=rag_config)
-    # clarify agent 使用轻量模型，判定类任务温度 0.0
-    clarify_model = "qwen-turbo"
-    thinking_nodes = set(getattr(config, "thinking_nodes", None) or [])
-    return AgentBundle(
-        intent_router=build_agent(model, api_key, "intent_router", 0.0, []),
-        planner=build_agent(model, api_key, "plan", 0.3, []),
-        scout_web=build_agent(model, api_key, "web_search", 0.4, []),
-        scout_local=build_agent(model, api_key, "local_rag", 0.4, []),
-        evidence_judge=build_agent(model, api_key, "deep_dive", 0.2, [], enable_thinking="deep_dive" in thinking_nodes),
-        analyst=build_agent(model, api_key, "analyze", 0.3, [], enable_thinking="analyze" in thinking_nodes),
-        direct_responder=build_agent(model, api_key, "direct_answer", 0.2, []),
-        writer=build_agent(model, api_key, "write", 0.4, [], enable_thinking="write" in thinking_nodes),
-        clarifier=build_agent(clarify_model, api_key, "clarify", 0.0, []),
-    )
 
 
 async def init_checkpointer(config: AppConfig):

@@ -258,6 +258,32 @@ class BM25Retriever:
         self._avgdl = 0.0
         self._df = {}
 
+    def remove_documents(self, doc_id: str) -> int:
+        """按 doc_id 移除文档，并重建 df / avgdl。
+
+        BM25 的打分依赖全量语料的 df 与平均文档长度，
+        因此删除后必须整体重算，不能只摘掉文档本身。
+        """
+        if not doc_id or not self._documents:
+            return 0
+        keep = [
+            idx for idx, doc in enumerate(self._documents)
+            if str(doc.metadata.get("doc_id", "")) != doc_id
+        ]
+        removed = len(self._documents) - len(keep)
+        if removed == 0:
+            return 0
+
+        self._documents = [self._documents[i] for i in keep]
+        self._doc_tokens = [self._doc_tokens[i] for i in keep]
+        self._df = {}
+        for tokens in self._doc_tokens:
+            for token in set(tokens):
+                self._df[token] = self._df.get(token, 0) + 1
+        total_len = sum(len(tokens) for tokens in self._doc_tokens)
+        self._avgdl = total_len / max(len(self._doc_tokens), 1)
+        return removed
+
 
 # ==============================================================================
 # 查询重写器
@@ -632,11 +658,17 @@ class RAGSystem:
         self._connect_to_milvus()
 
         # 子块向量库（精确检索）
+        #
+        # enable_dynamic_field 必须显式开启：langchain_milvus 默认为 False，此时它会
+        # 从「首批写入的 metadata」推断出真实列；而对已存在的集合不再走建表流程，
+        # 于是 schema 未覆盖的 metadata 键会被静默丢弃（doc_id / section_path 等丢失，
+        # 导致引用无法定位、父子扩展失效）。开启后 metadata 统一存入 $meta 动态字段。
         self.vectorstore = _MilvusVectorStore(
             embedding_function=self.embeddings,
             collection_name=self.config.collection_name,
             connection_args={"uri": f"http://{self.config.milvus_host}:{self.config.milvus_port}"},
             auto_id=True,
+            enable_dynamic_field=True,
         )
 
         # 父块向量库（上下文增强）
@@ -645,6 +677,7 @@ class RAGSystem:
             collection_name=self.config.parent_collection_name,
             connection_args={"uri": f"http://{self.config.milvus_host}:{self.config.milvus_port}"},
             auto_id=True,
+            enable_dynamic_field=True,
         )
 
         # BM25 检索器（PG 不可用时降级使用）
@@ -674,7 +707,6 @@ class RAGSystem:
 
         # Parent-Child 映射缓存
         self._parent_map: Dict[str, Document] = {}
-        self._all_chunks: List[Document] = []
 
         logger.info(
             "RAG backend=%s | child_collection=%s | parent_collection=%s",
@@ -734,7 +766,6 @@ class RAGSystem:
         if child_docs:
             self.vectorstore.add_documents(child_docs)
             self.bm25.add_documents(child_docs)
-            self._all_chunks.extend(child_docs)
 
         return len(child_docs)
 
@@ -887,6 +918,56 @@ class RAGSystem:
             logger.error("检索失败: %s", exc)
             return f"检索过程中发生错误: {str(exc)}"
 
+    @staticmethod
+    def _local_title(metadata: dict, fallback_index: int) -> str:
+        """本地来源标题：优先文件名，其次 source 路径，最后退化为占位。
+
+        metadata 里 source 是文档 id、source_name 才是文件名，
+        只取 source 会让引用列表显示一串 uuid。
+        """
+        source_name = str(metadata.get("source_name") or "").strip()
+        if source_name:
+            return source_name
+        source = str(metadata.get("source") or "").strip()
+        if source:
+            name = Path(source).name
+            if name:
+                return name
+        return f"本地知识片段-{fallback_index}"
+
+    def _resolve_parent(self, parent_id: str) -> Optional[Document]:
+        """取父块：优先内存缓存，未命中则回查父块集合。
+
+        _parent_map 只在写入时填充，进程重启后为空；若不回查，
+        父子上下文扩展在服务重启后就再也不生效。
+        """
+        cached = self._parent_map.get(parent_id)
+        if cached is not None:
+            return cached
+
+        col = getattr(self.parent_store, "col", None)
+        if col is None:
+            return None
+        try:
+            rows = col.query(
+                expr=f'parent_id == "{parent_id}"',
+                output_fields=[
+                    "text", "doc_id", "source", "source_name",
+                    "section_path", "parent_id", "chunk_type",
+                ],
+                limit=1,
+            )
+        except Exception as exc:
+            logger.warning("[rag] 父块回查失败 | parent_id=%s | %s", parent_id, exc)
+            return None
+
+        if not rows:
+            return None
+        row = dict(rows[0])
+        parent_doc = Document(page_content=row.pop("text", ""), metadata=row)
+        self._parent_map[parent_id] = parent_doc
+        return parent_doc
+
     def search_records(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """
         高级检索流程：
@@ -949,16 +1030,18 @@ class RAGSystem:
         for doc in reranked_docs[:k]:
             parent_id = doc.metadata.get("parent_id", "")
 
-            if self.config.enable_parent_child and parent_id and parent_id in self._parent_map:
+            if self.config.enable_parent_child and parent_id:
+                parent_doc = self._resolve_parent(parent_id)
+            else:
+                parent_doc = None
+
+            if parent_doc is not None:
                 if parent_id not in seen_parents:
                     seen_parents.add(parent_id)
-                    parent_doc = self._parent_map[parent_id]
-                    source = str(parent_doc.metadata.get("source") or "").strip()
-                    title = Path(source).name if source else f"本地知识片段-{len(final_records)+1}"
                     final_records.append({
                         "source_id": f"LOC-{len(final_records)+1}",
-                        "doc_id": source,
-                        "title": title,
+                        "doc_id": parent_doc.metadata.get("source", ""),
+                        "title": self._local_title(parent_doc.metadata, len(final_records) + 1),
                         "snippet": parent_doc.page_content,
                         "source_type": "local",
                         "metadata": parent_doc.metadata,
@@ -968,12 +1051,10 @@ class RAGSystem:
                     })
             else:
                 metadata = doc.metadata or {}
-                source = str(metadata.get("source") or "").strip()
-                title = Path(source).name if source else f"本地知识片段-{len(final_records)+1}"
                 final_records.append({
                     "source_id": f"LOC-{len(final_records)+1}",
-                    "doc_id": source,
-                    "title": title,
+                    "doc_id": str(metadata.get("source") or "").strip(),
+                    "title": self._local_title(metadata, len(final_records) + 1),
                     "snippet": doc.page_content,
                     "source_type": "local",
                     "metadata": metadata,
@@ -1006,6 +1087,49 @@ class RAGSystem:
         self.vectorstore.add_documents(documents)
         self.bm25.add_documents(documents)
         return len(documents)
+
+    def delete_document_vectors(self, doc_id: str) -> dict:
+        """删除某文档在向量库与关键词索引中的全部切片。
+
+        PG 侧的关键词检索读的是 document_chunks 表（由外键级联删除），无需在此处理；
+        这里清理的是 Milvus 子块/父块集合与内存 BM25 索引。
+
+        任何一路失败都不阻断其他路 —— 失败信息通过 errors 返回，由调用方决定是否告警，
+        避免「向量清理失败」把已经完成的 PG + MinIO 删除整体判为失败。
+        """
+        result = {"child_deleted": False, "parent_deleted": False,
+                  "bm25_removed": 0, "parents_evicted": 0, "errors": []}
+        if not doc_id:
+            return result
+
+        # doc_id 为 uuid，理论上不含引号；仍做一次剥离，避免拼接出畸形表达式
+        safe_doc_id = str(doc_id).replace('"', "")
+        expr = f'doc_id == "{safe_doc_id}"'
+
+        for label, store in (("child", self.vectorstore), ("parent", self.parent_store)):
+            try:
+                store.delete(expr=expr)
+                result[f"{label}_deleted"] = True
+            except Exception as exc:
+                result["errors"].append(f"{label}: {exc}")
+                logger.warning("[rag] 删除文档向量失败 | doc_id=%s | %s | %s", doc_id, label, exc)
+
+        result["bm25_removed"] = self.bm25.remove_documents(safe_doc_id)
+
+        stale_parents = [
+            pid for pid, doc in self._parent_map.items()
+            if str(doc.metadata.get("doc_id", "")) == safe_doc_id
+        ]
+        for pid in stale_parents:
+            self._parent_map.pop(pid, None)
+        result["parents_evicted"] = len(stale_parents)
+
+        logger.info(
+            "[rag] 文档向量清理完成 | doc_id=%s | child=%s | parent=%s | bm25=%d | parents_evicted=%d",
+            doc_id, result["child_deleted"], result["parent_deleted"],
+            result["bm25_removed"], result["parents_evicted"],
+        )
+        return result
 
     def search_simple(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """简化的向量检索（跳过重写、重排序、Parent-Child），用于低延迟场景。"""

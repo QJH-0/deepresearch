@@ -71,3 +71,7 @@ data/knowledge/gen_docs/generated/
 *.tmp
 *.bak
 *.orig
+
+# 待删除文件暂存区（AGENTS.md 约定：删除前先移动到这里，由用户最终确认）
+.trash/
+__trash__/
