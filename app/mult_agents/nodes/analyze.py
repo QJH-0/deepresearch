@@ -40,31 +40,28 @@ async def analyze_node(state: AgentState, agent, agent_name: str, writer: Stream
     missing_gaps = payload.get("missing_gaps", [])
     analysis_summary = payload.get("analysis_summary", content)
 
-    # ── HITL: 证据不足时向用户提问 ──
+    # ── HITL: 证据缺口处置（kind=evidence_gap，与 clarify 的 clarification 分离） ──
     user_feedback: dict = {}
     if (
         needs_more_research
         and state.get("hitl_enabled", False)
         and state.get("hitl_config", {}).get("analyze_clarify", True)
     ):
-        # P0-2 修复：使用 _shared.raise_interrupt 统一封装，payload 携带 kind=clarification
+        # payload 携带 kind=evidence_gap；resume 值形如
+        # {"kind": "evidence_gap", "action": "auto_search|user_supply|skip", "info": "..."}
         interrupt_payload = {
             "node": "analyze",
             "missing_gaps": missing_gaps,
             "analysis_summary": analysis_summary,
-            "message": (
-                "分析发现信息缺口，请选择操作：\n"
-                "1. {\"action\": \"auto_search\"} → 自动补搜\n"
-                "2. {\"action\": \"user_supply\", \"info\": \"已知信息\"} → 直接补充\n"
-                "3. {\"action\": \"skip\"} → 跳过缺口直接出报告"
-            ),
+            "message": "分析发现信息缺口，请选择操作：自动补搜 / 补充信息 / 跳过缺口",
         }
-        user_feedback = raise_interrupt("clarification", interrupt_payload)
+        user_feedback = raise_interrupt("evidence_gap", interrupt_payload)
 
         action = user_feedback.get("action", "auto_search") if isinstance(user_feedback, dict) else "auto_search"
         if action == "user_supply":
-            user_info = user_feedback.get("info", "")
-            analysis_summary = f"{analysis_summary}\n\n[用户补充信息] {user_info}"
+            user_info = str(user_feedback.get("info", "")).strip()
+            if user_info:
+                analysis_summary = f"{analysis_summary}\n\n[用户补充信息] {user_info}"
             needs_more_research = False
             missing_gaps = []
         elif action == "skip":

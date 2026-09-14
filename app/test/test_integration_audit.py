@@ -140,11 +140,19 @@ class TestAnalyzeInterruptFix:
         assert '"type": "analyze_clarify"' not in src, \
             '不应使用旧的 type:"analyze_clarify" 字段'
 
-    def test_analyze_uses_clarification_kind(self):
-        """analyze.py 的 interrupt 应使用 kind=clarification。"""
+    def test_analyze_uses_evidence_gap_kind(self):
+        """analyze.py 的 interrupt 应使用独立 kind=evidence_gap。
+
+        历史缺陷：与 clarify 共用 kind=clarification 导致两个中断点的载荷结构冲突
+        —— analyze 的载荷缺 answers，被 ClarifyResumePayload 校验拒绝（422）；
+        clarify 的答案则因节点按 list 消费而收到 dict，被字符串化成整段文本。
+        kind 是协议族标识，语义不同的中断点不得共用。
+        """
         src = (_APP_PATH / "mult_agents" / "nodes" / "analyze.py").read_text(encoding="utf-8")
-        assert 'raise_interrupt("clarification"' in src, \
-            '应调用 raise_interrupt("clarification", ...)'
+        assert 'raise_interrupt("evidence_gap"' in src, \
+            '应调用 raise_interrupt("evidence_gap", ...)'
+        assert 'raise_interrupt("clarification"' not in src, \
+            "analyze 不得复用 clarify 的 kind"
 
     def test_raise_interrupt_adds_kind(self):
         """raise_interrupt 自动在 payload 中添加 kind 键。"""

@@ -32,9 +32,27 @@ class ResumeRequest(BaseModel):
 # ── P4: 结构化 resume payload（按 interrupt kind 校验） ──
 
 class ClarifyResumePayload(BaseModel):
-    """澄清回答 resume payload。"""
+    """澄清回答 resume payload（对应 clarify 节点的 interrupt）。"""
     kind: Literal["clarification"]
     answers: list[str]  # 与问题列表一一对应
+
+
+class EvidenceGapResumePayload(BaseModel):
+    """证据缺口处置 resume payload（对应 analyze 节点的 interrupt）。
+
+    与 clarification 是两个独立协议：clarify 收集「问题答案」，
+    这里收集「缺口处置动作」。共用同一个 kind 会导致载荷结构互相冲突，
+    因此用独立 kind 区分。
+    """
+    kind: Literal["evidence_gap"]
+    action: Literal["auto_search", "user_supply", "skip"]
+    info: str = ""  # user_supply 时为用户补充的信息
+
+    @model_validator(mode="after")
+    def validate_info(self):
+        if self.action == "user_supply" and not self.info.strip():
+            raise ValueError("user_supply 操作必须提供 info")
+        return self
 
 
 class PlanApprovalResumePayload(BaseModel):

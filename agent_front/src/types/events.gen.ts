@@ -58,7 +58,12 @@ export interface SourcesFoundData {
   sources: SourceItem[]
 }
 
-export type InterruptKind = 'plan_approval' | 'clarification' | 'report_review' | 'unknown'
+export type InterruptKind =
+  | 'plan_approval'
+  | 'clarification'
+  | 'evidence_gap'
+  | 'report_review'
+  | 'unknown'
 
 export interface InterruptRaisedData {
   interrupt_id: string

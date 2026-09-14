@@ -25,6 +25,23 @@ _CLARIFY_MAX_ROUNDS = 2
 _AMBIGUOUS_KEYWORDS = ["最近的", "最新的", "一些", "相关", "类似", "比较好"]
 
 
+def _extract_answers(resume_value) -> list[str]:
+    """从 interrupt 的 resume 值中取出答案列表。
+
+    resume 值由 router 按 ClarifyResumePayload 校验，形如
+    {"kind": "clarification", "answers": [...]}；同时兼容直接调用节点时
+    传入裸列表（测试/内部调用）的旧形式，以及单个字符串的兜底。
+    """
+    if isinstance(resume_value, dict):
+        answers = resume_value.get("answers")
+        if isinstance(answers, list):
+            return [str(item) for item in answers]
+        return [""]
+    if isinstance(resume_value, list):
+        return [str(item) for item in resume_value]
+    return [str(resume_value)] if resume_value else [""]
+
+
 # ── LLM prompt ──
 
 CLARIFY_VERDICT_PROMPT = """你是研究需求分析专家。判断以下研究问题是否需要向用户澄清才能开展有效研究。
@@ -317,7 +334,7 @@ def clarify_node(
         })
         new_clarification = {
             "q": questions,
-            "a": answers if isinstance(answers, list) else [str(answers)],
+            "a": _extract_answers(answers),
         }
         logger.info("[clarify] 规则通道回答已记录，进入 plan")
         return Command(goto="plan", update={
@@ -373,7 +390,7 @@ def _handle_initial_verdict(
 
     new_clarification = {
         "q": questions,
-        "a": answers if isinstance(answers, list) else [str(answers)],
+        "a": _extract_answers(answers),
     }
     logger.info("[clarify] LLM 首轮澄清回答已记录，进入充分性判定")
     return Command(goto="clarify", update={
@@ -420,7 +437,7 @@ def _handle_sufficiency_check(
 
     new_clarification = {
         "q": followup,
-        "a": answers if isinstance(answers, list) else [str(answers)],
+        "a": _extract_answers(answers),
     }
     logger.info("[clarify] 追问回答已记录(轮次→%d)", rounds + 1)
     return Command(goto="clarify", update={

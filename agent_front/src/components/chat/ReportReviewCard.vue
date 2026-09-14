@@ -15,7 +15,9 @@ const emit = defineEmits<{
   (e: 'resume', value: Record<string, unknown>): void
 }>()
 
-const draft = computed(() => String(props.payload.draft || props.payload.report || ''))
+// 后端 report_review 载荷键为 full_report / report_preview（见 nodes/write.py），
+// 早期实现读 draft/report 导致预览恒为空
+const draft = computed(() => String(props.payload.full_report || props.payload.report_preview || ''))
 const showDeepen = ref(false)
 const showReject = ref(false)
 const deepenText = ref('')

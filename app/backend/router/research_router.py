@@ -20,6 +20,7 @@ from backend.schemas import (
     ThreadPinRequest,
     ThreadDeleteResponse,
     ClarifyResumePayload,
+    EvidenceGapResumePayload,
     PlanApprovalResumePayload,
     ReportReviewResumePayload,
 )
@@ -223,13 +224,19 @@ async def resume_research(
 
 
 def _validate_resume_payload(kind: str, resume_value) -> None:
-    """P4-2: 按 interrupt kind 校验 resume payload 结构，不合法则 raise ValueError。"""
+    """P4-2: 按 interrupt kind 校验 resume payload 结构，不合法则 raise ValueError。
+
+    每个 kind 对应唯一一种载荷结构 —— kind 是协议族标识，
+    两个语义不同的中断点不得共用一个 kind。
+    """
     if not isinstance(resume_value, dict):
         raise ValueError("resume_value 必须是 dict")
     try:
         match kind:
             case "clarification":
                 ClarifyResumePayload(**resume_value)
+            case "evidence_gap":
+                EvidenceGapResumePayload(**resume_value)
             case "plan_approval":
                 PlanApprovalResumePayload(**resume_value)
             case "report_review":

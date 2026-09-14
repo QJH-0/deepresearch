@@ -12,6 +12,7 @@ from .research import (
     ThreadPinRequest,
     ThreadDeleteResponse,
     ClarifyResumePayload,
+    EvidenceGapResumePayload,
     PlanApprovalResumePayload,
     ReportReviewResumePayload,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "ThreadPinRequest",
     "ThreadDeleteResponse",
     "ClarifyResumePayload",
+    "EvidenceGapResumePayload",
     "PlanApprovalResumePayload",
     "ReportReviewResumePayload",
     "DocumentUploadResponse",

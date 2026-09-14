@@ -511,3 +511,110 @@ class TestInterruptKindFallback:
         envelope = event("interrupt.raised", interrupt_id="i1", kind="unknown", payload={})
 
         assert envelope.data["kind"] == "unknown"
+
+
+# ──────────────────────────────────────────────────────────────
+# P1-5 HITL 协议拆分：clarification 与 evidence_gap 各自独立
+# ──────────────────────────────────────────────────────────────
+
+
+class TestInterruptProtocolSplit:
+    def test_clarification_validated_by_own_schema(self):
+        from backend.router.research_router import _validate_resume_payload
+
+        _validate_resume_payload("clarification", {"kind": "clarification", "answers": ["a"]})
+
+    def test_evidence_gap_validated_by_own_schema(self):
+        from backend.router.research_router import _validate_resume_payload
+
+        _validate_resume_payload("evidence_gap", {"kind": "evidence_gap", "action": "skip"})
+        _validate_resume_payload(
+            "evidence_gap",
+            {"kind": "evidence_gap", "action": "user_supply", "info": "已知信息"},
+        )
+
+    def test_analyze_payload_is_no_longer_judged_as_clarification(self):
+        """回归：analyze 的载荷曾按 ClarifyResumePayload 校验，因缺 answers 直接 422。"""
+        from backend.router.research_router import _validate_resume_payload
+
+        analyze_payload = {"kind": "evidence_gap", "action": "user_supply", "info": "已知信息"}
+
+        _validate_resume_payload("evidence_gap", analyze_payload)  # 不应抛异常
+        with pytest.raises(ValueError):
+            _validate_resume_payload("clarification", analyze_payload)
+
+    def test_evidence_gap_user_supply_requires_info(self):
+        from backend.router.research_router import _validate_resume_payload
+
+        with pytest.raises(ValueError):
+            _validate_resume_payload(
+                "evidence_gap", {"kind": "evidence_gap", "action": "user_supply", "info": "   "}
+            )
+
+    def test_event_accepts_evidence_gap_kind(self):
+        from backend.schemas.events import event
+
+        envelope = event("interrupt.raised", interrupt_id="i1", kind="evidence_gap", payload={})
+
+        assert envelope.data["kind"] == "evidence_gap"
+
+    async def test_analyze_node_raises_evidence_gap_kind(self, monkeypatch):
+        from mult_agents.nodes import analyze
+
+        captured = {}
+
+        def fake_raise_interrupt(kind, payload):
+            captured["kind"] = kind
+            captured["payload"] = payload
+            return {"action": "skip"}
+
+        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
+            return (
+                {
+                    "findings": [],
+                    "claim_map": [],
+                    "needs_more_research": True,
+                    "missing_gaps": ["缺口A"],
+                    "analysis_summary": "s",
+                },
+                "",
+                [],
+            )
+
+        monkeypatch.setattr(analyze, "raise_interrupt", fake_raise_interrupt)
+        monkeypatch.setattr(analyze, "_invoke_json_agent", fake_invoke)
+
+        state = {
+            "query": "q",
+            "hitl_enabled": True,
+            "hitl_config": {"analyze_clarify": True},
+            "sub_questions": [],
+            "evidence_pool": [],
+            "audit_flags": [],
+        }
+        out = await analyze.analyze_node(state, None, "analyst")
+
+        assert captured["kind"] == "evidence_gap"
+        assert captured["payload"]["missing_gaps"] == ["缺口A"]
+        assert out["needs_more_research"] is False
+
+
+class TestClarifyAnswerExtraction:
+    def test_unwraps_router_validated_dict(self):
+        """回归：router 校验后传入的是 dict，节点曾把整段 dict 字符串化成一个「答案」。"""
+        from mult_agents.nodes.clarify import _extract_answers
+
+        assert _extract_answers({"kind": "clarification", "answers": ["A", "B"]}) == ["A", "B"]
+
+    def test_accepts_legacy_list_and_scalar(self):
+        from mult_agents.nodes.clarify import _extract_answers
+
+        assert _extract_answers(["A", "B"]) == ["A", "B"]
+        assert _extract_answers("A") == ["A"]
+
+    def test_missing_answers_falls_back_to_empty(self):
+        from mult_agents.nodes.clarify import _extract_answers
+
+        assert _extract_answers({}) == [""]
+        assert _extract_answers({"kind": "clarification"}) == [""]
+        assert _extract_answers(None) == [""]

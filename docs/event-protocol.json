@@ -176,6 +176,7 @@
         "enum": [
           "plan_approval",
           "clarification",
+          "evidence_gap",
           "report_review",
           "unknown"
         ],

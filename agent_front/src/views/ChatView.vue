@@ -7,6 +7,7 @@ import Composer from '../components/chat/Composer.vue'
 import AgentTimeline from '../components/chat/AgentTimeline.vue'
 import PlanApprovalCard from '../components/chat/PlanApprovalCard.vue'
 import ClarifyCard from '../components/chat/ClarifyCard.vue'
+import EvidenceGapCard from '../components/chat/EvidenceGapCard.vue'
 import ReportReviewCard from '../components/chat/ReportReviewCard.vue'
 import RollbackMenu from '../components/chat/RollbackMenu.vue'
 import { useChatStore } from '../stores/chat'
@@ -189,6 +190,11 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
     />
     <ClarifyCard
       v-else-if="currentInterrupt?.kind === 'clarification'"
+      :payload="currentInterrupt.payload"
+      @resume="onResume"
+    />
+    <EvidenceGapCard
+      v-else-if="currentInterrupt?.kind === 'evidence_gap'"
       :payload="currentInterrupt.payload"
       @resume="onResume"
     />
