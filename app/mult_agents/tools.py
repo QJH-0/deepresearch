@@ -270,8 +270,27 @@ def _get_provider_chain() -> SearchProviderChain:
             "tavily": lambda: TavilyProvider(),
             "searxng": lambda: SearXNGProvider(os.getenv("SEARX_URL", "").strip()),
         }
-        providers = [factories[name]() for name in order if name in factories]
+        built = [(name, factories[name]()) for name in order if name in factories]
+        providers = [p for _name, p in built if getattr(p, "available", True)]
         _PROVIDER_CHAIN = SearchProviderChain(providers)
+
+        # 启动期把「哪些搜索源真正可用」讲清楚：否则用户会在跑完一次十几分钟的
+        # 研究流程后才从报告里发现「网页检索命中 0 条」，而根因只是缺个 API Key。
+        active = [type(p).__name__ for p in providers]
+        skipped = [name for name, p in built if not getattr(p, "available", True)]
+        if active:
+            logger.info("[search-chain] 可用搜索源: %s", ", ".join(active))
+        if skipped:
+            logger.warning(
+                "[search-chain] 以下搜索源因未配置而跳过: %s"
+                "（tavily 需 TAVILY_API_KEY，searxng 需 SEARX_URL）",
+                ", ".join(skipped),
+            )
+        if not active:
+            logger.error(
+                "[search-chain] 没有任何可用的搜索源，网页检索将始终返回 0 条。"
+                "请配置 TAVILY_API_KEY 或 SEARX_URL 后重启。"
+            )
     return _PROVIDER_CHAIN
 
 

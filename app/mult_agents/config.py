@@ -74,7 +74,7 @@ class AppConfig:
     # ── 其他业务配置 ──
     sse_heartbeat_seconds: int = 15
     search_providers: list = field(default_factory=lambda: ["ddgs", "searxng"])
-    rerank_model_name: str = "gte-rerank"
+    rerank_model_name: str = "gte-rerank-v2"  # gte-rerank 已下线（403）
     enable_rerank_model: bool = True
     evidence_llm_fusion: bool = True
     evidence_prior_weight: float = 0.4
@@ -154,7 +154,7 @@ class AppConfig:
             thinking_nodes=getattr(biz, "thinking_nodes", ["write", "deep_dive", "analyze"]),
             sse_heartbeat_seconds=getattr(biz, "sse_heartbeat_seconds", 15),
             search_providers=getattr(biz, "search_providers", ["ddgs", "searxng"]),
-            rerank_model_name=getattr(biz, "rerank_model_name", "gte-rerank"),
+            rerank_model_name=getattr(biz, "rerank_model_name", "gte-rerank-v2"),
             enable_rerank_model=getattr(biz, "enable_rerank_model", True),
             evidence_llm_fusion=getattr(biz, "evidence_llm_fusion", True),
             evidence_prior_weight=getattr(biz, "evidence_prior_weight", 0.4),

@@ -1514,3 +1514,57 @@ class TestLocalRelevanceForNaturalQuestions:
 
         assert terms, "全是长片段时应有兜底内容词"
         assert all(len(term) <= 3 for term in terms)
+
+
+# ──────────────────────────────────────────────────────────────
+# DashScope 专用重排：端点路径与模型名
+# ──────────────────────────────────────────────────────────────
+
+
+class TestDashScopeRerankEndpoint:
+    """回归：端点少了末段 `/text-rerank`，会打到别的路由并返回
+    400 `task can not be null` —— 表现为专用重排永远失败、每次都降级 LLM 重排。
+
+    已实测：正确路径 200，错误路径 400。
+    """
+
+    def test_default_url_has_duplicated_segment(self):
+        from mult_agents.rag.core import DashScopeReranker
+
+        url = DashScopeReranker.DEFAULT_API_URL
+
+        assert url.endswith("/services/rerank/text-rerank/text-rerank"), (
+            f"末段必须重复一次，实际: {url}"
+        )
+
+    def test_url_overridable_by_env(self, monkeypatch):
+        from mult_agents.rag.core import DashScopeReranker
+
+        monkeypatch.setenv("DASHSCOPE_RERANK_URL", "https://example.test/rerank")
+        reranker = DashScopeReranker(api_key="k")
+
+        assert reranker._api_url == "https://example.test/rerank"
+
+    def test_explicit_url_wins_over_env(self, monkeypatch):
+        from mult_agents.rag.core import DashScopeReranker
+
+        monkeypatch.setenv("DASHSCOPE_RERANK_URL", "https://example.test/from-env")
+        reranker = DashScopeReranker(api_key="k", api_url="https://example.test/explicit")
+
+        assert reranker._api_url == "https://example.test/explicit"
+
+    def test_default_model_is_not_decommissioned(self):
+        """gte-rerank 已下线（403 AccessDenied），默认值必须是 gte-rerank-v2。"""
+        import inspect
+
+        from mult_agents.rag.core import DashScopeReranker
+
+        signature = inspect.signature(DashScopeReranker.__init__)
+        assert signature.parameters["model"].default == "gte-rerank-v2"
+
+    def test_config_defaults_do_not_use_decommissioned_model(self):
+        from mult_agents.config import AppConfig
+        from mult_agents.rag.core import RAGConfig
+
+        assert RAGConfig().rerank_model_name == "gte-rerank-v2"
+        assert "gte-rerank" != AppConfig.__dataclass_fields__["rerank_model_name"].default

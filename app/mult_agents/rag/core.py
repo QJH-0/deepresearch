@@ -332,20 +332,40 @@ class RerankUnavailable(RuntimeError):
 
 
 class DashScopeReranker:
-    """DashScope 文本重排 API（gte-rerank）调用封装。
+    """DashScope 文本重排 API 调用封装。
 
     使用 httpx 直接 POST 请求 DashScope rerank 端点，避免引入 dashscope SDK。
     失败时抛 RerankUnavailable，由 RAGSystem._rerank 降级 LLMReranker。
+
+    ⚠️ 端点路径是 `/services/rerank/text-rerank/text-rerank`（**末段重复一次**）。
+    少写后半段会打到别的路由，返回 400 `task can not be null` —— 表现为专用重排
+    永远失败、每次都降级为 LLM 重排。已实测：正确路径 200，错误路径 400。
+
+    模型方面：`gte-rerank` 已下线（返回 403 AccessDenied），默认用 `gte-rerank-v2`。
     """
 
     MAX_DOCS = 20
     MAX_DOC_CHARS = 2000
-    _API_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank"
+    DEFAULT_API_URL = (
+        "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+    )
 
-    def __init__(self, api_key: str, model: str = "gte-rerank", timeout: float = 15.0):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gte-rerank-v2",
+        timeout: float = 15.0,
+        api_url: str = "",
+    ):
         self._api_key = api_key
         self._model = model
         self._timeout = timeout
+        # 百炼新版文档使用业务空间专属域名，允许通过环境变量覆盖
+        self._api_url = (
+            api_url
+            or os.getenv("DASHSCOPE_RERANK_URL", "").strip()
+            or self.DEFAULT_API_URL
+        )
 
     def rerank(self, query: str, documents: List[Document], top_k: int = 5) -> List[Document]:
         """同步调用 DashScope rerank API，返回按相关性排序的 top_k 文档。"""
@@ -371,14 +391,15 @@ class DashScopeReranker:
         }
         try:
             resp = httpx.post(
-                self._API_URL, json=body, headers=headers, timeout=self._timeout
+                self._api_url, json=body, headers=headers, timeout=self._timeout
             )
         except Exception as exc:
             raise RerankUnavailable(f"DashScope rerank HTTP 请求失败: {exc}") from exc
 
         if resp.status_code != 200:
             raise RerankUnavailable(
-                f"DashScope rerank 返回非 200: status={resp.status_code}, body={resp.text[:200]}"
+                f"DashScope rerank 返回非 200: status={resp.status_code}, "
+                f"model={self._model}, url={self._api_url}, body={resp.text[:200]}"
             )
         try:
             data = resp.json()
