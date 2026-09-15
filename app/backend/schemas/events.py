@@ -50,6 +50,9 @@ class AgentStatusData(BaseModel):
     node: str
     label: str
     phase: str
+    # 该节点的进度文案（如「意图判定完成: multiagent」）。
+    # 前端过程卡片用它作为步骤细节；不带 detail 时卡片只有节点名没有内容。
+    detail: str = ""
 
 
 class MessageStartData(BaseModel):

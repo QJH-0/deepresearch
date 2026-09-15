@@ -29,6 +29,8 @@ export interface ChatMessage {
   sources?: SourceItem[]
   status?: MessageStatus
   nodeId?: string
+  /** 发送时的时间线长度：用于把 agent 状态时间线切分到本轮，供过程卡片使用 */
+  timelineStart?: number
 }
 
 interface ThreadChat {
@@ -36,7 +38,7 @@ interface ThreadChat {
   /** 当前 streaming 消息的 ID（用于追加 delta） */
   streamingMessageId: string | null
   /** agent 节点状态时间线 */
-  agentTimeline: { node: string; label: string; phase: string; ts: number }[]
+  agentTimeline: { node: string; label: string; phase: string; detail?: string; ts: number }[]
   /** 是否正在运行 */
   running: boolean
   /** 错误信息 */
@@ -83,7 +85,8 @@ export const useChatStore = defineStore('chat', () => {
   function addUserMessage(threadId: string, content: string): string {
     const t = getThread(threadId)
     const id = `u-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-    t.messages.push({ id, role: 'user', content })
+    // 记录当前时间线长度作为本轮起点：过程卡片据此取本轮节点
+    t.messages.push({ id, role: 'user', content, timelineStart: t.agentTimeline.length })
     return id
   }
 
@@ -144,7 +147,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  function setNodeStatus(threadId: string, data: { node: string; label: string; phase: string }): void {
+  function setNodeStatus(threadId: string, data: { node: string; label: string; phase: string; detail?: string }): void {
     const t = getThread(threadId)
     t.agentTimeline.push({ ...data, ts: Date.now() })
   }

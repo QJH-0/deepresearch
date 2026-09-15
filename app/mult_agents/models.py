@@ -37,7 +37,10 @@ def build_agent(model: str, api_key: str, prompt_key: str, temperature: float, t
             extra_body={"enable_thinking": True},
         )
     else:
-        llm = ChatTongyi(model=model, temperature=temperature)
+        # streaming=True 是 token 级流式的前提：ChatTongyi 默认 False 时，
+        # astream(stream_mode="messages") 只产出一个整块响应，
+        # 前端表现为「答案一大段直接吐出」而不是打字机式输出。
+        llm = ChatTongyi(model=model, temperature=temperature, streaming=True)
 
     return create_agent(model=llm, tools=tools, system_prompt=prompt)
 

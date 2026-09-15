@@ -30,6 +30,11 @@
       "phase": {
         "title": "Phase",
         "type": "string"
+      },
+      "detail": {
+        "default": "",
+        "title": "Detail",
+        "type": "string"
       }
     },
     "required": [

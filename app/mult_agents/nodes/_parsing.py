@@ -70,10 +70,15 @@ def _extract_reasoning_from_chunk(msg_chunk) -> str:
 
 
 async def _invoke_json_agent(state: AgentState, prompt: str, agent, agent_name: str, node: str, fallback: dict, writer: StreamWriter | None = None) -> tuple[dict, str, list]:
-    """调用 agent 并解析 JSON 结果（async + astream token 级流式）。
+    """调用 agent 并解析 JSON 结果（async + astream 流式）。
 
-    通过 agent.astream(stream_mode="messages") 实现 token 级增量推送，
-    同时累加完整内容供 JSON 解析。astream 结束后合成完整 AIMessage 返回。
+    通过 agent.astream(stream_mode="messages") 增量接收并累加完整内容供 JSON 解析，
+    astream 结束后合成完整 AIMessage 返回。
+
+    **只推 reasoning 与进度，不把正文推成 message.delta**：本函数的产出是
+    JSON 结构化结果，其 token 流是 JSON 的拼装过程，属于实现细节；
+    推给前端会让用户看到 `{"route":"direct","reason":...}` 这类原始 JSON
+    混在回答气泡里。用户可见的正文只来自 write（报告）与 direct_answer（直答）。
     """
     if writer:
         writer({"node": node, "message": f"正在调用 {agent_name} 进行推理..."})
@@ -91,16 +96,12 @@ async def _invoke_json_agent(state: AgentState, prompt: str, agent, agent_name: 
             text = _extract_content_from_chunk(msg_chunk)
             if text:
                 content += text
-                if writer:
-                    writer({"type": "token", "node": node, "text": text})
             if hasattr(msg_chunk, "tool_calls") and msg_chunk.tool_calls:
                 tool_calls_chunks.extend(msg_chunk.tool_calls)
 
     if not content:
         result = await agent.ainvoke({"messages": [human]})
         content = _last_content(result)
-        if content and writer:
-            writer({"type": "token", "node": node, "text": content})
         all_messages = [human, result["messages"][-1]]
     else:
         ai_msg = AIMessage(content=content)

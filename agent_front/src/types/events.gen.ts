@@ -28,6 +28,8 @@ export interface AgentStatusData {
   node: string
   label: string
   phase: string
+  /** 节点进度文案，供过程卡片作为步骤细节展示 */
+  detail?: string
 }
 
 export interface MessageStartData {

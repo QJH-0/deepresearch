@@ -5,13 +5,14 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import MessageItem from '../components/chat/MessageItem.vue'
 import Composer from '../components/chat/Composer.vue'
-import AgentTimeline from '../components/chat/AgentTimeline.vue'
+import ProcessCard from '../components/chat/ProcessCard.vue'
 import PlanApprovalCard from '../components/chat/PlanApprovalCard.vue'
 import ClarifyCard from '../components/chat/ClarifyCard.vue'
 import EvidenceGapCard from '../components/chat/EvidenceGapCard.vue'
 import ReportReviewCard from '../components/chat/ReportReviewCard.vue'
 import RollbackMenu from '../components/chat/RollbackMenu.vue'
 import { useChatStore } from '../stores/chat'
+import { groupTurns } from '../utils/turns'
 import { useThreadsStore } from '../stores/threads'
 import { useInterruptStore } from '../stores/interrupt'
 import { useEventStream } from '../composables/useEventStream'
@@ -35,6 +36,38 @@ const messages = computed(() => chat.getMessages(threads.currentThreadId))
 const currentInterrupt = computed(() => intr.get(threads.currentThreadId))
 const agentTimeline = computed(() => chat.getAgentTimeline(threads.currentThreadId))
 const isEmpty = computed(() => messages.value.length === 0 || (messages.value.length === 1 && messages.value[0]?.role === 'assistant' && !messages.value[0]?.content))
+
+/** 节点展示名（后端 NODE_LABELS 的镜像；时间线里的 label 优先） */
+const NODE_LABELS: Record<string, string> = {
+  intent: '意图识别',
+  clarify: '澄清',
+  plan: '规划',
+  web_search: '网页检索',
+  local_rag: '知识库检索',
+  deep_dive: '深挖',
+  analyze: '分析',
+  reflect: '反思',
+  write: '成文',
+  direct_answer: '直接回答',
+}
+
+/**
+ * 消息按「轮」分组：用户提问 → 中间过程 → 最终答案。
+ * 分组规则与可测性说明见 utils/turns.ts。
+ */
+const turns = computed(() =>
+  groupTurns(
+    messages.value,
+    {
+      ...NODE_LABELS,
+      ...Object.fromEntries(
+        agentTimeline.value.filter((e) => e.node && e.label).map((e) => [e.node, e.label]),
+      ),
+    },
+    agentTimeline.value,
+  ),
+)
+
 
 const starterPrompts = [
   { title: '深度调研', prompt: '请调研当前 AI Agent 领域的前沿进展，包括主流框架、典型应用场景和落地挑战。' },
@@ -188,15 +221,16 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
         </div>
       </section>
 
-      <template v-for="message in messages" :key="message.id">
-        <MessageItem :message="message" />
+      <template v-for="turn in turns" :key="turn.key">
+        <MessageItem v-if="turn.user" :message="turn.user" />
+        <ProcessCard
+          v-if="turn.steps.length || turn.thinking"
+          :steps="turn.steps"
+          :thinking="turn.thinking"
+          :running="loading && !turn.answer"
+        />
+        <MessageItem v-if="turn.answer" :message="turn.answer" />
       </template>
-
-      <AgentTimeline
-        v-if="agentTimeline.length"
-        :entries="agentTimeline"
-        :running="loading"
-      />
     </div>
 
     <!-- HITL 卡片（按 kind 分支渲染） -->

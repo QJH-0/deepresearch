@@ -171,7 +171,10 @@ class _StreamTranslator:
             frames.append(self._status_frame(chunk.get("node", ""), "running"))
         elif "node" in chunk and "message" in chunk and "type" not in chunk:
             # 旧格式兼容：{node: "...", message: "..."}
-            frames.append(self._status_frame(chunk.get("node", ""), "running"))
+            # message 是节点自己写的进度文案，透传为 detail 供过程卡片展示
+            frames.append(
+                self._status_frame(chunk.get("node", ""), "running", chunk.get("message", ""))
+            )
         elif evt_type == "sources":
             frames.append(sse(event("sources.found", sources=chunk.get("sources", []))))
 
@@ -189,8 +192,16 @@ class _StreamTranslator:
         return [sse(event("message.start", message_id=f"{self.run_id}:{node}", node=node))]
 
     @staticmethod
-    def _status_frame(node: str, phase: str) -> str:
-        return sse(event("agent.status", node=node, label=NODE_LABELS.get(node, node), phase=phase))
+    def _status_frame(node: str, phase: str, detail: str = "") -> str:
+        return sse(
+            event(
+                "agent.status",
+                node=node,
+                label=NODE_LABELS.get(node, node),
+                phase=phase,
+                detail=detail,
+            )
+        )
 
     # ── updates 通道：节点完成与 interrupt ──
 

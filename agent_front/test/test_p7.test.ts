@@ -14,6 +14,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useChatStore } from '../src/stores/chat'
 import { takeSseLines } from '../src/api/sse'
 import { exportMarkdown, exportPdf } from '../src/api/rest'
+import { groupTurns } from '../src/utils/turns'
 import type { EventEnvelope, SourceItem } from '../src/types/events.gen'
 
 // ── mock fetch ──────────────────────────────────────────
@@ -210,19 +211,174 @@ describe('T7-7: 事件增量', () => {
   })
 })
 
-// ── H3: AgentTimeline 可展开 ─────────────────────────────
+// ── H3: 中间过程按轮分组，收进折叠卡片 ───────────────────
+//
+// 原测试断言 AgentTimeline.vue 的源码文本，属「证明代码存在」而非验证行为；
+// 分组规则已抽成 utils/turns.ts 纯函数，这里直接验证行为。
 
-describe('H3: AgentTimeline 可展开', () => {
-  it('AgentTimeline 组件代码含展开逻辑', async () => {
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const content = fs.readFileSync(
-      path.resolve(__dirname, '../src/components/chat/AgentTimeline.vue'),
-      'utf-8',
+describe('H3: 消息按轮分组', () => {
+  const labelOf = { intent: '意图识别', plan: '规划', web_search: '网页检索', write: '成文' }
+
+  it('过程步骤来自时间线，带正文的消息作为答案', () => {
+    const timeline = [
+      { node: 'intent', label: '意图识别', phase: 'completed', ts: 1 },
+      { node: 'plan', label: '规划', phase: 'completed', ts: 2 },
+      { node: 'write', label: '成文', phase: 'completed', ts: 3 },
+    ]
+    const turns = groupTurns(
+      [
+        { id: 'u1', role: 'user', content: '调研一下 AI Agent', timelineStart: 0 },
+        { id: 'write', role: 'assistant', content: '# 报告\n正文…', nodeId: 'write', status: 'done' },
+      ],
+      labelOf,
+      timeline,
     )
-    expect(content).toContain('expandedNodes')
-    expect(content).toContain('toggleNode')
-    expect(content).toContain('timeline-detail')
-    expect(content).toContain('nodeEntries')
+
+    expect(turns).toHaveLength(1)
+    expect(turns[0].user?.id).toBe('u1')
+    expect(turns[0].steps.map((s) => s.label)).toEqual(['意图识别', '规划', '成文'])
+    expect(turns[0].answer?.id).toBe('write')
+  })
+
+  it('时间线里尚未完成的节点标记为 running', () => {
+    const turns = groupTurns(
+      [
+        { id: 'u1', role: 'user', content: '问题', timelineStart: 0 },
+      ],
+      labelOf,
+      [{ node: 'web_search', label: '网页检索', phase: 'running', ts: 1 }],
+    )
+
+    expect(turns[0].steps[0].state).toBe('running')
+    expect(turns[0].answer).toBeNull()
+  })
+
+  it('时间线按轮切分，多轮互不串味', () => {
+    const timeline = [
+      { node: 'intent', label: '意图识别', phase: 'completed', ts: 1 },
+      { node: 'write', label: '成文', phase: 'completed', ts: 2 },
+      { node: 'intent', label: '意图识别', phase: 'completed', ts: 3 },
+      { node: 'plan', label: '规划', phase: 'completed', ts: 4 },
+    ]
+    const turns = groupTurns(
+      [
+        { id: 'u1', role: 'user', content: '第一问', timelineStart: 0 },
+        { id: 'a1', role: 'assistant', content: '第一答', nodeId: 'write', status: 'done' },
+        { id: 'u2', role: 'user', content: '第二问', timelineStart: 2 },
+        { id: 'a2', role: 'assistant', content: '第二答', nodeId: 'write', status: 'done' },
+      ],
+      labelOf,
+      timeline,
+    )
+
+    expect(turns).toHaveLength(2)
+    expect(turns[0].steps.map((s) => s.node)).toEqual(['intent', 'write'])
+    expect(turns[1].steps.map((s) => s.node)).toEqual(['intent', 'plan'])
+    expect(turns[0].answer?.content).toBe('第一答')
+    expect(turns[1].answer?.content).toBe('第二答')
+  })
+
+  it('时间线缺失时回退到按消息推导步骤', () => {
+    const turns = groupTurns(
+      [
+        { id: 'u1', role: 'user', content: '问题' },
+        {
+          id: 'plan', role: 'assistant', content: '', nodeId: 'plan', status: 'done',
+          thinkingLogs: [{ node: 'plan', message: '拆解 3 个子问题', time: '10:00:03' }],
+        },
+        { id: 'write', role: 'assistant', content: '答案', nodeId: 'write', status: 'done' },
+      ],
+      labelOf,
+    )
+
+    expect(turns[0].steps).toHaveLength(1)
+    expect(turns[0].steps[0].label).toBe('规划')
+    expect(turns[0].steps[0].details).toEqual(['拆解 3 个子问题'])
+  })
+
+  it('步骤细节来自时间线自带的 detail', () => {
+    const turns = groupTurns(
+      [{ id: 'u1', role: 'user', content: '你好', timelineStart: 0 }],
+      labelOf,
+      [
+        { node: 'intent', label: '意图识别', phase: 'running', detail: '正在判断问题意图...', ts: 1 },
+        { node: 'intent', label: '意图识别', phase: 'completed', detail: '意图判定完成: direct', ts: 2 },
+        { node: 'direct_answer', label: '快速回答', phase: 'completed', detail: '', ts: 3 },
+      ],
+    )
+
+    expect(turns[0].steps[0].details).toEqual(['正在判断问题意图...', '意图判定完成: direct'])
+    expect(turns[0].steps[1].details).toEqual([])
+  })
+
+  it('步骤细节来自时间线自带的 detail', () => {
+    const turns = groupTurns(
+      [{ id: 'u1', role: 'user', content: '你好', timelineStart: 0 }],
+      labelOf,
+      [
+        { node: 'intent', label: '意图识别', phase: 'running', detail: '正在判断问题意图...', ts: 1 },
+        { node: 'intent', label: '意图识别', phase: 'completed', detail: '意图判定完成: direct', ts: 2 },
+        { node: 'direct_answer', label: '快速回答', phase: 'completed', detail: '', ts: 3 },
+      ],
+    )
+
+    expect(turns[0].steps[0].details).toEqual(['正在判断问题意图...', '意图判定完成: direct'])
+    expect(turns[0].steps[1].details).toEqual([])
+  })
+
+  it('端到端：状态事件经 store 落到时间线后，分组仍带细节', () => {
+    const chat = useChatStore()
+    const tid = 'e2e-turn'
+    chat.ensureThread(tid)
+    chat.addUserMessage(tid, '你好')
+    chat.setNodeStatus(tid, { node: 'intent', label: '意图识别', phase: 'running', detail: '正在判断问题意图...' })
+    chat.setNodeStatus(tid, { node: 'intent', label: '意图识别', phase: 'completed', detail: '' })
+    chat.setNodeStatus(tid, { node: 'direct_answer', label: '快速回答', phase: 'completed', detail: '' })
+
+    const timeline = chat.getAgentTimeline(tid)
+    const labels = Object.fromEntries(
+      timeline.filter((e) => e.node && e.label).map((e) => [e.node, e.label]),
+    )
+    const turns = groupTurns(chat.getMessages(tid), labels, timeline)
+
+    expect(turns).toHaveLength(1)
+    expect(turns[0].steps.map((s) => s.label)).toEqual(['意图识别', '快速回答'])
+    expect(turns[0].steps[0].details).toEqual(['正在判断问题意图...'])
+  })
+
+  it('端到端：状态事件经 store 落到时间线后，分组仍带细节', () => {
+    const chat = useChatStore()
+    const tid = 'e2e-turn'
+    chat.ensureThread(tid)
+    chat.addUserMessage(tid, '你好')
+    chat.setNodeStatus(tid, { node: 'intent', label: '意图识别', phase: 'running', detail: '正在判断问题意图...' })
+    chat.setNodeStatus(tid, { node: 'intent', label: '意图识别', phase: 'completed', detail: '' })
+    chat.setNodeStatus(tid, { node: 'direct_answer', label: '快速回答', phase: 'completed', detail: '' })
+
+    const timeline = chat.getAgentTimeline(tid)
+    const labels = Object.fromEntries(
+      timeline.filter((e) => e.node && e.label).map((e) => [e.node, e.label]),
+    )
+    const turns = groupTurns(chat.getMessages(tid), labels, timeline)
+
+    expect(turns).toHaveLength(1)
+    expect(turns[0].steps.map((s) => s.label)).toEqual(['意图识别', '快速回答'])
+    expect(turns[0].steps[0].details).toEqual(['正在判断问题意图...'])
+  })
+
+  it('时间线里的细节从同名节点的日志补充', () => {
+    const turns = groupTurns(
+      [
+        { id: 'u1', role: 'user', content: '问题', timelineStart: 0 },
+        {
+          id: 'plan', role: 'assistant', content: '', nodeId: 'plan', status: 'done',
+          thinkingLogs: [{ node: 'plan', message: '拆解 3 个子问题', time: '10:00:03' }],
+        },
+      ],
+      labelOf,
+      [{ node: 'plan', label: '规划', phase: 'completed', ts: 1 }],
+    )
+
+    expect(turns[0].steps[0].details).toEqual(['拆解 3 个子问题'])
   })
 })
