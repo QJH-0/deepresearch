@@ -367,7 +367,13 @@ def _assign_source_ids(records: list[dict], prefix: str) -> list[dict]:
 
 
 def _enrich_evidence_from_raw(evidence: list[dict], raw_records: list[dict]) -> list[dict]:
-    """从原始记录中补充 evidence 中可能丢失的 url、domain、relevance_score 等字段"""
+    """从原始记录中补充 evidence 中可能丢失的字段。
+
+    evidence 由 LLM 整理产出，其 schema 里没有 url / domain / section_path /
+    relevance_score —— 这些字段必须从原始检索记录回填，否则下游拿不到
+    （section_path 缺失会让报告无法溯源到章节，relevance_score 缺失会让
+    _check_evidence_sufficiency 误判「证据显著不足」）。
+    """
     raw_lookup = {str(r.get("source_id", "")).strip(): r for r in raw_records if r.get("source_id")}
     enriched = []
     for ev in evidence:
@@ -383,6 +389,9 @@ def _enrich_evidence_from_raw(evidence: list[dict], raw_records: list[dict]) -> 
         # 补充 title（如 LLM 没有保留）
         if not item.get("title") and raw.get("title"):
             item["title"] = raw["title"]
+        # 补充 section_path：本地来源的章节路径，报告据此溯源到具体小节
+        if not item.get("section_path") and raw.get("section_path"):
+            item["section_path"] = raw["section_path"]
         # 补充 relevance_score：证据是重新构造的，不显式透传则下游
         # _check_evidence_sufficiency 读不到相关性，会误判「证据显著不足」
         if item.get("relevance_score") is None and raw.get("relevance_score") is not None:

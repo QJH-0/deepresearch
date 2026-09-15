@@ -1568,3 +1568,38 @@ class TestDashScopeRerankEndpoint:
 
         assert RAGConfig().rerank_model_name == "gte-rerank-v2"
         assert "gte-rerank" != AppConfig.__dataclass_fields__["rerank_model_name"].default
+
+
+class TestEvidenceEnrichmentKeepsSectionPath:
+    """回归：_enrich_evidence_from_raw 回填了 url/domain/title/relevance_score，
+    却漏了 section_path —— 报告因此无法溯源到具体章节。"""
+
+    def test_backfills_section_path_from_raw_record(self):
+        from mult_agents.nodes._evidence import _enrich_evidence_from_raw
+
+        evidence = [{"source_id": "LOC1_1-1", "title": "RAG_综述.md", "snippet": "…"}]
+        raw = [{
+            "source_id": "LOC1_1-1",
+            "title": "RAG_综述.md",
+            "section_path": "RAG 检索增强生成技术综述 > 第二章 文档分块策略",
+            "relevance_score": 0.5,
+        }]
+
+        out = _enrich_evidence_from_raw(evidence, raw)
+
+        assert out[0]["section_path"] == "RAG 检索增强生成技术综述 > 第二章 文档分块策略"
+
+    def test_does_not_overwrite_existing_section_path(self):
+        from mult_agents.nodes._evidence import _enrich_evidence_from_raw
+
+        evidence = [{"source_id": "L1", "section_path": "LLM 给出的章节"}]
+        raw = [{"source_id": "L1", "section_path": "原始章节"}]
+
+        assert _enrich_evidence_from_raw(evidence, raw)[0]["section_path"] == "LLM 给出的章节"
+
+    def test_missing_raw_record_is_tolerated(self):
+        from mult_agents.nodes._evidence import _enrich_evidence_from_raw
+
+        out = _enrich_evidence_from_raw([{"source_id": "NOPE"}], [])
+
+        assert "section_path" not in out[0]
