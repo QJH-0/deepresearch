@@ -6,6 +6,7 @@
  * - 纯字符串（旧格式，向下兼容）
  * - {question: string, options: string[]}（R2.3 新格式，options 非空时渲染可点击 chips）
  */
+import AppIcon from '../icons/AppIcon.vue'
 import { computed, ref } from 'vue'
 import { NInput, NButton, NTag } from 'naive-ui'
 
@@ -60,7 +61,7 @@ function skip() {
 <template>
   <div class="hitl-card clarify-card">
     <div class="card-header">
-      <span class="card-icon">❓</span>
+      <AppIcon class="card-icon" name="question" :size="18" />
       <span class="card-title">需要补充信息</span>
     </div>
 

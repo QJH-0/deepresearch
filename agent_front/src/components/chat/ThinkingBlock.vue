@@ -42,8 +42,8 @@ const stateLabel = computed(() => {
 
 const stateIcon = computed(() => {
   if (props.state === 'cancelled') return '⏹'
-  if (props.state === 'thinking') return '💭'
-  return '✅'
+  if (props.state === 'thinking') return '⋯'
+  return '✓'
 })
 </script>
 

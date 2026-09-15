@@ -3,7 +3,7 @@
  * AgentTimeline — 消费 agent.status，展示节点进度时间线。
  *
  * P7/H3 增强：
- * - 已完成✓ / 进行中 spinner / 待开始
+ * - 已完成 ✓ / 进行中 ⋯ / 待开始 ○ / 出错 ✕
  * - 每节点完成后可展开查看该步的中间结论（thinkingLogs）与来源增量
  * - 数据全部来自既有事件流，无新增后端改动
  */
@@ -54,7 +54,7 @@ const nodeStepCount = computed(() => {
 
 function phaseIcon(phase: string, isLast: boolean): string {
   if (phase === 'done' || phase === 'completed') return '✓'
-  if (phase === 'error') return '❌'
+  if (phase === 'error') return '✕'
   if (phase === 'running' || (isLast && props.running)) return '⋯'
   return '○'
 }

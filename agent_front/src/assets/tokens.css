@@ -1,0 +1,85 @@
+/**
+ * DeepResearch 设计令牌。
+ *
+ * 方向：「研究仪器台」—— 溯源优先的研究控制台。
+ * 产品的核心价值是「结论可追溯到证据」，因此配色把「系统在动」与
+ * 「内容可溯源」分成两条语义色轴，而不是单一品牌色打天下：
+ *   signal（青绿）= 系统状态、可交互
+ *   evidence（琥珀）= 引用、来源、证据
+ * 报告正文用无衬线保证长文可读，标识与数据用等宽字体承担「仪器读数」的人格。
+ */
+
+:root {
+  /* ── 色 ── */
+  --ink: #161a21;
+  --ink-2: #4a5260;
+  --ink-3: #7c8593;
+
+  --paper: #f5f6f4;
+  --surface: #ffffff;
+  --surface-2: #fafbfa;
+  --surface-sunken: #eef0ed;
+
+  --line: #dfe3df;
+  --line-strong: #c7cdc7;
+
+  --signal: #0b6e6e;
+  --signal-ink: #085454;
+  --signal-wash: #e6f2f1;
+
+  --evidence: #b26a00;
+  --evidence-ink: #8a5200;
+  --evidence-wash: #fbf1e2;
+
+  --danger: #b4232a;
+  --danger-wash: #fbecec;
+  --success: #2f7d32;
+  --success-wash: #eaf3ea;
+
+  /* ── 字体 ── */
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans SC",
+    system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Consolas,
+    "Liberation Mono", monospace;
+
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 21px;
+  --fs-2xl: 28px;
+
+  /* ── 空间（4pt 基数）── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* ── 圆角 / 阴影 / 动效 ── */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --shadow-1: 0 1px 2px rgba(22, 26, 33, 0.05);
+  --shadow-2: 0 4px 16px rgba(22, 26, 33, 0.07);
+  --shadow-3: 0 12px 32px rgba(22, 26, 33, 0.12);
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --dur: 0.18s;
+
+  /* ── 布局 ── */
+  --sidebar-w: 272px;
+  --rail-w: 320px;
+  --content-max: 768px;
+
+  /* ── z 轴分层 ── */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-mask: 40;
+  --z-toast: 100;
+}

@@ -8,6 +8,7 @@
  * 有 pending 切片时每 3s 拉一次列表，全部 indexed 后停止，
  * 避免无意义的常驻轮询。
  */
+import AppIcon from '../components/icons/AppIcon.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import StatsCards from '../components/knowledge/StatsCards.vue'
 import UploadDropzone from '../components/knowledge/UploadDropzone.vue'
@@ -262,7 +263,7 @@ onBeforeUnmount(() => {
         <div class="panel-head">
           <h3>文档管理</h3>
           <div class="doc-search">
-            <span class="search-icon">🔍</span>
+            <span class="search-icon"><AppIcon name="search" :size="14" /></span>
             <input
               v-model="keyword"
               class="search-input"

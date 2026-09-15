@@ -5,6 +5,7 @@
  * 粘包/半包由 buffer 兜住。支持跨 chunk 的半行 JSON 缓冲处理。
  */
 import type { EventEnvelope, EventType } from '../types/events.gen'
+import { authHeaders, redirectToLogin } from './token'
 
 /**
  * 从 SSE Response 消费事件，通过回调分发。
@@ -66,13 +67,19 @@ export async function consumeSSE(
 /**
  * POST 流式请求 — 发起 POST 并消费 SSE 流。
  * 返回的 Response 交给 consumeSSE 处理。
+ *
+ * 流式端点同样要求认证；这里用 fetch 而非 EventSource，因此可以带 Authorization 头。
  */
 export async function postStream(url: string, body: unknown): Promise<Response> {
   const resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   })
+  if (resp.status === 401) {
+    redirectToLogin()
+    throw new Error('登录状态已失效，请重新登录')
+  }
   return resp
 }
 

@@ -3,6 +3,7 @@
  * 会话历史列表（重构版）— 接 threads store（Pinia）。
  * 按 置顶 / 今天 / 昨天 / 近 7 天 / 更早 分组。
  */
+import AppIcon from './icons/AppIcon.vue'
 import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { ThreadItem } from '../types'
@@ -109,7 +110,7 @@ function statusIcon(thread: ThreadItem): string {
     </div>
 
     <div class="history-search">
-      <span class="search-icon">🔍</span>
+      <span class="search-icon"><AppIcon name="search" :size="14" /></span>
       <input
         v-model="keyword"
         class="search-input"

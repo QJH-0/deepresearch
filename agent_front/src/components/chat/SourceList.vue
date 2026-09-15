@@ -8,6 +8,7 @@
  * - web 点击新开 url，kb 点击打开知识库文档定位
  * - 会话级汇总视图（当前报告全部来源）
  */
+import AppIcon from '../icons/AppIcon.vue'
 import { computed, ref } from 'vue'
 import type { SourceItem } from '../../types/events.gen'
 
@@ -51,12 +52,12 @@ function handleClick(src: SourceItem): void {
 <template>
   <div v-if="sources.length" class="source-list" :class="{ sidebar: sidebar }">
     <div class="source-header" @click="expanded = !expanded">
-      <span class="source-title">📎 来源（{{ sources.length }}）</span>
+      <span class="source-title"><AppIcon name="paperclip" :size="14" /> 来源（{{ sources.length }}）</span>
       <span class="source-toggle">{{ expanded ? '收起' : '展开' }}</span>
     </div>
 
     <div v-if="webSources.length" class="source-group">
-      <p class="group-label">🌐 网络来源</p>
+      <p class="group-label"><AppIcon name="globe" :size="13" /> 网络来源</p>
       <div class="source-items">
         <a
           v-for="(src, idx) in webSources"
@@ -75,7 +76,7 @@ function handleClick(src: SourceItem): void {
     </div>
 
     <div v-if="kbSources.length" class="source-group">
-      <p class="group-label">📚 知识库来源</p>
+      <p class="group-label"><AppIcon name="book" :size="13" /> 知识库来源</p>
       <div class="source-items">
         <button
           v-for="(src, idx) in kbSources"

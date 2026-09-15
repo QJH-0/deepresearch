@@ -5,6 +5,7 @@
  * 只有 uploading 阶段展示字节百分比；进入 parsing / embedding 后改为
  * 「阶段点 + 切片计数」，因为这时候进度由服务端异步推进，前端拿不到百分比。
  */
+import AppIcon from '../icons/AppIcon.vue'
 import type { UploadTask } from '../../types'
 import { formatBytes } from '../../utils/datetime'
 import { STAGE_LABELS, stageIndex } from '../../utils/upload'
@@ -57,7 +58,7 @@ const stageSteps = ['排队', '上传', '解析', '向量化']
       </p>
       <p v-if="task.stage === 'failed'" class="task-error">{{ task.error }}</p>
       <p v-if="task.stage === 'done'" class="task-done">
-        ✅ 已进入向量库 · {{ task.indexedChunks }}/{{ task.chunkCount }} 切片
+        <AppIcon name="check" :size="13" /> 已进入向量库 · {{ task.indexedChunks }}/{{ task.chunkCount }} 切片
       </p>
     </li>
   </TransitionGroup>

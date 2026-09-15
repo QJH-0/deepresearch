@@ -6,8 +6,8 @@
  */
 export {
   ApiError,
-  getUserId,
-  setUserId,
+  login,
+  fetchMe,
   fetchThreads,
   fetchThreadMessages,
   renameThreadApi as renameThread,
@@ -27,7 +27,5 @@ export {
   toChatMessages,
   exportMarkdown,
   exportPdf,
-  exportMarkdownUrl,
-  exportPdfUrl,
 } from './rest'
 export type { DocumentItem } from '../types'

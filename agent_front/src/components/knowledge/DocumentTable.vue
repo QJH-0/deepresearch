@@ -82,20 +82,22 @@ function sortIndicator(key: string): string {
   return sortDesc.value ? '↓' : '↑'
 }
 
-function fileIcon(ext: string): string {
-  const map: Record<string, string> = {
-    '.pdf': '📕',
-    '.doc': '📘',
-    '.docx': '📘',
-    '.md': '📝',
-    '.markdown': '📝',
-    '.txt': '📄',
-    '.html': '🌐',
-    '.htm': '🌐',
-    '.csv': '📊',
-    '.json': '🧩',
+type FileIconName = 'file-pdf' | 'file-doc' | 'file' | 'globe'
+
+function fileIcon(ext: string): FileIconName {
+  const map: Record<string, FileIconName> = {
+    '.pdf': 'file-pdf',
+    '.doc': 'file-doc',
+    '.docx': 'file-doc',
+    '.md': 'file',
+    '.markdown': 'file',
+    '.txt': 'file',
+    '.html': 'globe',
+    '.htm': 'globe',
+    '.csv': 'file',
+    '.json': 'file',
   }
-  return map[ext.toLowerCase()] || '📄'
+  return map[ext.toLowerCase()] || 'file'
 }
 
 defineExpose({ selectedIds, clearSelection })
@@ -148,7 +150,7 @@ defineExpose({ selectedIds, clearSelection })
             </td>
 
             <td class="col-name">
-              <span class="file-icon">{{ fileIcon(doc.file_ext) }}</span>
+              <span class="file-icon"><AppIcon :name="fileIcon(doc.file_ext)" :size="16" /></span>
               <span class="file-name" :title="doc.filename">{{ doc.filename }}</span>
               <span class="file-ext">{{ doc.file_ext }}</span>
             </td>

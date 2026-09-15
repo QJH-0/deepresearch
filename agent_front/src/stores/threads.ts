@@ -5,6 +5,8 @@
  * - 事件驱动刷新：run.completed/error 后调 refresh()，替代旧版 10s 轮询
  * - 标题自动生成：run.completed 后后端 LLM 生成标题，前端 refresh 单条
  * - 乐观更新（重命名/置顶/删除），失败回滚
+ *
+ * 身份不再由前端持有：user_id 由 JWT 决定，切换用户 = 重新登录。
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
@@ -12,14 +14,11 @@ import type { ThreadItem } from '../types'
 import {
   deleteThread as apiDeleteThread,
   fetchThreads,
-  getUserId,
   pinThread as apiPinThread,
   renameThread as apiRenameThread,
-  setUserId as persistUserId,
 } from '../api'
 
 export const useThreadsStore = defineStore('threads', () => {
-  const userId = ref(getUserId())
   const threads = ref<ThreadItem[]>([])
   const currentThreadId = ref('')
   const loading = ref(false)
@@ -42,17 +41,8 @@ export const useThreadsStore = defineStore('threads', () => {
   }
 
   /** 事件驱动刷新（run.completed/error 后调用） */
-  async function refresh(threadId?: string): Promise<void> {
-    if (threadId) {
-      // 只刷新单条（标题可能已更新）
-      try {
-        await load()
-      } catch {
-        // 静默失败，不打断用户
-      }
-    } else {
-      await load()
-    }
+  async function refresh(): Promise<void> {
+    await load()
   }
 
   function startNewThread(): string {
@@ -110,15 +100,14 @@ export const useThreadsStore = defineStore('threads', () => {
     }
   }
 
-  function changeUserId(next: string): void {
-    userId.value = next.trim() || 'default_user'
-    persistUserId(userId.value)
+  /** 登出时清空内存状态，避免下一个账号看到上一个账号的会话列表 */
+  function reset(): void {
+    threads.value = []
     currentThreadId.value = ''
-    void load()
+    error.value = ''
   }
 
   return {
-    userId,
     threads,
     currentThreadId,
     loading,
@@ -132,6 +121,6 @@ export const useThreadsStore = defineStore('threads', () => {
     renameThread,
     togglePin,
     removeThread,
-    changeUserId,
+    reset,
   }
 })

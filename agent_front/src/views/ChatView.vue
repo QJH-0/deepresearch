@@ -1,5 +1,6 @@
 <script setup lang="ts">
 /** ChatView（重构版）— 只做布局组装。事件→useEventStream，状态→Pinia stores */
+import AppIcon from '../components/icons/AppIcon.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import MessageItem from '../components/chat/MessageItem.vue'
@@ -14,7 +15,7 @@ import { useChatStore } from '../stores/chat'
 import { useThreadsStore } from '../stores/threads'
 import { useInterruptStore } from '../stores/interrupt'
 import { useEventStream } from '../composables/useEventStream'
-import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdfUrl } from '../api/rest'
+import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdf } from '../api/rest'
 import type { InterruptKind } from '../types/events.gen'
 import { NAlert } from 'naive-ui'
 
@@ -90,11 +91,27 @@ function handleNewChat() {
 
 function useStarter(prompt: string) { composer.value?.fill(prompt) }
 
-// P7-4: 导出报告为 PDF（或降级 HTML 打印）
-function exportPdfReport() {
+// P7-4: 导出报告为 PDF（或降级 Markdown）
+// 导出接口要求认证，不能用 <a href>/window.open 直链，必须走 fetch 再落盘
+async function exportPdfReport(): Promise<void> {
   const threadId = threads.currentThreadId
   if (!threadId) return
-  window.open(exportPdfUrl(threadId), '_blank')
+  try {
+    const blob = await exportPdf(threadId)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `report_${threadId.slice(0, 12)}.pdf`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    chat.markError(threadId, {
+      code: 'EXPORT_FAILED',
+      message: err instanceof Error ? err.message : '导出失败',
+    })
+  }
 }
 
 // ── watchers ────────────────────────────────────────
@@ -140,7 +157,7 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
       </div>
       <div class="header-right">
         <RollbackMenu v-if="threads.currentThreadId" :thread-id="threads.currentThreadId" />
-        <button v-if="threads.currentThreadId && !isEmpty" class="export-pdf-btn" @click="exportPdfReport">📥 导出</button>
+        <button v-if="threads.currentThreadId && !isEmpty" class="export-pdf-btn" @click="exportPdfReport"><AppIcon name="download" :size="14" /> 导出</button>
         <label class="hitl-toggle">
           <input v-model="hitlEnabled" type="checkbox" />
           <span>人工干预模式</span>

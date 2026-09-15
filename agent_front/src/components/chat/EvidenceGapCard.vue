@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIcon from '../icons/AppIcon.vue'
 /**
  * EvidenceGapCard — HITL 证据缺口处置卡片（kind=evidence_gap）。
  *
@@ -53,7 +54,7 @@ function skip() {
 <template>
   <div class="hitl-card evidence-gap-card">
     <div class="card-header">
-      <span class="card-icon">🔍</span>
+      <AppIcon class="card-icon" name="search" :size="18" />
       <span class="card-title">证据不足</span>
     </div>
 

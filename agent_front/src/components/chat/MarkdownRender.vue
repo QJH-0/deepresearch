@@ -6,6 +6,7 @@
  * - streaming 时：50ms 节流 + remend 修复不完整 Markdown（未闭合代码块、截断的加粗等）
  * - 完成后：立即完整渲染，不需要 remend 修复
  */
+import AppIcon from '../icons/AppIcon.vue'
 import { computed, ref, watch } from 'vue'
 import MarkdownIt from 'markdown-it'
 import hljs from 'highlight.js'
@@ -149,7 +150,7 @@ function onCitationHover(e: MouseEvent): void {
   if (source) {
     const lines = [
       source.title || '未知来源',
-      source.url ? `🔗 ${source.url}` : '',
+      source.url || '',
       source.snippet ? source.snippet.slice(0, 100) : '',
     ].filter(Boolean)
     tooltipContent.value = lines.join('\n')
@@ -170,7 +171,7 @@ function hideTooltip(): void {
   <div class="markdown-render" @click="copyCode" @mousemove="onCitationHover" @mouseleave="hideTooltip">
     <div class="markdown-body" v-html="html" @click="onCitationClick" />
     <button v-if="showExport" class="export-btn" @click.stop="emit('export-markdown')">
-      📥 导出 MD
+      <AppIcon name="download" :size="14" /> 导出 MD
     </button>
     <transition name="fade">
       <span v-if="copiedId" class="copy-toast">已复制</span>
@@ -196,7 +197,7 @@ function hideTooltip(): void {
   overflow-x: auto;
 }
 .markdown-render :deep(pre.hljs::after) {
-  content: '📋';
+  content: '复制';
   position: absolute;
   top: 4px;
   right: 8px;

@@ -4,6 +4,7 @@
  *
  * 报告预览 + 采纳 / 再深入（方向输入，多选追加子问题）
  */
+import AppIcon from '../icons/AppIcon.vue'
 import { computed, ref } from 'vue'
 import { NInput, NButton } from 'naive-ui'
 import MarkdownRender from './MarkdownRender.vue'
@@ -48,7 +49,7 @@ function submitReject() {
 <template>
   <div class="hitl-card report-review">
     <div class="card-header">
-      <span class="card-icon">📝</span>
+      <AppIcon class="card-icon" name="report" :size="18" />
       <span class="card-title">报告待审核</span>
     </div>
 

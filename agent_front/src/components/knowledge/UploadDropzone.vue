@@ -28,7 +28,9 @@ const maxFiles = computed(() => props.limits?.max_files_per_batch ?? 20)
 const hintText = computed(() => {
   const exts = (props.limits?.extensions || []).map((e) => e.replace('.', '').toUpperCase())
   const shown = exts.length > 0 ? exts.join(' / ') : 'PDF / Word / Markdown / TXT / HTML / CSV / JSON'
-  return `支持 ${shown} · 单文件 ≤ ${maxSizeMb} MB · 单次最多 ${maxFiles} 个`
+  // 注意：computed 只在模板里自动解包，JS 模板字符串里必须显式取 .value，
+  // 否则会渲染成 [object Object]
+  return `支持 ${shown} · 单文件 ≤ ${maxSizeMb.value} MB · 单次最多 ${maxFiles.value} 个`
 })
 
 function onDragEnter(event: DragEvent) {
@@ -86,7 +88,18 @@ function triggerPick() {
       @change="pickFiles"
     />
     <div class="dropzone-inner">
-      <span class="dropzone-icon">{{ dragOver ? '⬇️' : '📄' }}</span>
+      <span class="dropzone-icon" aria-hidden="true">
+        <svg v-if="dragOver" viewBox="0 0 24 24" width="24" height="24">
+          <path d="M12 4v10m0 0l-4-4m4 4l4-4M5 19h14" fill="none" stroke="currentColor"
+                stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" width="24" height="24">
+          <path d="M6 3h8l4 4v14H6z" fill="none" stroke="currentColor" stroke-width="1.6"
+                stroke-linejoin="round" />
+          <path d="M14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.6"
+                stroke-linejoin="round" />
+        </svg>
+      </span>
       <p class="dropzone-title">{{ dragOver ? '松开即可上传' : '拖拽文件到此处，或点击选择' }}</p>
       <p class="dropzone-hint">{{ hintText }}</p>
     </div>

@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useChatStore } from '../src/stores/chat'
 import { takeSseLines } from '../src/api/sse'
-import { exportMarkdownUrl, exportPdfUrl } from '../src/api/rest'
+import { exportMarkdown, exportPdf } from '../src/api/rest'
 import type { EventEnvelope, SourceItem } from '../src/types/events.gen'
 
 // ── mock fetch ──────────────────────────────────────────
@@ -135,19 +135,33 @@ describe('T7-4: 角标渲染交互', () => {
   })
 })
 
-// ── T7-5: MD 导出 ──────────────────────────────────────
+// ── T7-5: 导出（需认证）────────────────────────────────
 
-describe('T7-5: MD 导出', () => {
-  it('导出 URL 生成正确', () => {
-    const url = exportMarkdownUrl('thread-123')
-    expect(url).toContain('thread-123')
-    expect(url).toContain('/export/md')
+describe('T7-5: 导出', () => {
+  it('MD 导出走带令牌的 fetch 并返回 Blob', async () => {
+    localStorage.setItem('dr.token', 'test-token')
+    mockFetch.mockResolvedValue(new Response('# 报告', { status: 200 }))
+
+    const blob = await exportMarkdown('thread-123')
+
+    expect(blob).toBeInstanceOf(Blob)
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('thread-123')
+    expect(String(url)).toContain('/export/md')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer test-token')
   })
 
-  it('PDF 导出 URL 生成正确', () => {
-    const url = exportPdfUrl('thread-456')
-    expect(url).toContain('thread-456')
-    expect(url).toContain('/export/pdf')
+  it('PDF 导出走带令牌的 fetch 并返回 Blob', async () => {
+    localStorage.setItem('dr.token', 'test-token')
+    mockFetch.mockResolvedValue(new Response('%PDF-1.4', { status: 200 }))
+
+    const blob = await exportPdf('thread-456')
+
+    expect(blob).toBeInstanceOf(Blob)
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toContain('thread-456')
+    expect(String(url)).toContain('/export/pdf')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer test-token')
   })
 
   it('MessageItem 导出函数代码存在', async () => {

@@ -150,20 +150,20 @@ export function useEventStream() {
         const d = env.data as EventDataMap['run.completed']
         chat.finish(threadId, d)
         clearMsgIdMap(threadId)
-        void threads.refresh(threadId)
+        void threads.refresh()
         break
       }
       case 'run.cancelled': {
         chat.markCancelled(threadId)
         clearMsgIdMap(threadId)
-        void threads.refresh(threadId)
+        void threads.refresh()
         break
       }
       case 'run.error': {
         const d = env.data as EventDataMap['run.error']
         chat.markError(threadId, d)
         clearMsgIdMap(threadId)
-        void threads.refresh(threadId)
+        void threads.refresh()
         break
       }
       default:
@@ -301,7 +301,6 @@ export function useEventStream() {
     try {
       const resp = await postStream('/api/v1/research/stream', {
         query,
-        user_id: options?.user_id || threads.userId,
         thread_id: threadId,
         tenant_id: options?.tenant_id || 'default_tenant',
         hitl_enabled: options?.hitl_enabled ?? false,

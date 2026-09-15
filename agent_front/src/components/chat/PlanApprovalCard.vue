@@ -6,6 +6,7 @@
  * "修改"弹出原因输入框（NInput + 确认）
  * 显示 revision_count（第 n/3 次修改）
  */
+import AppIcon from '../icons/AppIcon.vue'
 import { computed, ref } from 'vue'
 import { NInput, NButton } from 'naive-ui'
 import MarkdownRender from './MarkdownRender.vue'
@@ -43,7 +44,7 @@ function reject() {
 <template>
   <div class="hitl-card plan-approval">
     <div class="card-header">
-      <span class="card-icon">📋</span>
+      <AppIcon class="card-icon" name="list" :size="18" />
       <span class="card-title">研究计划待审批</span>
       <span v-if="revisionCount > 0" class="revision-badge">第 {{ revisionCount + 1 }} 次修改</span>
     </div>
