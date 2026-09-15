@@ -552,12 +552,13 @@ class ChunkRepository:
                 row = cur.fetchone()
         return row[0] if row else 0
 
-    def retry_failed_chunks(self, doc_id: str) -> List[str]:
+    def retry_failed_chunks(self, doc_id: str) -> List[Tuple[str, str]]:
         """
         重试未完成的切片：把 failed/pending chunk 重置并重建 Outbox 消息。
 
-        返回新生成的 message payload 列表（由调用方直接投递 MQ，
-        不依赖只在启动时跑一次的补偿扫描）。
+        返回 (message_id, payload) 列表。**必须带上 message_id** ——
+        调用方投递成功后要据此把 Outbox 行标记为 sent；
+        只返回 payload 会让这些行永远停在 pending，补偿扫描反复重发。
         """
         pool = self._get_pool()
         with pool.connection() as conn:
@@ -618,7 +619,7 @@ class ChunkRepository:
                         msg_rows,
                     )
         logger.info("重试向量化 | doc_id=%s | 重置切片=%d", doc_id, len(msg_rows))
-        return [m[3] for m in msg_rows]
+        return [(m[0], m[3]) for m in msg_rows]
 
     def delete_documents_batch(self, doc_ids: List[str], user_id: str) -> List[Tuple[str, str]]:
         """

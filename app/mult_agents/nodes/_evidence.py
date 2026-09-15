@@ -201,19 +201,58 @@ def _build_queries(state: AgentState, source_preference: str) -> list[dict]:
 
 
 
+_QUERY_STOPWORDS = {"什么", "如何", "以及", "一个", "关于", "这个", "那个", "进行", "基于", "附带", "来源", "清单"}
+
+# 指令性/填充词：出现在提问里但不描述主题。
+# 计入相关性分母会让「长自然语言问题」必然低分（分母被指令词撑大，
+# 而指令词永远不会出现在文档里）——表现为本地检索恒返回 0 条。
+_INSTRUCTION_WORDS = {
+    "请对比", "对比", "比较", "请", "说明", "给出", "依据", "理由", "并", "它们", "他们", "各自",
+    "解决", "问题", "哪些", "怎么", "怎样", "为什么", "是否", "可以", "需要", "介绍", "阐述",
+    "分析", "总结", "概述", "简述", "解释", "列举", "两篇", "三篇", "文档", "文章", "核心",
+    "观点", "内容", "部分", "方面", "相关", "作用", "区别", "联系", "影响", "意义", "分别",
+}
+
+
 def _extract_query_terms(query: str) -> list[str]:
+    """提取查询中的**内容词**，用于相关性估算。
+
+    关键取舍：超过 6 字的 CJK 片段（如「两篇文档的核心观点」）是整句片段，
+    几乎不可能在文档里逐字出现，把它们放进分母会让长自然语言问题必然低分 ——
+    表现为本地检索恒返回 0 条。因此只保留短词（真正的关键词）；
+    若查询里全是长片段（没有短词可用），退化为用它们的 2-gram 兜底。
+    """
     parts = re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_-]{3,}", query.lower())
-    terms = []
-    stopwords = {"什么", "如何", "以及", "一个", "关于", "这个", "那个", "进行", "基于", "附带", "来源", "清单"}
+
+    short_terms: list[str] = []
+    long_runs: list[str] = []
     for part in parts:
-        if part in stopwords:
+        if part in _QUERY_STOPWORDS or part in _INSTRUCTION_WORDS:
             continue
-        terms.append(part)
-    return terms[:12]
+        if re.fullmatch(r"[\u4e00-\u9fff]+", part) and len(part) > 6:
+            long_runs.append(part)
+            continue
+        short_terms.append(part)
+
+    if short_terms:
+        return short_terms[:12]
+
+    grams: list[str] = []
+    for run in long_runs:
+        for index in range(len(run) - 1):
+            gram = run[index:index + 2]
+            if gram not in _QUERY_STOPWORDS and gram not in _INSTRUCTION_WORDS:
+                grams.append(gram)
+    return list(dict.fromkeys(grams))[:12]
 
 
 
 def _estimate_relevance(query: str, text: str) -> float:
+    """按「查询中的内容词有多少出现在文档里」估算相关性。
+
+    只统计内容词：提问里的指令词（请对比 / 说明 / 给出 / 依据 …）与长句片段
+    都不计入分母，否则长自然语言问题必然低分（本地检索恒返回 0 条）。
+    """
     terms = _extract_query_terms(query)
     if not terms:
         return 0.0

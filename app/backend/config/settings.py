@@ -33,7 +33,8 @@ class MiddlewareSettings(BaseSettings):
     dashscope_api_key: str = ""
     postgres_dsn: str = "postgresql://root:postgres123@localhost:5432/mydb"
     redis_url: str = "redis://:redis123456@localhost:6379"
-    rabbitmq_url: str = "amqp://admin:admin123456@localhost:5672/"
+    # 必须由 .env 的 RABBITMQ_URL 提供；为空时 MQ 连接失败并降级为同步向量化
+    rabbitmq_url: str = ""
     milvus_host: str = "localhost"
     milvus_port: int = 19530
     minio_endpoint: str = "localhost:9900"

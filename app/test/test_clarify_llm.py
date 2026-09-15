@@ -62,7 +62,7 @@ class TestRuleFastPath:
         from mult_agents.nodes.clarify import clarify_node
 
         agent = _make_mock_agent('{"needs_clarification": false, "confidence": 0.9}')
-        state = {"query": "最近的一些进展", "clarifications": [], "clarify_rounds": 0}
+        state = {"query": "最近的一些进展", "clarifications": [], "clarify_rounds": 0, "hitl_enabled": True}
 
         with patch(_INTERRUPT_TARGET, return_value=["用户回答"]) as mock_intr:
             result = clarify_node(state, agent=agent, agent_name="clarifier")
@@ -76,7 +76,7 @@ class TestRuleFastPath:
         from mult_agents.nodes.clarify import clarify_node
 
         agent = _make_mock_agent('{"needs_clarification": false, "confidence": 0.9}')
-        state = {"query": "ai", "clarifications": [], "clarify_rounds": 0}
+        state = {"query": "ai", "clarifications": [], "clarify_rounds": 0, "hitl_enabled": True}
 
         with patch(_INTERRUPT_TARGET, return_value=["回答"]) as mock_intr:
             result = clarify_node(state, agent=agent, agent_name="clarifier")
@@ -102,7 +102,7 @@ class TestLLMNeedsClarification:
             '"questions": [{"question": "时间范围？", "options": ["近一年", "不限"]}]}'
         )
         agent = _make_mock_agent(llm_output)
-        state = {"query": "研究AI发展", "clarifications": [], "clarify_rounds": 0}
+        state = {"query": "研究AI发展", "clarifications": [], "clarify_rounds": 0, "hitl_enabled": True}
 
         with patch(_INTERRUPT_TARGET, return_value=["近一年"]) as mock_intr:
             result = clarify_node(state, agent=agent, agent_name="clarifier")
@@ -128,7 +128,7 @@ class TestLLMNoClarification:
 
         llm_output = '{"needs_clarification": false, "confidence": 0.9, "reason": "需求明确"}'
         agent = _make_mock_agent(llm_output)
-        state = {"query": "请调研2024年人工智能领域的技术发展趋势", "clarifications": [], "clarify_rounds": 0}
+        state = {"query": "请调研2024年人工智能领域的技术发展趋势", "clarifications": [], "clarify_rounds": 0, "hitl_enabled": True}
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             result = clarify_node(state, agent=agent, agent_name="clarifier")
@@ -149,7 +149,7 @@ class TestLLMExceptionSilentPass:
         from mult_agents.nodes.clarify import clarify_node
 
         agent = _make_failing_agent()
-        state = {"query": "请调研2024年人工智能领域的技术发展趋势", "clarifications": [], "clarify_rounds": 0}
+        state = {"query": "请调研2024年人工智能领域的技术发展趋势", "clarifications": [], "clarify_rounds": 0, "hitl_enabled": True}
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             result = clarify_node(state, agent=agent, agent_name="clarifier")
@@ -239,6 +239,7 @@ class TestAnswerSufficiency:
             "query": "研究AI发展",
             "clarifications": [{"q": [{"question": "时间范围？", "options": []}], "a": ["近一年"]}],
             "clarify_rounds": 1,
+            "hitl_enabled": True,
         }
 
         with patch(_INTERRUPT_TARGET, return_value=["开发者"]) as mock_intr:
@@ -260,6 +261,7 @@ class TestAnswerSufficiency:
             "query": "研究AI发展",
             "clarifications": [{"q": [{"question": "时间范围？", "options": []}], "a": ["近一年"]}],
             "clarify_rounds": 1,
+            "hitl_enabled": True,
         }
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
@@ -276,6 +278,7 @@ class TestAnswerSufficiency:
             "query": "研究AI发展",
             "clarifications": [{"q": [{"question": "时间范围？", "options": []}], "a": ["近一年"]}],
             "clarify_rounds": 1,
+            "hitl_enabled": True,
         }
 
         with patch(_INTERRUPT_TARGET) as mock_intr:

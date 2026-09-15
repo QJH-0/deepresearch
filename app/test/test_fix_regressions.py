@@ -1271,3 +1271,246 @@ class TestChunkConsumerParentContent:
 
         parent_doc = rag.parent_store.add_documents.call_args.args[0][0]
         assert parent_doc.page_content == "子块正文"
+
+
+# ──────────────────────────────────────────────────────────────
+# MQ 投递失败不得静默：必须走同步降级，且不能误标 Outbox 为 sent
+# ──────────────────────────────────────────────────────────────
+
+
+class TestMqProducerDlqResilience:
+    """死信队列是辅助设施，声明失败不得挡住宿主队列。"""
+
+    def test_dlq_declaration_failure_does_not_block_main_queue(self, monkeypatch):
+        from backend.infra import mq_client
+
+        channels = []
+
+        class FakeChannel:
+            def __init__(self, fail_dlq: bool):
+                self.fail_dlq = fail_dlq
+                self.declared_queues: list[str] = []
+
+            def exchange_declare(self, **kwargs):
+                pass
+
+            def queue_declare(self, queue, **kwargs):
+                if queue == "chunk-sync-dlq" and self.fail_dlq:
+                    raise mq_client.pika.exceptions.ChannelClosedByBroker(
+                        406, "PRECONDITION_FAILED - inequivalent arg 'x-queue-mode'"
+                    )
+                self.declared_queues.append(queue)
+
+            def queue_bind(self, **kwargs):
+                pass
+
+        class FakeConnection:
+            def __init__(self):
+                self.count = 0
+
+            def channel(self):
+                self.count += 1
+                ch = FakeChannel(fail_dlq=self.count == 1)
+                channels.append(ch)
+                return ch
+
+        monkeypatch.setattr(
+            mq_client.pika, "BlockingConnection", lambda params: FakeConnection()
+        )
+
+        producer = mq_client.MQProducer(url="amqp://example", exchange="chunk-sync")
+        producer.connect()  # 不应抛异常
+
+        assert len(channels) == 2, "DLQ 声明失败后应换一个新 channel 继续声明"
+        assert "chunk-sync.queue" in channels[1].declared_queues, "主队列必须声明成功"
+
+
+class TestPublishMessagesHonoursReturnValue:
+    """publish_chunks 内部把异常吞成 return False，调用方必须检查返回值。"""
+
+    def _service(self, publish_result=None, raise_exc=None):
+        from importlib import import_module
+
+        ds = import_module("backend.service.document_service")
+        svc = object.__new__(ds.DocumentService)
+        svc._repo = MagicMock()
+        if raise_exc is not None:
+            svc._mq = MagicMock()
+            svc._mq.publish_chunks.side_effect = raise_exc
+        elif publish_result is None:
+            svc._mq = None
+        else:
+            svc._mq = MagicMock()
+            svc._mq.publish_chunks.return_value = publish_result
+        return svc
+
+    def test_success_marks_outbox_sent(self):
+        svc = self._service(True)
+
+        assert svc._publish_messages([{"id": "m1"}], ["m1"]) is True
+
+        svc._repo.mark_messages_sent.assert_called_once_with(["m1"])
+
+    def test_return_false_does_not_mark_sent(self):
+        """回归：无条件 mark_messages_sent 会让补偿任务再也不重发，切片永久 pending。"""
+        svc = self._service(False)
+
+        assert svc._publish_messages([{"id": "m1"}], ["m1"]) is False
+
+        svc._repo.mark_messages_sent.assert_not_called()
+
+    def test_exception_does_not_mark_sent(self):
+        svc = self._service(raise_exc=RuntimeError("mq down"))
+
+        assert svc._publish_messages([{"id": "m1"}], ["m1"]) is False
+
+        svc._repo.mark_messages_sent.assert_not_called()
+
+    def test_no_producer_returns_false(self):
+        svc = self._service(None)
+
+        assert svc._publish_messages([{"id": "m1"}], ["m1"]) is False
+
+        svc._repo.mark_messages_sent.assert_not_called()
+
+    def test_mq_connect_failure_clears_producer(self, monkeypatch):
+        """回归：connect 失败却把 _mq 留在非 None，同步降级分支永远不会触发。"""
+        from importlib import import_module
+
+        ds = import_module("backend.service.document_service")
+
+        class FailingProducer:
+            def __init__(self, **kwargs):
+                pass
+
+            def connect(self):
+                raise RuntimeError("PRECONDITION_FAILED")
+
+        monkeypatch.setattr(ds, "MQProducer", FailingProducer)
+
+        svc = object.__new__(ds.DocumentService)
+        svc._config = SimpleNamespace(
+            rabbitmq_url="amqp://example",
+            rabbitmq_chunk_sync_exchange="chunk-sync",
+        )
+        svc._initialized = False
+        svc._rag = None
+        svc._minio = None
+        svc._repo = None
+        svc._mq = None
+
+        # 只验证 MQ 这一段：把后续初始化挡掉
+        monkeypatch.setattr(
+            ds.DocumentService, "_init_storage", lambda self: None, raising=False
+        )
+        try:
+            svc._ensure_initialized()
+        except Exception:
+            pass
+
+        assert svc._mq is None, "MQ 连接失败后 _mq 必须置 None，否则降级分支不可达"
+
+
+class TestRetryFailedChunksKeepsMessageIds:
+    def test_repo_returns_message_id_with_payload(self):
+        """回归：只返回 payload 会让重建的 Outbox 行永远停在 pending。"""
+        import inspect
+
+        from backend.infra.postgres_client import ChunkRepository
+
+        src = inspect.getsource(ChunkRepository.retry_failed_chunks)
+        assert "return [(m[0], m[3]) for m in msg_rows]" in src, (
+            "retry_failed_chunks 必须同时返回 message_id 与 payload"
+        )
+
+
+# ──────────────────────────────────────────────────────────────
+# HITL 关闭时不得发起澄清（否则整条研究链路零产出）
+# ──────────────────────────────────────────────────────────────
+
+
+class TestClarifyRespectsHitlSwitch:
+    def test_skips_interrupt_and_goes_to_plan_when_hitl_disabled(self):
+        """回归：clarify_node 曾无条件 raise_interrupt，
+        hitl_enabled=False 时图被挂起且调用方不 resume，研究零产出。"""
+        from mult_agents.nodes import clarify
+
+        state = {
+            "query": "最近的 AI 进展如何？",  # 命中规则快速通道
+            "hitl_enabled": False,
+        }
+
+        result = clarify.clarify_node(state, None, "clarifier")
+
+        assert hasattr(result, "goto"), "应返回 Command 直通下游节点"
+        assert result.goto == "plan"
+        assert result.update == {}, "跳过澄清不应写入澄清记录"
+
+    def test_rule_fast_path_still_interrupts_when_hitl_enabled(self, monkeypatch):
+        """HITL 开启时规则通道仍应发起澄清。"""
+        from mult_agents.nodes import clarify
+
+        called = {}
+        monkeypatch.setattr(
+            clarify, "raise_interrupt",
+            lambda kind, payload: called.update(kind=kind, payload=payload) or {"answers": ["A"]},
+        )
+
+        state = {"query": "最近的 AI 进展如何？", "hitl_enabled": True}
+        result = clarify.clarify_node(state, None, "clarifier")
+
+        assert called.get("kind") == "clarification"
+        assert result.goto == "plan"
+
+
+# ──────────────────────────────────────────────────────────────
+# 本地检索相关性：长自然语言提问不得被判为不相关
+# ──────────────────────────────────────────────────────────────
+
+
+class TestLocalRelevanceForNaturalQuestions:
+    """回归：相关性分母曾被指令词与整句片段撑大，
+    导致用真实提问方式查知识库恒返回 0 条、报告只能说「证据严重不足」。"""
+
+    QUERY = "请对比《RAG 综述》与《HNSW 索引原理》两篇文档的核心观点，说明它们各自解决什么问题，并给出依据。"
+    THRESHOLD = 0.35
+
+    def test_content_terms_exclude_instruction_words(self):
+        from mult_agents.nodes._evidence import _extract_query_terms
+
+        terms = _extract_query_terms(self.QUERY)
+
+        for noise in ("请对比", "说明它们各自解决什么问题", "两篇文档的核心观点"):
+            assert noise not in terms, f"指令词/整句片段不应进入相关性分母: {noise}"
+        assert "hnsw" in terms and "索引原理" in terms
+
+    def test_relevant_documents_pass_threshold(self):
+        from mult_agents.nodes._evidence import _estimate_relevance
+
+        hnsw = "HNSW索引原理.md\n# HNSW 索引原理与向量检索优化\n分层图结构、M 连接数、ef_search 参数"
+        rag = "RAG_综述.md\n# RAG 检索增强生成技术综述\n文档分块策略、混合检索、BM25"
+
+        assert _estimate_relevance(self.QUERY, hnsw) >= self.THRESHOLD
+        assert _estimate_relevance(self.QUERY, rag) >= self.THRESHOLD
+
+    def test_irrelevant_document_still_rejected(self):
+        from mult_agents.nodes._evidence import _estimate_relevance
+
+        unrelated = "公司考勤制度.md\n第一章 上下班打卡规则与请假流程"
+
+        assert _estimate_relevance(self.QUERY, unrelated) < self.THRESHOLD
+
+    def test_short_keyword_query_unchanged(self):
+        from mult_agents.nodes._evidence import _estimate_relevance
+
+        assert _estimate_relevance("Parent-Child 分块策略", "RAG_综述.md\n2.3 Parent-Child 分块策略") >= self.THRESHOLD
+        assert _estimate_relevance("考勤制度", "HNSW索引原理.md\n分层图结构") < self.THRESHOLD
+
+    def test_all_long_fragments_fall_back_to_bigrams(self):
+        """查询里没有短词时，退化为 2-gram，不能直接返回空导致全部丢弃。"""
+        from mult_agents.nodes._evidence import _extract_query_terms
+
+        terms = _extract_query_terms("请说明这两篇文档各自的核心观点与差异")
+
+        assert terms, "全是长片段时应有兜底内容词"
+        assert all(len(term) <= 3 for term in terms)

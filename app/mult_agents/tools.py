@@ -308,11 +308,22 @@ def init_rag_system(api_key: str, config: Optional[RAGConfig] = None) -> None:
 
 
 def search_knowledge_base_records(query: str, limit: int = 5) -> list[dict]:
+    """本地知识库检索入口（节点直调，同步）。
+
+    失败时返回空列表以免中断研究链路，但**必须留日志** ——
+    静默返回空会让「检索不到」与「检索坏了」无法区分，
+    最终表现为报告里一句「本地检索命中 0 条」而没有任何线索。
+    """
     if _RAG_SYSTEM is None:
+        logger.warning("[local_rag] RAG 系统未初始化，本地检索返回空 | query=%s", query[:60])
         return []
     try:
         return _RAG_SYSTEM.search_records(query, k=limit)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "[local_rag] 本地检索失败，返回空结果 | query=%s | %s: %s",
+            query[:60], type(exc).__name__, exc,
+        )
         return []
 
 

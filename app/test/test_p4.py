@@ -271,6 +271,7 @@ def test_clarify_needs_clarification_triggers_interrupt():
     state = {
         "query": "最近的AI趋势",
         "clarifications": [],
+        "hitl_enabled": True,  # 澄清中断只在开启人工干预时发起
     }
     with patch(_INTERRUPT_TARGET) as mock_intr:
         mock_intr.return_value = {"answers": ["最近一年"]}

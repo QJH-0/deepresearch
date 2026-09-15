@@ -246,16 +246,27 @@ class ChunkSyncConsumer:
             exchange_type="topic",
             durable=True,
         )
-        channel.queue_declare(
-            queue="chunk-sync-dlq",
-            durable=True,
-            arguments={"x-queue-mode": "lazy"},
-        )
-        channel.queue_bind(
-            queue="chunk-sync-dlq",
-            exchange="chunk-sync-dlx",
-            routing_key="chunk.sync.dead",
-        )
+        # 死信队列是辅助设施：声明失败（已存在同名队列但参数不同）不得挡住宿主队列消费，
+        # 否则一条陈旧的 DLQ 就能让整条向量化链路停摆。
+        try:
+            channel.queue_declare(
+                queue="chunk-sync-dlq",
+                durable=True,
+                arguments={"x-queue-mode": "lazy"},
+            )
+            channel.queue_bind(
+                queue="chunk-sync-dlq",
+                exchange="chunk-sync-dlx",
+                routing_key="chunk.sync.dead",
+            )
+        except pika.exceptions.ChannelClosedByBroker as exc:
+            logger.error(
+                "死信队列 chunk-sync-dlq 声明失败（已存在同名队列但参数不同）: %s\n"
+                "  影响：消费失败的消息将无处投递，主链路不受影响\n"
+                "  处理：在 RabbitMQ 中删除 chunk-sync-dlq 后重启服务，即按当前参数重建",
+                exc,
+            )
+            channel = connection.channel()  # broker 已关闭原 channel
         channel.queue_declare(
             queue="chunk-sync.queue",
             durable=True,

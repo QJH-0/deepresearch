@@ -311,12 +311,23 @@ def clarify_node(
     hitl_config = state.get("hitl_config") or {}
     max_rounds = hitl_config.get("clarify_max_rounds", _CLARIFY_MAX_ROUNDS)
 
+    # 人工干预关闭时不发起澄清：澄清问题的答案只能来自用户，
+    # 没有人可回答就应直通 plan —— 否则 raise_interrupt 会挂起图，
+    # 而调用方（hitl_enabled=False）不会 resume，整条研究链路零产出。
+    # plan / analyze / write 都遵守该开关，clarify 曾遗漏。
+    if not state.get("hitl_enabled", False):
+        logger.info("[clarify] 人工干预未启用，跳过澄清直通 plan")
+        if writer:
+            writer({"node": "clarify", "message": "已跳过澄清（人工干预未启用）"})
+        return Command(goto="plan", update={})
+
     logger.info(
-        "%s 开始 | query=%s | 轮次=%d | agent=%s",
+        "%s 开始 | query=%s | 轮次=%d | agent=%s | hitl=%s",
         colorize("[clarify]", "cyan"),
         query[:80],
         rounds,
         agent_name or "None",
+        state.get("hitl_enabled"),
     )
 
     if writer:

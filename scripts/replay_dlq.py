@@ -109,10 +109,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="只打印不重投")
     args = parser.parse_args()
 
-    mq_url = os.environ.get(
-        "RABBITMQ_URL",
-        "amqp://admin:admin123456@localhost:5672/",
-    )
+    mq_url = os.environ.get("RABBITMQ_URL", "")
+    if not mq_url:
+        raise SystemExit("请先设置环境变量 RABBITMQ_URL")
     replay_dlq(mq_url, limit=args.limit, dry_run=args.dry_run)
 
 

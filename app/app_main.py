@@ -148,7 +148,7 @@ def _init_infra() -> None:
 
     # 3. 启动 MQ 消费者（即使 RAG 失败也尝试启动，消费者内部会重试 RAG 初始化）
     from backend.infra.chunk_consumer import ChunkSyncConsumer
-    rabbitmq_url = getattr(config, 'rabbitmq_url', 'amqp://admin:admin123456@localhost:5672/')
+    rabbitmq_url = getattr(config, 'rabbitmq_url', '')
     rabbitmq_exchange = getattr(config, 'rabbitmq_chunk_sync_exchange', 'chunk-sync')
     _chunk_consumer = ChunkSyncConsumer(
         mq_url=rabbitmq_url,

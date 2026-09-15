@@ -4,10 +4,14 @@
 """
 import base64
 import json
+import os
 import urllib.request
 
-CREDENTIALS = base64.b64encode(b"admin:admin123456").decode()
-BASE_URL = "http://localhost:15672/api"
+# 管理 API 凭据从环境变量读取，不写死在脚本里
+_USER = os.environ.get("RABBITMQ_USER", "guest")
+_PASS = os.environ.get("RABBITMQ_PASSWORD", "guest")
+CREDENTIALS = base64.b64encode(f"{_USER}:{_PASS}".encode()).decode()
+BASE_URL = os.environ.get("RABBITMQ_MGMT_URL", "http://localhost:15672/api")
 
 
 def _put(path: str, payload: dict) -> int:

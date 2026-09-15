@@ -140,13 +140,16 @@ class DocumentService:
         self._repo = ChunkRepository(dsn=self._config.postgres_dsn)
 
         # 初始化 MQ 生产者
-        rabbitmq_url = getattr(self._config, 'rabbitmq_url', 'amqp://admin:admin123456@localhost:5672/')
+        rabbitmq_url = getattr(self._config, 'rabbitmq_url', '')
         rabbitmq_exchange = getattr(self._config, 'rabbitmq_chunk_sync_exchange', 'chunk-sync')
-        self._mq = MQProducer(url=rabbitmq_url, exchange=rabbitmq_exchange)
+        self._mq: Optional[MQProducer] = MQProducer(url=rabbitmq_url, exchange=rabbitmq_exchange)
         try:
             self._mq.connect()
         except Exception as exc:
-            logger.warning("MQ 连接失败（后续可由补偿任务补发）: %s", exc)
+            # 必须置 None：否则后续 `if self._mq is not None` 会走「已连接」分支，
+            # 同步向量化降级永远不会触发，切片会静默停在 pending。
+            logger.warning("MQ 连接失败，转为同步向量化降级: %s", exc)
+            self._mq = None
 
         # 初始化 RAG 系统（复用全局实例，用于解析切块）
         # collection 名走 RAGConfig 默认常量，与 app_main / runtime.build_agents 保持一致
@@ -308,17 +311,13 @@ class DocumentService:
                 }, ensure_ascii=False),
             })
 
-        if self._mq is not None:
-            try:
-                self._mq.publish_chunks(mq_messages)
-                self._repo.mark_messages_sent(message_ids)
-            except Exception as exc:
-                logger.warning("MQ 发送失败（消息保留在 PG 本地消息表，由补偿任务补发）: %s", exc)
-        else:
-            logger.warning("MQ 未连接，消息保留在 PG 本地消息表")
+        # publish_chunks 内部把异常吞成 return False，因此必须检查返回值：
+        # 无条件 mark_messages_sent 会让消息在 Outbox 里变成 sent，
+        # 补偿任务再也不会重发，切片就永久停在 pending（静默失败）。
+        mq_ok = self._publish_messages(mq_messages, message_ids)
 
-        # 降级方案: 如果 MQ 不可用且 RAG 可用，同步向量化
-        if self._mq is None and self._rag is not None:
+        # 降级方案: MQ 不可用（未连接或发送失败）且 RAG 可用时，同步向量化
+        if not mq_ok and self._rag is not None:
             logger.info("MQ 不可用，启动同步向量化降级模式")
             try:
                 self._sync_vectorize_chunks(chunk_records, source_name)
@@ -532,33 +531,53 @@ class DocumentService:
         assert self._repo is not None
         return self._repo.get_documents_stats(user_id=user_id)
 
+    def _publish_messages(self, mq_messages: list[dict], message_ids: list[str]) -> bool:
+        """投递消息到 MQ，成功则把 Outbox 标记为 sent。
+
+        返回 True 表示消息确实投递成功、由 MQ 接管；
+        返回 False 表示需要调用方走同步向量化降级。
+
+        必须检查 publish_chunks 的返回值：它内部把异常吞成 return False 而不抛出，
+        若调用方无条件 mark_messages_sent，消息会在 Outbox 里变成 sent，
+        补偿任务再也不会重发，切片就永久停在 pending。
+        """
+        if self._mq is None:
+            logger.warning("MQ 未连接，消息保留在 PG 本地消息表")
+            return False
+
+        try:
+            published = bool(self._mq.publish_chunks(mq_messages))
+        except Exception as exc:
+            logger.warning("MQ 发送异常（消息保留 pending，由补偿任务补发）: %s", exc)
+            return False
+
+        if not published:
+            logger.warning("MQ 发送失败，%d 条消息保留 pending 状态待补偿补发", len(message_ids))
+            return False
+
+        self._repo.mark_messages_sent(message_ids)
+        return True
+
     def retry_failed_chunks(self, doc_id: str) -> dict:
         """
-        重试向量化失败的切片。
+        重试未完成的切片（failed / pending）。
 
-        把 failed chunk 重置为 pending 并重建 Outbox 消息，然后立即投递 MQ
+        把切片重置为 pending 并重建 Outbox 消息，然后立即投递 MQ
         （不依赖只在启动时执行一次的补偿扫描）。
         """
         self._ensure_initialized()
         assert self._repo is not None
 
-        payloads = self._repo.retry_failed_chunks(doc_id)
-        if not payloads:
-            return {"retried": 0, "doc_id": doc_id, "message": "没有失败切片需要重试"}
+        rows = self._repo.retry_failed_chunks(doc_id)
+        if not rows:
+            return {"retried": 0, "doc_id": doc_id, "message": "没有未完成的切片需要重试"}
 
-        published = 0
-        if self._mq is not None:
-            try:
-                messages = [
-                    {"id": f"retry-{uuid.uuid4().hex}", "payload": p} for p in payloads
-                ]
-                if self._mq.publish_chunks(messages):
-                    published = len(messages)
-            except Exception as exc:  # pragma: no cover - 依赖外部 MQ
-                logger.warning("重试消息投递 MQ 失败（将等待补偿扫描）: %s", exc)
+        messages = [{"id": mid, "payload": payload} for mid, payload in rows]
+        message_ids = [mid for mid, _ in rows]
+        published = len(messages) if self._publish_messages(messages, message_ids) else 0
 
         return {
-            "retried": len(payloads),
+            "retried": len(rows),
             "published": published,
             "doc_id": doc_id,
             "message": f"已重置 {len(payloads)} 个失败切片并重新入队",

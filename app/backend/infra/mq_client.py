@@ -27,7 +27,7 @@ class MQProducer:
 
     def __init__(
         self,
-        url: str = "amqp://admin:admin123456@localhost:5672/",
+        url: str = "",
         exchange: str = "chunk-sync",
     ):
         self._url = url
@@ -38,8 +38,9 @@ class MQProducer:
     def connect(self) -> None:
         """建立 RabbitMQ 连接并声明 exchange + queue（含 DLX 死信拓扑）。
 
-        ⚠️ 若 chunk-sync.queue 已存在但无 DLX 参数，RabbitMQ 会报
-        PRECONDITION_FAILED，需先删除旧队列再以新参数重新声明。
+        死信队列是**辅助设施**：声明失败（典型场景是已存在同名队列但参数不同，
+        RabbitMQ 会返回 PRECONDITION_FAILED 并关闭 channel）不得挡住宿主队列 —— 
+        否则一条陈旧的 DLQ 就能让整条向量化链路静默停摆。
         """
         params = pika.URLParameters(self._url)
         self._connection = pika.BlockingConnection(params)
@@ -57,16 +58,26 @@ class MQProducer:
             durable=True,
         )
 
-        self._channel.queue_declare(
-            queue="chunk-sync-dlq",
-            durable=True,
-            arguments={"x-queue-mode": "lazy"},
-        )
-        self._channel.queue_bind(
-            queue="chunk-sync-dlq",
-            exchange="chunk-sync-dlx",
-            routing_key="chunk.sync.dead",
-        )
+        try:
+            self._channel.queue_declare(
+                queue="chunk-sync-dlq",
+                durable=True,
+                arguments={"x-queue-mode": "lazy"},
+            )
+            self._channel.queue_bind(
+                queue="chunk-sync-dlq",
+                exchange="chunk-sync-dlx",
+                routing_key="chunk.sync.dead",
+            )
+        except pika.exceptions.ChannelClosedByBroker as exc:
+            logger.error(
+                "死信队列 chunk-sync-dlq 声明失败（已存在同名队列但参数不同）: %s\n"
+                "  影响：消费失败的消息将无处投递，主链路不受影响\n"
+                "  处理：在 RabbitMQ 中删除 chunk-sync-dlq 后重启服务，即按当前参数重建",
+                exc,
+            )
+            # broker 已关闭原 channel，后续声明必须换一个新 channel
+            self._channel = self._connection.channel()
 
         self._channel.queue_declare(
             queue="chunk-sync.queue",
@@ -83,11 +94,8 @@ class MQProducer:
         )
 
         logger.info(
-            "RabbitMQ 连接成功 | exchange=%s | queue=%s | url=%s",
-            self._exchange, "chunk-sync.queue", self._url.replace(
-                self._url.split("@")[0].split("//")[1] + ":",
-                "***@",
-            ),
+            "RabbitMQ 连接成功 | exchange=%s | queue=%s",
+            self._exchange, "chunk-sync.queue",
         )
 
     def _ensure_channel(self) -> None:

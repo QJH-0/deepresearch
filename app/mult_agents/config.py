@@ -55,7 +55,8 @@ class AppConfig:
     minio_bucket: str = "deep-research-docs"
     minio_secure: bool = False
     # ── RabbitMQ 消息队列 ──
-    rabbitmq_url: str = "amqp://admin:admin123456@localhost:5672/"
+    # 由 .env 的 RABBITMQ_URL 注入；为空时降级为同步向量化
+    rabbitmq_url: str = ""
     rabbitmq_chunk_sync_exchange: str = "chunk-sync"
     # ── HITL 配置 ──
     hitl_enabled: bool = False
