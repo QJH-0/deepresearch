@@ -711,6 +711,21 @@ class ResearchService:
             return False
         return self._thread_repo.delete_thread(thread_id, user_id)
 
+    def get_thread_owner(self, thread_id: str) -> str | None:
+        """返回会话归属用户；无记录或存储不可用时返回 None。
+
+        调用方据此判断归属：None 表示「无归属记录」，与「归属他人」是两种
+        不同情形，不可合并处理 —— 前者允许新建会话，后者必须拒绝。
+        """
+        self._ensure_initialized()
+        if self._thread_repo is None:
+            return None
+        try:
+            return self._thread_repo.get_thread_owner(thread_id)
+        except Exception as exc:
+            logger.warning("读取会话归属失败 | thread_id=%s | %s", thread_id, exc)
+            return None
+
     async def _apply_summary_if_needed(
         self,
         input_state: dict,

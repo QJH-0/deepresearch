@@ -719,6 +719,22 @@ class ThreadRepository:
             )
         return self._pool
 
+    def get_thread_owner(self, thread_id: str) -> Optional[str]:
+        """返回会话归属用户；无记录返回 None。
+
+        归属校验只能查本表：LangGraph 的 checkpoints 没有 user_id，
+        无法据此判断会话属于谁。
+        """
+        pool = self._get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id FROM chat_threads WHERE thread_id = %s",
+                    (thread_id,),
+                )
+                row = cur.fetchone()
+        return row[0] if row else None
+
     def upsert_thread(
         self,
         thread_id: str,
@@ -733,6 +749,10 @@ class ThreadRepository:
 
         title 留空时不覆盖已有标题（首次写入用提问自动命名，
         之后用户手动重命名过的标题不能被后续轮次冲掉）。
+
+        冲突时不改写 user_id —— 归属一旦确立就不再变更。若在此处跟随
+        EXCLUDED.user_id 覆盖，任何人只要拿他人的 thread_id 发起一次
+        run，就能把该会话据为己有。
         """
         pool = self._get_pool()
         with pool.connection() as conn:
@@ -743,7 +763,6 @@ class ThreadRepository:
                         (thread_id, user_id, title, intent, message_count, completed)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (thread_id) DO UPDATE SET
-                        user_id       = EXCLUDED.user_id,
                         title         = CASE
                             WHEN EXCLUDED.title <> '' THEN EXCLUDED.title
                             ELSE chat_threads.title

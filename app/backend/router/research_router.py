@@ -38,6 +38,46 @@ class CancelRequest(BaseModel):
     thread_id: str
 
 
+# ── 会话归属守卫 ──────────────────────────────────────────
+#
+# 所有 thread_id 作用域的接口都必须先过这里。thread_id 由调用方提供，
+# 而 LangGraph checkpoints 里没有 user_id，因此归属只能查 chat_threads。
+#
+# 非本人会话一律返回 404 而非 403：403 等于承认该 thread_id 存在，
+# 攻击者可据此枚举他人会话。
+
+def _assert_thread_access(
+    research_service: ResearchService,
+    thread_id: str,
+    user: User,
+    *,
+    allow_missing: bool,
+) -> None:
+    """校验当前用户对 thread_id 的归属权。
+
+    allow_missing=True 用于「创建或续跑」语义（/run、/stream、/resume）：
+    尚无归属记录代表这是新会话，允许放行。
+    读取与取消类接口必须 allow_missing=False —— 无记录即无可访问内容。
+    """
+    owner = research_service.get_thread_owner(thread_id)
+    if owner is None:
+        if allow_missing:
+            return
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if owner != user.user_id:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+
+async def require_thread_access(
+    thread_id: str,
+    current_user: User = Depends(get_current_user),
+    research_service: ResearchService = Depends(get_research_service),
+) -> User:
+    """路径参数形式的 thread_id 统一走本依赖。"""
+    _assert_thread_access(research_service, thread_id, current_user, allow_missing=False)
+    return current_user
+
+
 # ── P3: generator 包装器 — 注册到 TaskRegistry ──────────────
 
 async def _stream_with_registry(
@@ -85,6 +125,7 @@ async def run_research(
     research_service: ResearchService = Depends(get_research_service),
 ) -> ResearchResponse:
     logger.info("[ROUTE] /run | user=%s | thread=%s | query=%s", current_user.user_id, payload.thread_id, payload.query[:80])
+    _assert_thread_access(research_service, payload.thread_id, current_user, allow_missing=True)
     final = await research_service.run(
         query=payload.query,
         user_id=current_user.user_id,
@@ -115,6 +156,8 @@ async def stream_research(
     """
     logger.info("[ROUTE] /stream | user=%s | thread=%s | query=%s",
                 current_user.user_id, payload.thread_id, payload.query[:80])
+
+    _assert_thread_access(research_service, payload.thread_id, current_user, allow_missing=True)
 
     # P3: 并发检查 — 同一 thread 已有运行中的任务 → 409
     registry = get_task_registry()
@@ -147,6 +190,7 @@ async def stream_research(
 async def cancel_research(
     payload: CancelRequest,
     current_user: User = Depends(get_current_user),
+    research_service: ResearchService = Depends(get_research_service),
 ):
     """取消正在运行的研究任务（P3：走 TaskRegistry）。
 
@@ -155,6 +199,9 @@ async def cancel_research(
         202 {"cancelled": false, "reason": "signal_sent"} — 仅 Redis 兜底信号
         200 {"cancelled": false, "reason": "not_running"} — 无运行中任务（幂等）
     """
+    # 取消会中断他人正在跑的研究，必须校验归属
+    _assert_thread_access(research_service, payload.thread_id, current_user, allow_missing=False)
+
     registry = get_task_registry()
     if not registry.is_running(payload.thread_id):
         # 幂等：未运行不报错
@@ -184,6 +231,8 @@ async def resume_research(
     logger.info("[ROUTE] /resume | thread=%s | mode=%s | resume_value=%s",
                 payload.thread_id, payload.mode,
                 str(payload.resume_value)[:100] if payload.resume_value else "(empty)")
+
+    _assert_thread_access(research_service, payload.thread_id, current_user, allow_missing=True)
 
     # P3: 并发检查
     registry = get_task_registry()
@@ -278,7 +327,7 @@ async def list_threads(
 async def rename_thread(
     thread_id: str,
     payload: ThreadRenameRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """重命名会话（自动生成的标题往往不够描述性，允许手动改）。"""
@@ -296,7 +345,7 @@ async def rename_thread(
 async def pin_thread(
     thread_id: str,
     payload: ThreadPinRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """置顶 / 取消置顶会话（置顶项固定在列表顶部）。"""
@@ -313,7 +362,7 @@ async def pin_thread(
 @router.delete("/threads/{thread_id}", response_model=ThreadDeleteResponse)
 async def delete_thread(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ) -> ThreadDeleteResponse:
     """删除会话（只删侧边栏记录，LangGraph checkpoint 保留以免影响可恢复状态）。"""
@@ -328,7 +377,7 @@ async def delete_thread(
 @router.get("/threads/{thread_id}/messages")
 async def get_thread_messages(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """获取某个会话的完整对话历史。"""
@@ -338,10 +387,15 @@ async def get_thread_messages(
 @router.get("/state/{thread_id}")
 async def get_state(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """获取任务当前状态快照（P3 增强）。"""
+    return await _state_snapshot(thread_id, research_service)
+
+
+async def _state_snapshot(thread_id: str, research_service: ResearchService) -> dict:
+    """状态快照 + 重启中断标记。两个状态路由共用，归属校验由各自依赖完成。"""
     state = await research_service.get_state(thread_id)
 
     # 异步补充 interrupted_by_restart 标记
@@ -362,20 +416,20 @@ async def get_state(
 @router.get("/threads/{thread_id}/state")
 async def get_thread_state(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """P3: 会话级状态 API，返回完整的可恢复信息。
 
     与 /state/{thread_id} 功能相同，路径符合 RESTful 约定。
     """
-    return await get_state(thread_id, current_user, research_service)
+    return await _state_snapshot(thread_id, research_service)
 
 
 @router.get("/threads/{thread_id}/interrupt")
 async def get_interrupt(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """P4-3: interrupt 状态重建 API。
@@ -393,7 +447,7 @@ async def get_interrupt(
 @router.get("/history/{thread_id}")
 async def get_history(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     limit: int = 20,
     research_service: ResearchService = Depends(get_research_service),
 ):
@@ -408,6 +462,7 @@ async def rollback(
     research_service: ResearchService = Depends(get_research_service),
 ):
     """回滚/更新任务状态到指定值。"""
+    _assert_thread_access(research_service, payload.thread_id, current_user, allow_missing=False)
     return await research_service.update_state(
         payload.thread_id, payload.values, as_node=payload.as_node
     )
@@ -450,7 +505,7 @@ async def list_memories(
 @router.get("/threads/{thread_id}/export/md")
 async def export_markdown(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """P7-4: 导出会话最终报告为 Markdown 文件。
@@ -481,7 +536,7 @@ async def export_markdown(
 @router.get("/threads/{thread_id}/export/pdf")
 async def export_pdf(
     thread_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_thread_access),
     research_service: ResearchService = Depends(get_research_service),
 ):
     """导出会话最终报告为 PDF（Playwright headless Chromium）。
