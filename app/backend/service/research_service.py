@@ -467,8 +467,14 @@ class ResearchService:
         except TimeoutError:
             # 看门狗触发。不标记 completed —— 这一轮没跑完；检查点保持完好，
             # 前端可据 /state 的 next_nodes 续研（与进程重启中断同一套恢复语义）。
-            logger.error("[TRACE] stream_research TIMEOUT | run=%s | thread=%s | limit=%.0fs",
-                         run_id, thread_id, run_deadline or 0)
+            #
+            # 必须记下超时时刻在跑哪个节点：否则运维只能看到「超时了」，
+            # 分不清是「慢但在干活」还是「卡死了」，也就无从判断该调大上限还是查故障。
+            logger.error(
+                "[TRACE] stream_research TIMEOUT | run=%s | thread=%s | limit=%.0fs | last_node=%s",
+                run_id, thread_id, run_deadline or 0,
+                translator.last_token_node or "(unknown)",
+            )
             close_research_logger(thread_id, route=route, final=final)
             yield sse(event(
                 "run.error",

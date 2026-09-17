@@ -308,6 +308,23 @@ def test_run_watchdog_is_not_reported_as_user_cancel():
     assert [e["type"] for e in events].count("run.cancelled") == 0
 
 
+def test_run_watchdog_logs_last_node(caplog):
+    """超时日志必须带上最后在跑的节点。
+
+    否则运维只看到「超时了」，分不清是「慢但在干活」还是「卡死了」，
+    也就无从判断该调大上限还是查故障。超时时 last_token_node 可能尚未绑定，
+    这条用例同时防住「日志里引用了未绑定变量」这类崩溃。
+    """
+    svc = _svc_with_hanging_graph(timeout_seconds=0.1)
+
+    with caplog.at_level("ERROR"):
+        asyncio.run(_collect_events(svc))
+
+    timeout_logs = [r.message for r in caplog.records if "TIMEOUT" in r.message]
+    assert timeout_logs, "超时必须留下日志"
+    assert "last_node=" in timeout_logs[0]
+
+
 def test_run_watchdog_does_not_mark_thread_completed():
     """超时的那一轮没跑完，不应标记 completed（否则无法续研）。"""
     svc = _svc_with_hanging_graph(timeout_seconds=0.1)
