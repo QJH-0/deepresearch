@@ -508,3 +508,33 @@
 ### 12.6 结论：批次 4 的实际产出与原计划的差异
 
 原计划 4 条措施里，**2 条不做**（前提不成立，理由见 12.1）、**1 条改了目标**（从加配额改为修断链，且修出的是用户可见问题）、**1 条按计划落地**（看门狗）。这符合「先核实前提再动手」的原则 —— 若照原计划实施，会写出两处永远不会被触发的基础设施。
+
+---
+
+## 十三、批次 5 执行记录（契约对拍与回归基线）
+
+### 13.1 已落地：事件协议前后端契约对拍（5.1）
+
+协议链路是 `backend/schemas/events.py` → `docs/event-protocol.json` → `agent_front/src/types/events.gen.ts`。
+
+**关键发现**：`scripts/export_event_protocol.py` **只生成前半段的 JSON**，`.ts` 是照着 json 手工维护的。也就是说后端改了字段而前端没跟上时，编译期与运行期都不会报错，只在线上表现为「某个字段是 undefined」。这条链路此前**没有任何断言保护**。
+
+新增 `app/test/test_event_protocol_contract.py`（4 例）：
+
+| 用例 | 断言内容 |
+| --- | --- |
+| `test_protocol_file_matches_registry` | `docs/event-protocol.json` 必须是后端 schema 的忠实导出；过期即失败，并在失败信息里给出重生成命令 |
+| `test_union_matches_registry` | 前端 `EventType` 联合类型与后端事件名一一对应（增、删都会失败） |
+| `test_event_data_interfaces_match_models` | 每个事件 data 接口的**字段名与必填性**与后端模型一致 |
+| `test_nested_models_exported_to_frontend_stay_in_sync` | 嵌套模型（如 `SourceItem`）同样比对 —— 它也被前端直接引用 |
+
+**断言有效性已验证**：向前端类型注入一个多余字段 `fake_field?: string` 后，失败信息精确指出 `run.error (RunErrorData): 前端={...} 后端={...}`，而非笼统报错。避免写出「永远为绿」的假测试。
+
+### 13.2 未落地：5.2 Fake LLM 单测分层 / 5.3 固定语料回归基线
+
+两项**暂未实施**，原因记录如下：
+
+- 现状核查：节点测试已在多层打桩（patch `_invoke_structured_agent` / `_invoke_json_agent`、传假 agent、patch `_check_evidence_sufficiency` 等），并非「缺桩可用」。引入统一 Fake LLM 属于测试基建重构，收益是减少样板，但不解决任何已知缺陷。
+- 5.3 的固定语料回归基线依赖 5.2 的确定性 Fake LLM，且需要先确定「哪些输出值得钉成基线」—— 报告正文由 LLM 生成，钉基线等于钉住某个模型版本的措辞，模型一换就全线失败，维护成本可能高于收益。更合适的做法是钉**结构与契约**（章节数、引用格式、字段完整性），而非文本内容。
+
+建议：若要做 5.3，改为「结构基线」而非「文本基线」—— 用 Fake LLM 产出固定文本，断言下游处理（引用校验、章节对齐、参考清单生成）的结果，这样模型换代不会误伤。
