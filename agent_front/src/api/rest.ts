@@ -18,10 +18,13 @@ import { authHeaders, redirectToLogin, setSession, type AuthUser } from './token
 
 export class ApiError extends Error {
   readonly status: number
-  constructor(message: string, status = 0) {
+  /** 后端随错误返回的问题清单（如导出前质量检查的 error 列表） */
+  readonly issues: ReportIssue[]
+  constructor(message: string, status = 0, issues: ReportIssue[] = []) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.issues = issues
   }
 }
 
@@ -257,15 +260,61 @@ export function uploadDocument(
 
 // ── 导出 ──────────────────────────────────────────────
 // 导出接口同样要求认证，因此不能用 <a href> 直链，必须走 fetch 再落盘
-export async function exportMarkdown(threadId: string): Promise<Blob> {
+//
+// 后端在导出前跑质量门禁：error 会以 422 + 问题清单返回（阻断导出），
+// 仅 warning 时放行并经 X-Report-Warnings 头回传。两者都必须让用户看到 ——
+// 否则「报告有问题」这件事只体现在一个笼统的失败提示里。
+
+/** 后端报告质量检查返回的单条问题 */
+export interface ReportIssue {
+  severity: 'error' | 'warning'
+  code: string
+  message: string
+}
+
+export interface ExportResult {
+  blob: Blob
+  /** 放行时的质量提醒（无则空数组） */
+  warnings: ReportIssue[]
+}
+
+export async function exportMarkdown(threadId: string): Promise<ExportResult> {
   return downloadBlob(`/api/v1/research/threads/${encodeURIComponent(threadId)}/export/md`)
 }
 
-export async function exportPdf(threadId: string): Promise<Blob> {
+export async function exportPdf(threadId: string): Promise<ExportResult> {
   return downloadBlob(`/api/v1/research/threads/${encodeURIComponent(threadId)}/export/pdf`)
 }
 
-async function downloadBlob(path: string): Promise<Blob> {
+/** 解析 422 响应体里的问题清单；结构不符时返回空数组，不因解析失败掩盖原始错误 */
+async function readIssues(resp: Response): Promise<ReportIssue[]> {
+  try {
+    const body = await resp.json()
+    const detail = body?.detail
+    const issues = detail?.issues
+    if (!Array.isArray(issues)) return []
+    return issues.filter(
+      (item): item is ReportIssue =>
+        item && typeof item.message === 'string' && typeof item.code === 'string',
+    )
+  } catch {
+    return []
+  }
+}
+
+/** 读取放行时随响应头回传的 warning 清单 */
+function readWarnings(resp: Response): ReportIssue[] {
+  const raw = resp.headers.get('X-Report-Warnings')
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw))
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+async function downloadBlob(path: string): Promise<ExportResult> {
   let resp: Response
   try {
     resp = await fetch(path, { headers: authHeaders() })
@@ -277,9 +326,13 @@ async function downloadBlob(path: string): Promise<Blob> {
     throw new ApiError('登录状态已失效，请重新登录', 401)
   }
   if (!resp.ok) {
-    throw new ApiError(`导出失败: ${resp.status}`, resp.status)
+    const issues = await readIssues(resp)
+    const message = issues.length
+      ? '报告未通过导出前检查，已阻止导出'
+      : `导出失败: ${resp.status}`
+    throw new ApiError(message, resp.status, issues)
   }
-  return resp.blob()
+  return { blob: await resp.blob(), warnings: readWarnings(resp) }
 }
 
 // ── 适配器 ────────────────────────────────────────────

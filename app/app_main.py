@@ -331,6 +331,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # 自定义响应头默认对 JS 不可见，不列出则前端永远读不到 —— 导出接口用它
+        # 回传报告质量 warning，漏了这条就变成「后端在发、前端收不到」的断链
+        expose_headers=["X-Report-Warnings"],
     )
     app.include_router(health_router)
     app.include_router(auth_router)

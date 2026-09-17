@@ -143,7 +143,7 @@ describe('T7-5: 导出', () => {
     localStorage.setItem('dr.token', 'test-token')
     mockFetch.mockResolvedValue(new Response('# 报告', { status: 200 }))
 
-    const blob = await exportMarkdown('thread-123')
+    const { blob } = await exportMarkdown('thread-123')
 
     // jsdom 的 Blob 与 Node Response.blob() 返回的 Blob 属于不同 realm，
     // instanceof 必然失败；断言 blob 的关键特征即可。
@@ -159,7 +159,7 @@ describe('T7-5: 导出', () => {
     localStorage.setItem('dr.token', 'test-token')
     mockFetch.mockResolvedValue(new Response('%PDF-1.4', { status: 200 }))
 
-    const blob = await exportPdf('thread-456')
+    const { blob } = await exportPdf('thread-456')
 
     // 同上：跨 realm 的 instanceof 不可靠，断言 blob 的关键特征。
     expect(blob.size).toBeGreaterThan(0)
@@ -385,5 +385,69 @@ describe('H3: 消息按轮分组', () => {
     )
 
     expect(turns[0].steps[0].details).toEqual(['拆解 3 个子问题'])
+  })
+})
+
+
+// ── 导出质量门禁：422 问题清单与 X-Report-Warnings ────────
+
+describe('T7-6: 导出质量门禁的前端消费', () => {
+  const ISSUES = [
+    { severity: 'error', code: 'missing_reference_section', message: '正文含引用标记但缺少参考资料段落，引用无法核对' },
+  ]
+
+  function jsonResponse(body: unknown, status: number, headers: Record<string, string> = {}) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json', ...headers },
+    })
+  }
+
+  it('422 时把问题清单带进 ApiError，而不是只留一个状态码', async () => {
+    localStorage.setItem('dr.token', 'test-token')
+    mockFetch.mockResolvedValue(
+      jsonResponse({ detail: { message: '报告未通过导出前检查', issues: ISSUES } }, 422),
+    )
+
+    await expect(exportPdf('thread-1')).rejects.toMatchObject({
+      status: 422,
+      issues: ISSUES,
+    })
+  })
+
+  it('422 但响应体无法解析时不掩盖原始失败', async () => {
+    localStorage.setItem('dr.token', 'test-token')
+    mockFetch.mockResolvedValue(new Response('<html>gateway</html>', { status: 422 }))
+
+    const error = await exportPdf('thread-2').catch((e) => e)
+
+    expect(error.status).toBe(422)
+    expect(error.issues).toEqual([])
+  })
+
+  it('放行时解析 X-Report-Warnings 头（URL 编码的 JSON）', async () => {
+    localStorage.setItem('dr.token', 'test-token')
+    const warnings = [
+      { severity: 'warning', code: 'short_body', message: '正文仅 320 字，低于研报预期（800 字）' },
+    ]
+    mockFetch.mockResolvedValue(
+      new Response('%PDF-1.4', {
+        status: 200,
+        headers: { 'X-Report-Warnings': encodeURIComponent(JSON.stringify(warnings)) },
+      }),
+    )
+
+    const result = await exportPdf('thread-3')
+
+    expect(result.warnings).toEqual(warnings)
+  })
+
+  it('无该响应头时 warnings 为空数组，而不是 undefined', async () => {
+    localStorage.setItem('dr.token', 'test-token')
+    mockFetch.mockResolvedValue(new Response('%PDF-1.4', { status: 200 }))
+
+    const result = await exportPdf('thread-4')
+
+    expect(result.warnings).toEqual([])
   })
 })

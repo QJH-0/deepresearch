@@ -443,7 +443,9 @@
 
 回读校验的 `_normalize` 会去掉所有空白后再比对，因为 PDF 提取会把标题按行断开、把词间空格打散；直接子串匹配会误报「标题缺失」。该行为已由 `test_present_title_no_warning` 覆盖。
 
-**未验证**：前端尚未消费 `X-Report-Warnings` 头与 422 问题清单（本批次未含前端改动）；`export_markdown` 的逃生通道语义未在真实用户路径上走查。
+**未验证**：`export_markdown` 的逃生通道语义未在真实用户路径上走查（API 层有断言，前端未接线到按钮）。
+
+**后续补齐（见 16 节）**：前端消费 422 问题清单与 `X-Report-Warnings` 头已实现；补做时发现 CORS 未配 `expose_headers`，该响应头跨域时前端根本读不到 —— 属同一类「后端在发、前端收不到」的断链。
 
 ---
 
@@ -615,3 +617,43 @@
 - 真实检索质量与成文质量（需可访问搜索引擎的环境）
 - `run_timeout_seconds` / `thinking_nodes` 在真实长任务上的合适取值
 - 完整一轮研究的真实耗时基线 —— 这是标定看门狗的前提，需在有网络的环境跑一次
+
+---
+
+## 十六、补齐批次 3 的前端消费：门禁提示与跨域响应头
+
+批次 3 只做了后端门禁，前端没有消费。补齐时发现的问题比预期严重。
+
+### 16.1 发现的断链：CORS 未配 `expose_headers`
+
+`app_main.py` 的 CORS 中间件配了 `allow_origins`（支持跨域），但**没有 `expose_headers`**。按 CORS 规范，自定义响应头对 JS 不可见，除非列在 `Access-Control-Expose-Headers` 里。
+
+**也就是说：`X-Report-Warnings` 在跨域部署下前端永远读不到** —— 后端在发、前端收不到，warning 被静默丢弃。这与 `node_models`、`enable_milvus` 是同一类断链：**「存在」不等于「可用」**。
+
+已补 `expose_headers=["X-Report-Warnings"]`。
+
+### 16.2 前端改动
+
+| 文件 | 变更 |
+| --- | --- |
+| `agent_front/src/api/rest.ts` | 新增 `ReportIssue` / `ExportResult` 类型；`ApiError` 增加 `issues` 字段；`downloadBlob` 解析 422 响应体的问题清单与成功时的响应头，返回 `{ blob, warnings }` |
+| `agent_front/src/views/ChatView.vue` | 抽出 `saveBlob` / `describeIssue`；导出结果经 `exportNotice` 用 `NAlert` 展示 —— error 列出阻断项，warning 列出提醒项；无问题清单时仍走原有错误态 |
+
+设计取舍：**422 带问题清单时不走 `chat.markError`**。markError 只显示一句「导出失败」，用户无从知道报告哪里有问题、该怎么改 —— 门禁的提示价值会全部丢失。
+
+### 16.3 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 前端全量 | **6 个文件 69 passed**（新增 6 例） |
+| 后端全量 | **24 个文件 358 passed** |
+| `vue-tsc --noEmit` | 通过 |
+
+新增用例覆盖：422 问题清单进入 `ApiError`、422 但响应体无法解析时不掩盖原始失败（不抛解析异常）、成功时解析 URL 编码的 `X-Report-Warnings`、无该头时返回空数组、以及 ChatView 层「有问题清单 → 展示具体问题」与**反例**「普通失败 → 不展示门禁提示」。
+
+反例的意义：只断言「有问题时展示」无法区分「分支真实生效」与「banner 永远显示」，故补一条负向断言。
+
+### 16.4 仍未验证
+
+- `export_markdown` 的逃生通道未接线到前端按钮（API 层有断言，UI 未走查）
+- 未在真实跨域部署下验证响应头可读（需前后端分域部署的环境）

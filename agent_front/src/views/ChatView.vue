@@ -16,7 +16,8 @@ import { groupTurns } from '../utils/turns'
 import { useThreadsStore } from '../stores/threads'
 import { useInterruptStore } from '../stores/interrupt'
 import { useEventStream } from '../composables/useEventStream'
-import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdf } from '../api/rest'
+import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdf, ApiError } from '../api/rest'
+import type { ReportIssue } from '../api/rest'
 import type { InterruptKind } from '../types/events.gen'
 import { NAlert } from 'naive-ui'
 
@@ -146,20 +147,51 @@ function useStarter(prompt: string) { composer.value?.fill(prompt) }
 
 // P7-4: 导出报告为 PDF（或降级 Markdown）
 // 导出接口要求认证，不能用 <a href>/window.open 直链，必须走 fetch 再落盘
+//
+// 后端导出前跑质量门禁：error 阻断（422 + 问题清单），仅 warning 时放行并经
+// X-Report-Warnings 头回传。两者都要展示给用户 —— 只报一句「导出失败」等于
+// 让用户无从知道报告哪里有问题。
+const exportNotice = ref<{ level: 'error' | 'warning'; title: string; lines: string[] } | null>(null)
+
+function describeIssue(issue: ReportIssue): string {
+  return `${issue.severity === 'error' ? '阻断' : '提醒'}：${issue.message}`
+}
+
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
 async function exportPdfReport(): Promise<void> {
   const threadId = threads.currentThreadId
   if (!threadId) return
+  exportNotice.value = null
   try {
-    const blob = await exportPdf(threadId)
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `report_${threadId.slice(0, 12)}.pdf`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
+    const { blob, warnings } = await exportPdf(threadId)
+    saveBlob(blob, `report_${threadId.slice(0, 12)}.pdf`)
+    if (warnings.length) {
+      exportNotice.value = {
+        level: 'warning',
+        title: '已导出，但报告有以下问题建议核对',
+        lines: warnings.map(describeIssue),
+      }
+    }
   } catch (err) {
+    const issues = err instanceof ApiError ? err.issues : []
+    if (issues.length) {
+      exportNotice.value = {
+        level: 'error',
+        title: err instanceof Error ? err.message : '报告未通过导出前检查',
+        lines: issues.map(describeIssue),
+      }
+      return
+    }
     chat.markError(threadId, {
       code: 'EXPORT_FAILED',
       message: err instanceof Error ? err.message : '导出失败',
@@ -227,6 +259,20 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
       网络连接中断，正在自动恢复…
     </NAlert>
 
+    <NAlert
+      v-if="exportNotice"
+      :type="exportNotice.level"
+      :bordered="false"
+      closable
+      class="reconnecting-banner"
+      @close="exportNotice = null"
+    >
+      <div>{{ exportNotice.title }}</div>
+      <ul class="export-notice-list">
+        <li v-for="(line, index) in exportNotice.lines" :key="index">{{ line }}</li>
+      </ul>
+    </NAlert>
+
     <div ref="messageList" class="message-list">
       <section v-if="isEmpty && !loading" class="welcome-panel">
         <div class="welcome-hero">
@@ -292,6 +338,12 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
 .reconnecting-banner {
   margin: 0 0 8px;
   border-radius: 6px;
+}
+.export-notice-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .export-pdf-btn {
   padding: 4px 12px;
