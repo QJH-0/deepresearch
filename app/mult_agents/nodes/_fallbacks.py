@@ -67,21 +67,23 @@ def _get_scorer_llm():
     if _scorer_llm is not None or _scorer_llm_unavailable:
         return _scorer_llm
     try:
-        from langchain_community.chat_models import ChatTongyi
-
         from backend.config.settings import AppSettings, get_business_settings
+        from mult_agents.models import build_aux_llm
 
         api_key = AppSettings().dashscope_api_key
         if not api_key:
             logger.warning("[evidence_scorer] 缺少 DASHSCOPE_API_KEY，证据评分降级为纯先验")
             _scorer_llm_unavailable = True
             return None
-        _scorer_llm = ChatTongyi(
-            model=get_business_settings().model,
+        biz = get_business_settings()
+        _scorer_llm = build_aux_llm(
+            biz.scorer_model,
+            api_key,
+            timeout=biz.llm_timeout_seconds,
+            max_retries=biz.llm_max_retries,
             temperature=0.0,
-            dashscope_api_key=api_key,
         )
-        logger.info("[evidence_scorer] 评分 LLM 就绪 | model=%s", get_business_settings().model)
+        logger.info("[evidence_scorer] 评分 LLM 就绪 | model=%s", biz.scorer_model)
     except Exception as exc:
         logger.warning("[evidence_scorer] 评分 LLM 构建失败，降级为纯先验 | %s", exc)
         _scorer_llm_unavailable = True

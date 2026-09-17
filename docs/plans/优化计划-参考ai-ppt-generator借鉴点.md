@@ -331,6 +331,7 @@
 | `memory_extract_model` | `qwen-turbo` → `qwen3.7-flash` |
 | `summary_model` | `qwen-turbo` → `qwen3.7-flash` |
 | `title_model` | **新增**，`qwen3.7-flash` |
+| `scorer_model` | **新增**，`qwen3.7-flash`（证据评分高频调用，独立于主模型控成本） |
 
 分档策略：长文产出与深度分析用 Max，检索过滤与判定用 Flash，补搜计划用 Plus。
 
@@ -348,6 +349,7 @@
 1. **`node_models` 是断链特性** —— `models.build_agents` 一直在读 `getattr(config, "node_models", None)`，文档注释也写了用法，但配置层从未定义该字段，取值恒为 `None`。已补齐 `BusinessSettings.node_models` 与 `AppConfig.node_models` 并打通映射。
 2. **`clarifier` 硬编码 `qwen-turbo`** —— 改为走 `node_models` 的 `clarify` 键，与其他节点一致可配。
 3. **辅助链路锁死在旧型号** —— 标题/摘要/记忆抽取三处仍用原生 SDK + `qwen-turbo`。由于原生 SDK 不支持新系列，已统一迁移到 `build_aux_llm`（与主链路共用兼容通道客户端与超时/重试策略），`ChatTongyi` 依赖从生产代码中完全移除。
+4. **证据评分器会因型号切换静默降级**（本次改动引入、已修）—— `_fallbacks._get_scorer_llm` 原用 `ChatTongyi(model=get_business_settings().model)`，默认模型切到 `qwen3.8-max` 后原生通道不支持该型号，构造失败会被 `except` 吞掉并置 `_scorer_llm_unavailable`，证据评分静默退回纯先验。已迁移到 `build_aux_llm` 并新增独立的 `scorer_model`（默认 `qwen3.7-flash`）—— 该 LLM 在 `deep_dive` 中高频调用，不应跟随主模型承担 Max 档成本。
 
 ### 10.5 新增的硬约束（已写入测试）
 
@@ -368,9 +370,10 @@
 
 | 命令 | 结果 |
 | --- | --- |
-| 20 个测试文件（含 p1–p5、stream、thread、structured、summary、memory、pdf 等） | **313 passed** |
+| 21 个测试文件（含 p1–p5、stream、thread、structured、summary、memory、evidence、pdf 等） | **326 passed** |
 | 真实调用：四个决策节点（按分档型号） | intent→`qwen3.7-flash` 判 multiagent；plan→`qwen3.8-max` 出 6 节大纲；analyze→`qwen3.8-max`；reflect→`qwen3.7-plus` 出 4 条补搜。全部走结构化路径，无降级告警 |
 | 真实调用：标题生成 | `qwen3.7-flash` 正常产出 |
+| 真实调用：证据评分器构造 | `_get_scorer_llm` 返回可用实例，`_scorer_llm_unavailable=False`，无静默降级 |
 | 真实调用：5 个型号 × JSON Schema（非流式 + 流式） | 全部返回可校验 JSON |
 
 **未验证**：未跑完整端到端研究流程（需 Milvus / RabbitMQ / PG 全栈中间件）；未验证 `web_search` / `local_rag` / `deep_dive` 在新型号下的检索与证据抽取质量（这些节点仍走自由文本 JSON 解析）。

@@ -89,6 +89,8 @@ class BusinessSettings(BaseSettings):
     summary_model: str = "qwen3.7-flash"
     # ── 会话标题生成 ──
     title_model: str = "qwen3.7-flash"
+    # ── 证据评分（deep_dive 高频调用，用轻量型号控成本）──
+    scorer_model: str = "qwen3.7-flash"
     # ── Web 搜索 Provider 链 ──
     search_providers: list = ["ddgs", "searxng"]
     # ── DashScope 专用重排模型 ──
@@ -104,7 +106,7 @@ class BusinessSettings(BaseSettings):
     # ── chunk 消费重试上限（超限进 DLQ）──
     chunk_retry_limit: int = 3
     # ── LLM 调用韧性 ──
-    # ChatTongyi.max_retries 默认 10，是长尾请求的真实来源，统一收窄为 2。
+    # 显式设定：客户端默认重试次数随 SDK 版本变化，不依赖其默认值。
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
 

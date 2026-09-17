@@ -23,6 +23,7 @@
   "memory_extract_model": "qwen3.7-flash",
   "summary_model": "qwen3.7-flash",
   "title_model": "qwen3.7-flash",
+  "scorer_model": "qwen3.7-flash",
   "save_conversation_task": false,
   "checkpointer_backend": "postgres",
   "enable_milvus": true,
