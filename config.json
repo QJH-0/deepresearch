@@ -1,7 +1,7 @@
 {
   "model": "qwen3.8-max",
   "node_models": {
-    "write": { "model": "qwen3.8-max" },
+    "write": { "model": "qwen3.7-plus" },
     "deep_dive": { "model": "qwen3.8-max" },
     "analyze": { "model": "qwen3.8-max" },
     "plan": { "model": "qwen3.8-max" },
