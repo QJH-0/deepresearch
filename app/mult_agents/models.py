@@ -56,9 +56,6 @@ def _build_llm(
     enable_thinking 始终显式下发：Qwen3.7-Flash 等型号默认开启思考，
     不显式关闭会让本应快速的判定节点（意图/规划）付出成倍的延迟与成本。
     """
-    if api_key:
-        os.environ["DASHSCOPE_API_KEY"] = api_key
-
     return ChatOpenAI(
         api_key=api_key or os.getenv("DASHSCOPE_API_KEY", ""),
         model=model,
