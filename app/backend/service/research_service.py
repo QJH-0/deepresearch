@@ -941,14 +941,13 @@ class ResearchService:
     ) -> AsyncGenerator[str, None]:
         """流式恢复中断的任务（P3 重写）。
 
-        三种模式：
-        - mode=continue: 崩溃续研，用 astream(None, config) 从最后 checkpoint 续跑
-          （None 输入 = 从断点节点开始，已检索的 sources/findings 全部保留）
-        - mode=answer: HITL 回答，用 Command(resume=resume_value) 从 interrupt 点继续
-          （P4 会扩展 resume_value 为结构化 payload）
-        - mode=modify: 用户补充/修改条件，先 aupdate_state 追加 HumanMessage 到
-          checkpoint 的 chat_messages，再 astream(None, config) 重新执行
-          （旧检索数据仍在 checkpoint 历史中，但流程基于新条件重新计算）
+        三种模式复用同一个 checkpoint 的 state，差别只在传给 astream 的输入：
+        - mode=continue: 崩溃续研，输入 None → 从最后 checkpoint 的节点续跑
+          （已检索的 sources/findings 全部保留，已完成节点不重跑）
+        - mode=answer: HITL 回答，输入 Command(resume=resume_value) → 从 interrupt()
+          调用处继续（resume_value 由 router 按 interrupt kind 校验）
+        - mode=modify: 用户补充/修改条件，输入 Command(update=..., goto="intent") →
+          追加 HumanMessage 后从入口重跑（旧检索数据仍在 checkpoint 中，流程按新条件重算）
 
         Args:
             thread_id: 会话 ID
@@ -967,6 +966,40 @@ class ResearchService:
         logger.info("[TRACE] resume_stream START | run=%s | thread=%s | mode=%s", run_id, thread_id, mode)
 
         yield sse(event("run.started", thread_id=thread_id, run_id=run_id))
+
+        if mode == "continue":
+            input_state = None
+        elif mode == "answer":
+            if resume_value is None:
+                yield sse(event("run.error", code="InvalidResume",
+                                message="mode=answer 必须提供 resume_value"))
+                return
+            input_state = Command(resume=resume_value)
+        elif mode == "modify":
+            modify_text = str(resume_value or "").strip()
+            if not modify_text:
+                yield sse(event("run.error", code="InvalidResume",
+                                message="mode=modify 必须提供补充/修改文本"))
+                return
+            # update 里只重置覆盖型字段：累加型（findings/evidence）走 operator.add，
+            # 无法用 update 清空，保留下来正好供新一轮复用。
+            input_state = Command(
+                update={
+                    "chat_messages": [HumanMessage(content=modify_text)],
+                    "query": modify_text,
+                    "plan": "",
+                    "draft": "",
+                    "final": "",
+                    "analysis": "",
+                    "iteration": 0,
+                    "needs_more_research": False,
+                    "phase": "initialized",
+                },
+                goto="intent",
+            )
+        else:
+            yield sse(event("run.error", code="InvalidResume", message=f"未知 mode: {mode}"))
+            return
 
         translator = _StreamTranslator(run_id, research_logger=get_research_logger(thread_id))
         heartbeat_interval = _get_heartbeat_interval()

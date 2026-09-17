@@ -27,9 +27,10 @@ class ResearchResponse(BaseModel):
 
 class ResumeRequest(BaseModel):
     thread_id: str = Field(..., min_length=1)
-    # mode=continue: 崩溃续研，用 astream(None, config) 从最后 checkpoint 续跑
-    # mode=answer: HITL 回答，用 Command(resume=resume_value) 从 interrupt 点继续
-    # mode=modify: 用户补充/修改条件，先 aupdate_state 追加 HumanMessage，再 astream(None, config)
+    # 三者共用同一 checkpoint 的 state，差别只在执行起点
+    # mode=continue: 崩溃续研，输入 None 从最后 checkpoint 的节点续跑
+    # mode=answer: HITL 回答，输入 Command(resume=...) 从 interrupt() 处继续
+    # mode=modify: 改条件，输入 Command(update=..., goto="intent") 追加消息后从入口重跑
     mode: str = Field(default="answer", pattern="^(continue|answer|modify)$")
     resume_value: dict | str | None = None  # mode=answer 时必填，mode=modify 时为用户消息文本
 
