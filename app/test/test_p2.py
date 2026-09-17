@@ -127,7 +127,7 @@ def test_stream_research_emits_started_and_completed():
     svc._build_runtime_config = MagicMock(return_value=MagicMock(
         thread_id="t1", user_id="u1", tenant_id="tn1", max_iterations=1,
         enable_memory=False, hitl_enabled=False, hitl_config={},
-        memory_top_k=3,
+        memory_top_k=3, run_timeout_seconds=None,
     ))
     svc._build_initial_state = MagicMock(return_value={"query": "test"})
 
@@ -166,7 +166,7 @@ def test_stream_research_emits_error_on_exception():
     svc._build_runtime_config = MagicMock(return_value=MagicMock(
         thread_id="t1", user_id="u1", tenant_id="tn1", max_iterations=1,
         enable_memory=False, hitl_enabled=False, hitl_config={},
-        memory_top_k=3,
+        memory_top_k=3, run_timeout_seconds=None,
     ))
     svc._build_initial_state = MagicMock(return_value={"query": "test"})
 
@@ -223,7 +223,7 @@ def test_message_id_uses_run_id_prefix():
     svc._build_runtime_config = MagicMock(return_value=MagicMock(
         thread_id="t1", user_id="u1", tenant_id="tn1", max_iterations=1,
         enable_memory=False, hitl_enabled=False, hitl_config={},
-        memory_top_k=3,
+        memory_top_k=3, run_timeout_seconds=None,
     ))
     svc._build_initial_state = MagicMock(return_value={"query": "test"})
 
@@ -243,3 +243,76 @@ def test_message_id_uses_run_id_prefix():
     # message_id 的前缀是 run_id（12位hex）
     prefix = mid.split(":")[0]
     assert len(prefix) == 12, f"run_id 前缀应为12位，实际: {len(prefix)}"
+
+
+# ──────────────────────────────────────────────
+# 批次 4：单轮研究看门狗
+# ──────────────────────────────────────────────
+
+
+def _svc_with_hanging_graph(timeout_seconds):
+    """构造一个图会永久挂起的 ResearchService，并指定总时长上限。"""
+    from backend.service.research_service import ResearchService
+
+    svc = ResearchService.__new__(ResearchService)
+    svc._initialized = True
+    svc._base_config = MagicMock()
+    svc._memory_manager = None
+    svc._thread_repo = None
+
+    async def mock_astream_hanging(*args, **kwargs):
+        await asyncio.sleep(3600)
+        yield ("updates", {})  # 永不执行
+
+    mock_app = MagicMock()
+    mock_app.astream = mock_astream_hanging
+    svc._app = mock_app
+
+    svc._build_runtime_config = MagicMock(return_value=MagicMock(
+        thread_id="t1", user_id="u1", tenant_id="tn1", max_iterations=1,
+        enable_memory=False, hitl_enabled=False, hitl_config={},
+        memory_top_k=3, run_timeout_seconds=timeout_seconds,
+    ))
+    svc._build_initial_state = MagicMock(return_value={"query": "test"})
+    return svc
+
+
+async def _collect_events(svc):
+    events = []
+    async for sse_line in svc.stream_research("test", "u1", "t1", "tn1"):
+        if sse_line.startswith("data: "):
+            events.append(json.loads(sse_line[6:].strip()))
+    return events
+
+
+def test_run_watchdog_emits_run_timeout():
+    """整轮研究超时 → run.error(code=RunTimeout)，而不是永远转圈。"""
+    svc = _svc_with_hanging_graph(timeout_seconds=0.1)
+
+    events = asyncio.run(_collect_events(svc))
+    types = [e["type"] for e in events]
+
+    assert "run.started" in types
+    assert "run.error" in types
+    error = next(e for e in events if e["type"] == "run.error")
+    assert error["data"]["code"] == "RunTimeout"
+    assert "续研" in error["data"]["message"]
+
+
+def test_run_watchdog_is_not_reported_as_user_cancel():
+    """超时不能走取消分支 —— 否则前端会显示成「用户已取消」。"""
+    svc = _svc_with_hanging_graph(timeout_seconds=0.1)
+
+    events = asyncio.run(_collect_events(svc))
+
+    assert [e["type"] for e in events].count("run.cancelled") == 0
+
+
+def test_run_watchdog_does_not_mark_thread_completed():
+    """超时的那一轮没跑完，不应标记 completed（否则无法续研）。"""
+    svc = _svc_with_hanging_graph(timeout_seconds=0.1)
+    svc._complete_thread = MagicMock()
+
+    asyncio.run(_collect_events(svc))
+
+    svc._complete_thread.assert_not_called()

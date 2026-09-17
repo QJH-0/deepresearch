@@ -143,7 +143,7 @@ class TestHeartbeatFrameFormat:
         svc._build_runtime_config = MagicMock(return_value=MagicMock(
             max_iterations=3, user_id="u", tenant_id="t", thread_id="t1",
             enable_memory=False, hitl_enabled=True, hitl_config={},
-            api_key="", model="qwen-plus",
+            api_key="", model="qwen-plus", run_timeout_seconds=None,
         ))
         svc._apply_summary_if_needed = AsyncMock(return_value={"query": "test"})
         svc._record_thread = MagicMock()

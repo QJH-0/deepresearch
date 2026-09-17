@@ -22,6 +22,32 @@ from ._fallbacks import (
 logger = logging.getLogger("mult_agents")
 
 
+def _render_outline_for_prompt(outline: list) -> str:
+    """把研究大纲压成提示词片段。
+
+    只保留写作需要的字段：search_queries / status / id 是流程内部信息，
+    写进提示词只会让模型分心。大纲来自 plan 节点，HITL 下是用户批准过的那一版
+    —— 报告结构必须与之一致，否则用户批准的是一份、拿到的是另一份。
+    """
+    if not outline:
+        return "（本次无预设章节，请按问题逻辑自行组织）"
+
+    lines: list[str] = []
+    for index, section in enumerate(outline, 1):
+        if not isinstance(section, dict):
+            continue
+        title = str(section.get("title", "")).strip() or f"第 {index} 节"
+        description = str(section.get("description", "")).strip()
+        marks = []
+        if section.get("requires_data"):
+            marks.append("需数据支撑")
+        if section.get("requires_chart"):
+            marks.append("需图表")
+        suffix = f"（{'、'.join(marks)}）" if marks else ""
+        lines.append(f"{index}. {title}{suffix}：{description}" if description else f"{index}. {title}{suffix}")
+    return "\n".join(lines) if lines else "（本次无预设章节，请按问题逻辑自行组织）"
+
+
 async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWriter = None) -> AgentState:
     logger.info("%s 开始 | agent=%s", colorize("[write]", "cyan"), colorize(agent_name, "magenta"))
     if writer:
@@ -59,6 +85,8 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
         "请严格根据以下信息撰写最终的 Markdown 研报。请直接输出正文，绝对不要输出任何 JSON 结构，也不要复述你的指令。\n\n"
         f"核心问题：{state['query']}\n"
         f"子问题拆解：{json.dumps(state.get('sub_questions', []), ensure_ascii=False)}\n\n"
+        "【报告章节结构（必须遵循）】：\n"
+        f"{_render_outline_for_prompt(state.get('outline', []))}\n\n"
         "【分析结论 (Findings)】：\n"
         f"{json.dumps(state.get('findings', []), ensure_ascii=False)}\n\n"
         "【可用来源索引 (source_index)】：\n"
@@ -67,7 +95,10 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
         f"{json.dumps(valid_source_ids, ensure_ascii=False)}\n\n"
         "【可能存在的风险/冲突 (Audit Flags)】：\n"
         f"{json.dumps(state.get('audit_flags', []), ensure_ascii=False)}\n\n"
-        "要求：正文必须使用合法引用ID（例如 [WEB1_1-1]、[LOC1_1-3]）；禁止使用不存在的编号。"
+        "要求：正文的详细分析部分必须按上述章节结构展开，每节以 `## <标题>` 开头，"
+        "不得新增、合并或调换章节；标注「需数据支撑」的章节必须给出具体数据，"
+        "确实查不到数据时要显式写明缺失，不要用笼统表述糊过去。\n"
+        "正文必须使用合法引用ID（例如 [WEB1_1-1]、[LOC1_1-3]）；禁止使用不存在的编号。"
         "结尾不需要你来列举引用列表，系统会自动拼接。"
     )
     human = HumanMessage(content=with_memory_context(state, prompt))

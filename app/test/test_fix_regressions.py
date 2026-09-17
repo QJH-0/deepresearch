@@ -4,6 +4,7 @@
 每个用例对应一个已修复缺陷，断言写成「失败即代表缺陷复现」的形式。
 """
 
+import asyncio
 import json
 import pathlib
 import threading
@@ -1715,3 +1716,108 @@ class TestAgentBuilderResilience:
         assert captured, "未捕获到任何 agent 构建调用"
         assert all(c["timeout"] == 12.5 for c in captured)
         assert all(c["max_retries"] == 1 for c in captured)
+
+
+# ──────────────────────────────────────────────────────────────
+# 断链修复：plan 产出的大纲必须进入写作提示词
+# ──────────────────────────────────────────────────────────────
+
+
+class TestWriteNodeHonoursOutline:
+    """回归：write_node 曾完全不用 outline。
+
+    后果是 plan 精心拆出的章节结构只驱动了检索计划，报告正文结构由 writer
+    自由发挥 —— HITL 下用户在 plan_approval 里批准的是一份大纲，拿到的却是
+    另一份结构，且这是用户可见的语义断裂。
+    """
+
+    @staticmethod
+    def _capture_prompt(monkeypatch, outline):
+        from mult_agents.nodes import write as write_mod
+
+        captured = {}
+
+        class _FakeAgent:
+            async def astream(self, payload, stream_mode=None):
+                captured["prompt"] = payload["messages"][0].content
+                chunk = MagicMock()
+                chunk.content = "报告正文"
+                yield (chunk, {})
+
+        monkeypatch.setattr(write_mod, "_check_evidence_sufficiency", lambda state: (True, ""))
+        monkeypatch.setattr(
+            write_mod, "_validate_and_fix_citations", lambda content, ids: (content, [])
+        )
+        monkeypatch.setattr(
+            write_mod, "_ensure_reference_section", lambda content, state: content
+        )
+
+        state = {
+            "query": "q", "outline": outline, "sub_questions": ["Q1"],
+            "findings": [], "source_index": [], "audit_flags": [],
+            "web_retrieval_stats": {}, "local_retrieval_stats": {},
+        }
+        asyncio.run(write_mod.write_node(state, _FakeAgent(), "writer"))
+        return captured["prompt"]
+
+    def test_section_titles_reach_the_writer(self, monkeypatch):
+        outline = [
+            {"id": "sec_1", "title": "市场现状", "description": "梳理主要参与者"},
+            {"id": "sec_2", "title": "技术路线", "description": "对比两条路径"},
+        ]
+
+        prompt = self._capture_prompt(monkeypatch, outline)
+
+        assert "市场现状" in prompt
+        assert "技术路线" in prompt
+        assert "梳理主要参与者" in prompt
+
+    def test_section_marks_are_rendered(self, monkeypatch):
+        outline = [
+            {"id": "sec_1", "title": "规模测算", "description": "", "requires_data": True},
+            {"id": "sec_2", "title": "格局图", "description": "", "requires_chart": True},
+        ]
+
+        prompt = self._capture_prompt(monkeypatch, outline)
+
+        assert "需数据支撑" in prompt
+        assert "需图表" in prompt
+
+    def test_internal_fields_are_not_leaked_into_prompt(self, monkeypatch):
+        """search_queries / status 是流程内部字段，写进提示词只会干扰模型。"""
+        outline = [{
+            "id": "sec_1", "title": "市场现状", "description": "d",
+            "search_queries": ["内部检索词ABC"], "status": "pending",
+        }]
+
+        prompt = self._capture_prompt(monkeypatch, outline)
+
+        assert "内部检索词ABC" not in prompt
+        assert "pending" not in prompt
+
+    def test_missing_outline_degrades_gracefully(self, monkeypatch):
+        prompt = self._capture_prompt(monkeypatch, [])
+
+        assert "无预设章节" in prompt
+
+
+class TestRenderOutlineForPrompt:
+    def test_empty_outline_returns_placeholder(self):
+        from mult_agents.nodes.write import _render_outline_for_prompt
+
+        assert "无预设章节" in _render_outline_for_prompt([])
+
+    def test_untitled_section_falls_back_to_index(self):
+        from mult_agents.nodes.write import _render_outline_for_prompt
+
+        rendered = _render_outline_for_prompt([{"id": "sec_1", "title": "  "}])
+
+        assert "第 1 节" in rendered
+
+    def test_non_dict_section_is_skipped(self):
+        from mult_agents.nodes.write import _render_outline_for_prompt
+
+        rendered = _render_outline_for_prompt(["坏数据", {"title": "好章节"}])
+
+        assert "好章节" in rendered
+        assert "坏数据" not in rendered

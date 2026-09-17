@@ -85,6 +85,8 @@ class AppConfig:
     # ── LLM 调用韧性 ──
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
+    # 单轮研究总时长上限（看门狗）；0 表示不限制
+    run_timeout_seconds: float = 900.0
 
     def with_overrides(self, **kwargs) -> "AppConfig":
         cleaned = {k: v for k, v in kwargs.items() if v is not None}
@@ -177,6 +179,7 @@ class AppConfig:
             node_models=getattr(biz, "node_models", {}) or {},
             llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", getattr(biz, "llm_timeout_seconds", 60.0)),
             llm_max_retries=_env_int("LLM_MAX_RETRIES", getattr(biz, "llm_max_retries", 2)),
+            run_timeout_seconds=_env_float("RUN_TIMEOUT_SECONDS", getattr(biz, "run_timeout_seconds", 900.0)),
         )
 
     @staticmethod

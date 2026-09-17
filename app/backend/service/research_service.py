@@ -403,18 +403,22 @@ class ResearchService:
 
         translator = _StreamTranslator(run_id, research_logger=research_logger)
         heartbeat_interval = _get_heartbeat_interval()
+        # 看门狗：llm_timeout_seconds 只约束单次调用，一轮研究有 15~25 次 LLM 调用
+        # 加十余次检索，任何一处慢下来都会让前端一直转圈。0 表示不限制。
+        run_deadline = getattr(runtime_config, "run_timeout_seconds", 0) or None
         try:
-            async for mode, chunk in _astream_with_heartbeat(
-                self._app.astream(
-                    input_state, config, stream_mode=["custom", "updates"]
-                ),
-                heartbeat_interval,
-            ):
-                if mode == "heartbeat":
-                    yield HEARTBEAT_FRAME
-                    continue
-                for frame in translator.translate(mode, chunk):
-                    yield frame
+            async with asyncio.timeout(run_deadline):
+                async for mode, chunk in _astream_with_heartbeat(
+                    self._app.astream(
+                        input_state, config, stream_mode=["custom", "updates"]
+                    ),
+                    heartbeat_interval,
+                ):
+                    if mode == "heartbeat":
+                        yield HEARTBEAT_FRAME
+                        continue
+                    for frame in translator.translate(mode, chunk):
+                        yield frame
 
             final = translator.final
             route = translator.route
@@ -459,6 +463,18 @@ class ResearchService:
             close_research_logger(thread_id, route=route, final=final)
             yield sse(event("run.cancelled", reason="user_cancelled"))
             raise
+
+        except TimeoutError:
+            # 看门狗触发。不标记 completed —— 这一轮没跑完；检查点保持完好，
+            # 前端可据 /state 的 next_nodes 续研（与进程重启中断同一套恢复语义）。
+            logger.error("[TRACE] stream_research TIMEOUT | run=%s | thread=%s | limit=%.0fs",
+                         run_id, thread_id, run_deadline or 0)
+            close_research_logger(thread_id, route=route, final=final)
+            yield sse(event(
+                "run.error",
+                code="RunTimeout",
+                message=f"研究超过 {run_deadline:.0f} 秒未完成，已中止；可从检查点续研",
+            ))
 
         except Exception as e:
             # 任何异常必发 run.error，随后自然关闭 generator

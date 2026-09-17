@@ -444,3 +444,67 @@
 回读校验的 `_normalize` 会去掉所有空白后再比对，因为 PDF 提取会把标题按行断开、把词间空格打散；直接子串匹配会误报「标题缺失」。该行为已由 `test_present_title_no_warning` 覆盖。
 
 **未验证**：前端尚未消费 `X-Report-Warnings` 头与 422 问题清单（本批次未含前端改动）；`export_markdown` 的逃生通道语义未在真实用户路径上走查。
+
+---
+
+## 十二、批次 4 执行记录（并发与节奏）
+
+### 12.1 先核实前提，三条不成立
+
+动手前逐条核实了计划里四条措施在本代码库的前提，结果三条站不住：
+
+| 原计划 | 核实结果 | 处置 |
+| --- | --- | --- |
+| 4.1 全局并发上限（`Semaphore`） | 图里**唯一的并行是 `plan → web_search ∥ local_rag`（2 个节点）**，且两个节点内部检索是顺序执行的（`tools.py` / `web_search.py` / `local_rag.py` 无 `gather` / `Semaphore` / `create_task`）。加全局信号量对当前拓扑没有任何被触发的场景 | **不做**，理由记录在案 |
+| 4.2 单点重试与全量重跑同路径 | **代码里没有任何节点级重试** —— 只有 LLM 客户端自身的 `max_retries`（批次 1 加的）。重跑的唯一路径是用户点「重新研究」 | **不做**，无可统一的对象 |
+| 4.4 确定性章节配额（position 取模） | `write_node` 是**单次 `astream` 生成整篇报告**，没有「各章由不同生成单元产出」的结构。ai-ppt 的 position 取模前提（每页一个独立生成单元）在这里不存在；详略失衡不是并发协调问题 | **改为修断链**（见 12.2） |
+
+真正的并发源是「每个研究完成后起的后台 task」（`memory_service` 记忆抽取、`research_service` 标题生成），但它们各自只有 1 次 LLM 调用，且没有观测数据支撑该把上限设成多少 —— 凭猜设定阈值属于拍脑袋，留作容量治理议题。
+
+### 12.2 修掉一条用户可见的断链：报告结构不遵循已批准的计划
+
+**问题**：`plan_node` 产出完整大纲（章节 id / title / description / requires_data / requires_chart / priority / search_queries），但 `write_node` 的提示词**完全没有引用 `outline`**。追踪确认 `outline` 的消费者只有两个：
+
+1. `_derive_search_plan` —— 生成检索计划 ✓
+2. `_render_execution_appendix` —— 执行附录里列一份「规划输出」清单 ✓
+
+**报告正文结构无人消费**。后果在 HITL 下尤其明显：`hitl_config.plan_review` 默认开启，用户在 `plan_approval` 里看到并批准的是一份 6 节大纲，拿到的报告章节却由 writer 自由发挥 —— **批准的是一份，交付的是另一份**。这也正是原计划 4.4 想解决的「详略失衡」的真实根因。
+
+**修法**：新增 `_render_outline_for_prompt`，把大纲压成提示词片段注入 write prompt，并明确要求「详细分析部分必须按此结构展开，每节以 `## <标题>` 开头，不得新增、合并或调换章节」。
+
+只保留写作需要的字段 —— `search_queries` / `status` / `id` 是流程内部信息，写进提示词只会干扰模型（已加测试 `test_internal_fields_are_not_leaked_into_prompt` 锁住）。`requires_data` / `requires_chart` 转成「需数据支撑」「需图表」标记，并要求需数据的章节「确实查不到数据时显式写明缺失，不要用笼统表述糊过去」。
+
+### 12.3 新增单轮研究看门狗
+
+**问题**：`llm_timeout_seconds` 只约束**单次** LLM 调用；一轮研究有 15~25 次 LLM 调用加十余次检索，任何一处慢下来都会让前端一直转圈。`task_registry` **完全没有超时机制**（无 deadline / watchdog）。
+
+**修法**：新增 `run_timeout_seconds`（默认 900 秒，0 表示不限），用 `asyncio.timeout()` 包住图消费循环，超时走**独立的** `except TimeoutError` 分支：
+
+- 发 `run.error(code="RunTimeout")`，消息里写明「可从检查点续研」
+- **不标记 thread completed** —— 这一轮没跑完，标记了就没法续研
+- **不误报为用户取消** —— 与 `except asyncio.CancelledError` 分支严格区分，否则前端会显示成「用户已取消」
+
+超时后检查点保持完好，前端可据 `/state` 的 `next_nodes` 续研，与进程重启中断复用同一套恢复语义。
+
+### 12.4 配置变更
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `run_timeout_seconds` | 900 | 单轮研究总时长上限；0 = 不限 |
+| `llm_timeout_seconds` | 60 | 单次调用超时（批次 1） |
+
+既有流式测试用 `MagicMock` 顶替运行时配置，新增字段后需同步补 `run_timeout_seconds`（`test_p2.py` 3 处、`test_sse_heartbeat.py` 1 处）。
+
+### 12.5 验证结果
+
+| 验证项 | 结果 |
+| --- | --- |
+| 23 个测试文件 | **350 passed** |
+| 看门狗单测 | 超时发 `run.error(RunTimeout)`；不出现 `run.cancelled`；不调用 `_complete_thread` |
+| 真实调用：plan → write 端到端 | plan 出 6 节大纲，writer 产出的报告 `##` 标题 **6/6 全部匹配**（`REPORT_LEN=4909`） |
+
+**未验证**：`run_timeout_seconds` 未在真实长任务上触发过（需构造 15 分钟以上的真实研究）；`web_search` / `local_rag` 在新型号下的检索质量仍未实测。
+
+### 12.6 结论：批次 4 的实际产出与原计划的差异
+
+原计划 4 条措施里，**2 条不做**（前提不成立，理由见 12.1）、**1 条改了目标**（从加配额改为修断链，且修出的是用户可见问题）、**1 条按计划落地**（看门狗）。这符合「先核实前提再动手」的原则 —— 若照原计划实施，会写出两处永远不会被触发的基础设施。

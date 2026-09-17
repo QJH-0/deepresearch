@@ -109,6 +109,10 @@ class BusinessSettings(BaseSettings):
     # 显式设定：客户端默认重试次数随 SDK 版本变化，不依赖其默认值。
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
+    # ── 单轮研究总时长上限（看门狗）──
+    # llm_timeout_seconds 只约束单次调用；一轮研究有 15~25 次 LLM 调用加
+    # 十余次检索，任何一处慢下来都会让前端一直转圈。0 表示不限制。
+    run_timeout_seconds: float = 900.0
 
     @model_validator(mode="before")
     @classmethod
