@@ -16,7 +16,7 @@ import { groupTurns } from '../utils/turns'
 import { useThreadsStore } from '../stores/threads'
 import { useInterruptStore } from '../stores/interrupt'
 import { useEventStream } from '../composables/useEventStream'
-import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdf, ApiError } from '../api/rest'
+import { fetchThreadMessages, toChatMessages, cancelResearch, exportPdf, exportMarkdown, ApiError } from '../api/rest'
 import type { ReportIssue } from '../api/rest'
 import type { InterruptKind } from '../types/events.gen'
 import { NAlert } from 'naive-ui'
@@ -199,6 +199,26 @@ async function exportPdfReport(): Promise<void> {
   }
 }
 
+/**
+ * 逃生通道：PDF 被质量门禁拦下时导出 Markdown 原文。
+ *
+ * 门禁拦的是「排版后的成品」，不该把用户锁死 —— Markdown 保留完整内容，
+ * 只是没有排版保证。没有这条退路，被拦的用户只能先改报告再导出。
+ */
+async function exportMarkdownReport(): Promise<void> {
+  const threadId = threads.currentThreadId
+  if (!threadId) return
+  try {
+    const { blob } = await exportMarkdown(threadId)
+    saveBlob(blob, `report_${threadId.slice(0, 12)}.md`)
+  } catch (err) {
+    chat.markError(threadId, {
+      code: 'EXPORT_FAILED',
+      message: err instanceof Error ? err.message : '导出失败',
+    })
+  }
+}
+
 // ── watchers ────────────────────────────────────────
 watch(() => threads.currentThreadId, (id) => { if (id) void openThread(id) })
 watch(() => threads.newChatSignal, () => handleNewChat())
@@ -271,6 +291,10 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
       <ul class="export-notice-list">
         <li v-for="(line, index) in exportNotice.lines" :key="index">{{ line }}</li>
       </ul>
+      <div v-if="exportNotice.level === 'error'" class="export-notice-actions">
+        <button class="export-pdf-btn" @click="exportMarkdownReport">导出 Markdown 原文</button>
+        <span class="export-notice-hint">内容完整，但无排版保证</span>
+      </div>
     </NAlert>
 
     <div ref="messageList" class="message-list">
@@ -344,6 +368,16 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
   padding-left: 18px;
   font-size: 13px;
   line-height: 1.6;
+}
+.export-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.export-notice-hint {
+  color: #6b7a99;
+  font-size: 12px;
 }
 .export-pdf-btn {
   padding: 4px 12px;

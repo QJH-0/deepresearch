@@ -85,3 +85,58 @@ describe('导出质量门禁的用户可见提示', () => {
     expect(wrapper.text()).not.toContain('报告未通过导出前检查')
   })
 })
+
+describe('PDF 被拦时的逃生通道', () => {
+  it('被拦时给出「导出 Markdown 原文」按钮，点击后请求 /export/md', async () => {
+    const requested: string[] = []
+    mockFetch.mockImplementation(async (url: string) => {
+      const target = String(url)
+      requested.push(target)
+      if (target.includes('/export/pdf')) {
+        return jsonResponse({ detail: { message: '报告未通过导出前检查', issues: ISSUES } }, 422)
+      }
+      if (target.includes('/export/md')) {
+        return new Response('# 报告原文', { status: 200 })
+      }
+      return jsonResponse({ thread_id: 't', messages: [] }, 200)
+    })
+
+    const wrapper = await mountChatView()
+    await wrapper.vm.$nextTick()
+    await (wrapper.vm as unknown as { exportPdfReport: () => Promise<void> }).exportPdfReport()
+    await wrapper.vm.$nextTick()
+
+    const escape = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('导出 Markdown 原文'))
+    expect(escape, '被拦时必须给出 Markdown 逃生入口').toBeTruthy()
+
+    await escape!.trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(requested.some((url) => url.includes('/export/md'))).toBe(true)
+  })
+
+  it('仅在被拦（error）时出现，warning 放行时不出现', async () => {
+    const warnings = [{ severity: 'warning', code: 'short_body', message: '正文过短' }]
+    mockFetch.mockImplementation(async (url: string) => {
+      const target = String(url)
+      if (target.includes('/export/pdf')) {
+        return new Response('%PDF-1.4', {
+          status: 200,
+          headers: { 'X-Report-Warnings': encodeURIComponent(JSON.stringify(warnings)) },
+        })
+      }
+      return jsonResponse({ thread_id: 't', messages: [] }, 200)
+    })
+
+    const wrapper = await mountChatView()
+    await wrapper.vm.$nextTick()
+    await (wrapper.vm as unknown as { exportPdfReport: () => Promise<void> }).exportPdfReport()
+    await wrapper.vm.$nextTick()
+
+    // 已经导出成功了，再给逃生入口只会让人困惑
+    expect(wrapper.text()).not.toContain('导出 Markdown 原文')
+    expect(wrapper.text()).toContain('正文过短')
+  })
+})
