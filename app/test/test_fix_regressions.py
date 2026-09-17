@@ -1858,3 +1858,42 @@ class TestEnableMilvusActuallyGatesRagInit:
 
     def test_enabled_calls_rag_init_once(self, monkeypatch):
         assert len(self._rag_init_calls(monkeypatch, True)) == 1
+
+
+# ──────────────────────────────────────────────────────────────
+# 断链修复：流式无内容不得再补一次调用
+# ──────────────────────────────────────────────────────────────
+
+
+class _EmptyStreamAgent:
+    """astream 不产出任何块；ainvoke 一旦被调用即为回归。"""
+
+    def __init__(self):
+        self.astream_calls = 0
+        self.ainvoke_calls = 0
+
+    async def astream(self, *_args, **_kwargs):
+        self.astream_calls += 1
+        return
+        yield  # pragma: no cover - 仅为让本函数成为异步生成器
+
+    async def ainvoke(self, *_args, **_kwargs):
+        self.ainvoke_calls += 1
+        raise AssertionError("流式无内容时不应再补一次 ainvoke")
+
+
+class TestJsonAgentDoesNotCallTwice:
+    """回归：曾对同一请求先 astream 再 ainvoke，等于为一次输入付费两次。"""
+
+    async def test_empty_stream_skips_second_call(self):
+        from mult_agents.nodes._parsing import _invoke_json_agent
+
+        agent = _EmptyStreamAgent()
+        payload, content, _messages = await _invoke_json_agent(
+            {}, "提示词", agent, "test_agent", "write", {"fallback": True}
+        )
+
+        assert agent.astream_calls == 1
+        assert agent.ainvoke_calls == 0
+        assert payload == {"fallback": True}, "无内容时返回调用方给的 fallback，降级与否由调用方决定"
+        assert content == ""

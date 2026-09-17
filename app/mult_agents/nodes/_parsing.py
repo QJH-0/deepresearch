@@ -151,9 +151,13 @@ async def _invoke_json_agent(state: AgentState, prompt: str, agent, agent_name: 
                 tool_calls_chunks.extend(msg_chunk.tool_calls)
 
     if not content:
-        result = await agent.ainvoke({"messages": [human]})
-        content = _last_content(result)
-        all_messages = [human, result["messages"][-1]]
+        # 流式无内容不再补一次 ainvoke：同一请求会重复计费，且把「模型没产出」
+        # 掩盖成「换条路径再试一次」。是否降级由调用方判断，这里只保证留痕。
+        logger.warning("%s 流式未返回内容，跳过二次调用 | agent=%s",
+                       colorize(f"[{node}]", "yellow"), agent_name)
+        if writer:
+            writer({"node": node, "message": f"{agent_name} 未返回内容"})
+        all_messages = [human]
     else:
         ai_msg = AIMessage(content=content)
         if tool_calls_chunks:
