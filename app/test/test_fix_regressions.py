@@ -1015,7 +1015,8 @@ class TestAgentBuilderConsolidation:
         )
         monkeypatch.setattr(models, "build_agent", lambda *a, **kw: MagicMock())
 
-        config = _minimal_app_config()
+        # RAG 初始化只在 enable_milvus 为真时发生，关着它本用例就无从校验集合名
+        config = _minimal_app_config(enable_milvus=True)
         models.build_agents("qwen3.8-max", "test-key", config)
 
         cfg = captured["cfg"]
@@ -1703,15 +1704,18 @@ class TestAgentBuilderResilience:
 
         captured = []
 
-        def fake_build_agent(model, api_key, prompt_key, temperature, tools, **kwargs):
+        def fake_build(model, api_key, prompt_key, temperature, *args, **kwargs):
             captured.append(kwargs)
             return MagicMock()
 
-        monkeypatch.setattr(models, "build_agent", fake_build_agent)
+        monkeypatch.setattr(models, "build_agent", fake_build)
+        # 决策节点走结构化构造器。不 patch 会真实创建客户端，而空 api_key 会回退读
+        # 环境变量里的 OPENAI_API_KEY —— 那取决于其他用例是否先清过环境，与本用例无关
+        monkeypatch.setattr(models, "build_structured_agent", fake_build)
         monkeypatch.setattr(models, "init_rag_system", lambda **kw: None)
 
         config = _minimal_app_config(llm_timeout_seconds=12.5, llm_max_retries=1)
-        models.build_agents("qwen-plus", "", config)
+        models.build_agents("qwen3.8-max", "", config)
 
         assert captured, "未捕获到任何 agent 构建调用"
         assert all(c["timeout"] == 12.5 for c in captured)
