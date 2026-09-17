@@ -18,7 +18,6 @@ import logging
 import uuid
 from typing import Optional
 
-from langchain_community.chat_models import ChatTongyi
 from langchain_core.messages import HumanMessage
 from langmem import create_memory_store_manager
 
@@ -74,8 +73,17 @@ class MemoryService:
             logger.warning("PostgresStore 未初始化，langmem manager 构建跳过")
             return None
 
-        # 提取用 LLM（用 qwen-turbo 省成本）
-        llm = ChatTongyi(model=self._model, temperature=0.1, dashscope_api_key=self._api_key)
+        # 提取用 LLM（用轻量型号省成本）
+        from backend.config.settings import get_business_settings
+        from mult_agents.models import build_aux_llm
+
+        biz = get_business_settings()
+        llm = build_aux_llm(
+            self._model,
+            self._api_key,
+            timeout=biz.llm_timeout_seconds,
+            max_retries=biz.llm_max_retries,
+        )
 
         self._manager = create_memory_store_manager(
             llm,

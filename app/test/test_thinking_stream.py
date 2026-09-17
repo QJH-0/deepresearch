@@ -142,8 +142,10 @@ class TestThinkingNodesConfig:
         assert len(write_calls) == 1
         assert write_calls[0]["enable_thinking"] is True
 
-        # 意图路由走结构化执行体，不参与 thinking_nodes 配置
-        assert [c["prompt_key"] for c in structured_log] == ["intent_router"]
+        # 决策节点走结构化执行体，不参与 thinking_nodes 配置
+        assert [c["prompt_key"] for c in structured_log] == [
+            "intent_router", "plan", "reflect", "analyze",
+        ]
 
 
 # ──────────────────────────────────────────────

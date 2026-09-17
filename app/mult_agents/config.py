@@ -78,6 +78,10 @@ class AppConfig:
     enable_rerank_model: bool = True
     evidence_llm_fusion: bool = True
     evidence_prior_weight: float = 0.4
+    # ── 按节点分档的模型映射 ──
+    # 结构化节点（intent_router / plan / reflect / analyze）只能配支持
+    # response_format=json_schema 的型号，否则启动即报错
+    node_models: dict = field(default_factory=dict)
     # ── LLM 调用韧性 ──
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
@@ -170,6 +174,7 @@ class AppConfig:
             enable_rerank_model=getattr(biz, "enable_rerank_model", True),
             evidence_llm_fusion=getattr(biz, "evidence_llm_fusion", True),
             evidence_prior_weight=getattr(biz, "evidence_prior_weight", 0.4),
+            node_models=getattr(biz, "node_models", {}) or {},
             llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", getattr(biz, "llm_timeout_seconds", 60.0)),
             llm_max_retries=_env_int("LLM_MAX_RETRIES", getattr(biz, "llm_max_retries", 2)),
         )

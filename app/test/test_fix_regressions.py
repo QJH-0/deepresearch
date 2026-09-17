@@ -514,6 +514,7 @@ class TestInterruptProtocolSplit:
 
     async def test_analyze_node_raises_evidence_gap_kind(self, monkeypatch):
         from mult_agents.nodes import analyze
+        from mult_agents.output_schemas import AnalysisDraft
 
         captured = {}
 
@@ -522,21 +523,18 @@ class TestInterruptProtocolSplit:
             captured["payload"] = payload
             return {"action": "skip"}
 
-        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
+        async def fake_invoke(state, prompt, agent, agent_name, node, writer=None):
             return (
-                {
-                    "findings": [],
-                    "claim_map": [],
-                    "needs_more_research": True,
-                    "missing_gaps": ["缺口A"],
-                    "analysis_summary": "s",
-                },
-                "",
+                AnalysisDraft(
+                    analysis_summary="s",
+                    needs_more_research=True,
+                    missing_gaps=["缺口A"],
+                ),
                 [],
             )
 
         monkeypatch.setattr(analyze, "raise_interrupt", fake_raise_interrupt)
-        monkeypatch.setattr(analyze, "_invoke_json_agent", fake_invoke)
+        monkeypatch.setattr(analyze, "_invoke_structured_agent", fake_invoke)
 
         state = {
             "query": "q",
@@ -690,16 +688,12 @@ class TestNodesDoNotPolluteDraft:
 
     async def test_plan_node_does_not_write_draft(self, monkeypatch):
         from mult_agents.nodes import plan
+        from mult_agents.output_schemas import PlanDraft
 
-        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
-            return (
-                {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
-                 "budget": {}, "objective": "o"},
-                "raw llm text",
-                [],
-            )
+        async def fake_invoke(state, prompt, agent, agent_name, node, writer=None):
+            return PlanDraft(objective="o", sub_questions=["Q1"], outline=[]), []
 
-        monkeypatch.setattr(plan, "_invoke_json_agent", fake_invoke)
+        monkeypatch.setattr(plan, "_invoke_structured_agent", fake_invoke)
 
         out = await plan.plan_node({"query": "q", "hitl_enabled": False}, None, "planner")
 
@@ -983,7 +977,7 @@ def _minimal_app_config(**overrides):
 
     base = dict(
         api_key="test-key",
-        model="qwen-plus",
+        model="qwen3.8-max",
         thread_id="t",
         user_id="u",
         tenant_id="t",
@@ -1021,7 +1015,7 @@ class TestAgentBuilderConsolidation:
         monkeypatch.setattr(models, "build_agent", lambda *a, **kw: MagicMock())
 
         config = _minimal_app_config()
-        models.build_agents("qwen-plus", "test-key", config)
+        models.build_agents("qwen3.8-max", "test-key", config)
 
         cfg = captured["cfg"]
         assert cfg.collection_name == DEFAULT_CHILD_COLLECTION
@@ -1052,7 +1046,7 @@ class TestAgentBuilderConsolidation:
         monkeypatch.setattr(models, "build_agent", fake_build_agent)
         monkeypatch.setattr(models, "init_rag_system", lambda **kw: None)
 
-        models.build_agents("qwen-plus", "test-key", _minimal_app_config())
+        models.build_agents("qwen3.8-max", "test-key", _minimal_app_config())
 
         assert captured_tools, "未捕获到任何 agent 构建调用"
         assert all(tools == [] for _key, tools in captured_tools), (
@@ -1170,16 +1164,12 @@ class TestIterationSemantics:
         """回归：plan_node 曾无条件把 iteration 归零，使 write_node 的
         「已达迭代上限」守卫永远无法触发（write 的 +1 会被 plan 覆盖）。"""
         from mult_agents.nodes import plan
+        from mult_agents.output_schemas import PlanDraft
 
-        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
-            return (
-                {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
-                 "budget": {}, "objective": "o"},
-                "raw",
-                [],
-            )
+        async def fake_invoke(state, prompt, agent, agent_name, node, writer=None):
+            return PlanDraft(objective="o", sub_questions=["Q1"], outline=[]), []
 
-        monkeypatch.setattr(plan, "_invoke_json_agent", fake_invoke)
+        monkeypatch.setattr(plan, "_invoke_structured_agent", fake_invoke)
 
         out = await plan.plan_node(
             {"query": "q", "hitl_enabled": False, "iteration": 2}, None, "planner"

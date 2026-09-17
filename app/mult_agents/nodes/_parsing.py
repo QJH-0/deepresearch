@@ -29,9 +29,10 @@ async def _invoke_structured_agent(
 ):
     """调用决策节点的结构化执行体，返回 (校验后的模型对象, 审计消息列表)。
 
-    逐块合并 AIMessageChunk：既保留 reasoning 的流式推送，又累积出完整的
-    tool_calls。相比 with_structured_output 的黑盒解析，这里能看到中间增量；
-    相比 response_format，这里不依赖强制 tool_choice（DashScope 会拒绝）。
+    provider 已用 JSON Schema 模式（strict）约束输出，正文即 JSON 字符串，
+    因此这里只做累加与反序列化 —— 不做代码围栏剥离、不做正则截取，
+    否则会把「provider 没遵守 schema」这类问题掩盖成「解析器很宽容」。
+    reasoning 与正文一起流式累加，深度思考节点仍能推送 thinking 事件。
 
     失败一律抛 StructuredOutputError —— 不返回兜底值。是否降级由调用方决定，
     因为「能不能降级」是各节点自己的业务判断。
@@ -42,26 +43,27 @@ async def _invoke_structured_agent(
     human = HumanMessage(content=with_memory_context(state, prompt))
     messages = [SystemMessage(content=agent.system_prompt), human]
 
-    merged = None
+    content = ""
     async for chunk in agent.runnable.astream(messages):
         reasoning = _extract_reasoning_from_chunk(chunk)
         if reasoning and writer:
             writer({"type": "thinking", "node": node, "text": reasoning})
-        merged = chunk if merged is None else merged + chunk
+        text = _extract_content_from_chunk(chunk)
+        if text:
+            content += text
 
-    if merged is None or not getattr(merged, "tool_calls", None):
+    if not content.strip():
         raise StructuredOutputError(f"{agent_name} 未返回结构化结果")
 
     try:
-        result = agent.schema.model_validate(merged.tool_calls[0]["args"])
+        result = agent.schema.model_validate_json(content)
     except Exception as exc:
         raise StructuredOutputError(f"{agent_name} 输出不符合 schema: {exc}") from exc
 
     emit(node, str(result))
     if writer:
         writer({"node": node, "message": f"推理完成: {result}"})
-    ai_msg = AIMessage(content="", tool_calls=merged.tool_calls)
-    return result, [human, ai_msg]
+    return result, [human, AIMessage(content=content)]
 
 
 def _last_content(result) -> str:

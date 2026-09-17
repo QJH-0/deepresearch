@@ -55,7 +55,10 @@ class BusinessSettings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    model: str = "qwen-plus"
+    model: str = "qwen3.8-max"
+    # 按节点分档：{"write": {"model": "qwen3.8-max"}, "intent_router": {"model": "qwen3.7-flash"}}
+    # 结构化节点（intent_router / plan / reflect / analyze）只能配支持 json_schema 的型号
+    node_models: dict = {}
     tenant_id: str = "default_tenant"
     user_id: str = "default_user"
     thread_id: str = "default"
@@ -65,7 +68,7 @@ class BusinessSettings(BaseSettings):
     memory_embedding_model: str = "text-embedding-v3"
     memory_hot_path_top_k: int = 5
     memory_background_enabled: bool = True
-    memory_extract_model: str = "qwen-turbo"
+    memory_extract_model: str = "qwen3.7-flash"
     save_conversation_task: bool = False
     checkpointer_backend: str = "postgres"
     enable_milvus: bool = True
@@ -83,7 +86,9 @@ class BusinessSettings(BaseSettings):
     # ── 对话摘要压缩 ──
     summary_threshold: int = 20
     summary_keep_recent: int = 6
-    summary_model: str = "qwen-turbo"
+    summary_model: str = "qwen3.7-flash"
+    # ── 会话标题生成 ──
+    title_model: str = "qwen3.7-flash"
     # ── Web 搜索 Provider 链 ──
     search_providers: list = ["ddgs", "searxng"]
     # ── DashScope 专用重排模型 ──

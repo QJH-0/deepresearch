@@ -292,3 +292,85 @@
 | 批次 1 + 批次 2 相关全量（20 个文件/类） | **226 passed** |
 
 **未做**：`plan` / `analyze` / `reflect` 的推广（本批次第二步）；`web_search` / `local_rag` / `deep_dive` 的证据结构未结构化（结构复杂且非决策节点，暂不纳入）。
+
+---
+
+## 十、模型切换与结构化输出方案修订（Qwen3.7/3.8 + JSON Schema）
+
+批次 2 第一步落地后，确认了 Qwen3.7/3.8 系列原生支持 JSON Schema 结构化输出。这推翻了此前「DashScope 不支持 response_format」的结论——那个结论只在旧型号上成立。本节记录修订后的方案。
+
+### 10.1 实测确认的事实
+
+| 事实 | 证据 |
+| --- | --- |
+| **JSON Schema 模式仅支持 5 个系列**：Qwen3.7-Plus / Qwen3.7-Flash / Qwen3.7-Max / Qwen3.8-Flash / Qwen3.8-Max | 百炼《千问结构化输出》文档 |
+| 上述 5 个型号的调用 ID 全部可用，`response_format={"type":"json_schema", ..., "strict":true}` 被接受 | 5 个型号逐一真实调用，非流式与流式均返回可校验的 JSON |
+| **旧型号 `qwen-plus` 不支持 JSON Schema 模式** | 同一文档；且旧结论中的 `create_agent(response_format=...)` 报 `InvalidParameter` 正是因为它走的是 JSON Schema 路径 |
+| **原生 SDK 通道（`ChatTongyi`）不支持 Qwen3.7/3.8 系列** | `ChatTongyi(model="qwen3.7-flash")` 真实调用直接报 ValueError |
+| Qwen3.7-Flash 等型号**默认开启思考**，不显式传参会付出成倍延迟 | 同一问题：默认 7.5s / 显式关闭 1.0s |
+| 这些型号在兼容通道下**不透出 reasoning 文本** | 流式与非流式、`enable_thinking` 开与关、加 `incremental_output` 四种组合，`reasoning_content` 长度均为 0 |
+
+### 10.2 方案修订：从工具调用变通方案改为原生 JSON Schema
+
+| | 批次 2 第一步（旧） | 本次修订（新） |
+| --- | --- | --- |
+| 约束机制 | `bind_tools([schema])`，模型以工具调用产出 | `bind(response_format={"type":"json_schema","strict":true})` |
+| 结果位置 | `tool_calls[0]["args"]` | 正文 `content`（即 JSON 字符串） |
+| 约束强度 | 模型"应该"调工具，不保证 | provider 级强制，`strict: true` |
+| 适用型号 | 任意支持工具调用的型号 | **仅上述 5 个系列** |
+| 失败模式 | 模型回文本 JSON → `tool_calls` 为空 → 静默降级 | provider 保证结构；解析失败即说明约束失效，直接暴露 |
+
+`_invoke_structured_agent` 相应简化：不再逐块合并 `AIMessageChunk` 取 `tool_calls`，改为累加正文后 `model_validate_json`。**不做代码围栏剥离、不做正则截取**——provider 已保证结构，宽容解析只会掩盖"约束失效"。
+
+### 10.3 配置变更
+
+| 配置项 | 变更 |
+| --- | --- |
+| `model`（默认模型） | `qwen-plus` → `qwen3.8-max`（`.env` 的 `MODEL` 与 `config.json` 同步） |
+| `node_models`（按节点分档） | **新启用**（见下） |
+| `memory_extract_model` | `qwen-turbo` → `qwen3.7-flash` |
+| `summary_model` | `qwen-turbo` → `qwen3.7-flash` |
+| `title_model` | **新增**，`qwen3.7-flash` |
+
+分档策略：长文产出与深度分析用 Max，检索过滤与判定用 Flash，补搜计划用 Plus。
+
+```json
+{
+  "write": "qwen3.8-max", "deep_dive": "qwen3.8-max", "analyze": "qwen3.8-max", "plan": "qwen3.8-max",
+  "reflect": "qwen3.7-plus",
+  "web_search": "qwen3.7-flash", "local_rag": "qwen3.7-flash", "intent_router": "qwen3.7-flash",
+  "direct_answer": "qwen3.8-flash", "clarify": "qwen3.7-flash"
+}
+```
+
+### 10.4 顺带修掉的既有缺陷
+
+1. **`node_models` 是断链特性** —— `models.build_agents` 一直在读 `getattr(config, "node_models", None)`，文档注释也写了用法，但配置层从未定义该字段，取值恒为 `None`。已补齐 `BusinessSettings.node_models` 与 `AppConfig.node_models` 并打通映射。
+2. **`clarifier` 硬编码 `qwen-turbo`** —— 改为走 `node_models` 的 `clarify` 键，与其他节点一致可配。
+3. **辅助链路锁死在旧型号** —— 标题/摘要/记忆抽取三处仍用原生 SDK + `qwen-turbo`。由于原生 SDK 不支持新系列，已统一迁移到 `build_aux_llm`（与主链路共用兼容通道客户端与超时/重试策略），`ChatTongyi` 依赖从生产代码中完全移除。
+
+### 10.5 新增的硬约束（已写入测试）
+
+- 默认模型必须支持 `json_schema`：`test_default_model_supports_json_schema`
+- `node_models` 里给结构化节点配的型号也必须支持：`test_structured_nodes_configured_with_schema_capable_models`
+- 配错型号**启动即失败**：`build_structured_agent` 对不支持的型号抛 `ValueError` 并列出可选型号，而不是留到运行期报 schema 校验错误
+- **结构化输出下禁止设置 `max_tokens`**（会截断 JSON 产生非法输出）—— 现状核查：主链路未设置，符合要求
+
+### 10.6 待办与风险
+
+| 项 | 说明 |
+| --- | --- |
+| **深度思考流式失效** | 新系列在兼容通道下不透出 `reasoning_content`，`thinking` 事件将不再产生。代码对空 reasoning 是安全的（仅在有内容时推送），但用户侧"研究过程"会变安静。需另找通道或改用其他方式呈现进度 |
+| `qwen3.8-plus` 未在文档的 JSON Schema 支持列表中 | 若要用 Plus 档请选 `qwen3.7-plus`；`build_structured_agent` 会在配错时直接报错 |
+| 成本 | `qwen3.8-max` 输入 12 元 / 输出 36 元每百万 tokens，明显高于 `qwen-plus`。分档策略即为此而设；如成本敏感可把 `write`/`deep_dive` 降到 Plus 档 |
+
+### 10.7 验证结果
+
+| 命令 | 结果 |
+| --- | --- |
+| 20 个测试文件（含 p1–p5、stream、thread、structured、summary、memory、pdf 等） | **313 passed** |
+| 真实调用：四个决策节点（按分档型号） | intent→`qwen3.7-flash` 判 multiagent；plan→`qwen3.8-max` 出 6 节大纲；analyze→`qwen3.8-max`；reflect→`qwen3.7-plus` 出 4 条补搜。全部走结构化路径，无降级告警 |
+| 真实调用：标题生成 | `qwen3.7-flash` 正常产出 |
+| 真实调用：5 个型号 × JSON Schema（非流式 + 流式） | 全部返回可校验 JSON |
+
+**未验证**：未跑完整端到端研究流程（需 Milvus / RabbitMQ / PG 全栈中间件）；未验证 `web_search` / `local_rag` / `deep_dive` 在新型号下的检索与证据抽取质量（这些节点仍走自由文本 JSON 解析）。

@@ -255,7 +255,7 @@ class TestSummaryConfig:
         assert hasattr(biz, "summary_model")
         assert biz.summary_threshold == 20
         assert biz.summary_keep_recent == 6
-        assert biz.summary_model == "qwen-turbo"
+        assert biz.summary_model
 
 
 # ── T-SUM-10: _role_name 辅助方法 ─────────────────────────

@@ -10,16 +10,14 @@ P4 改造：
 - reject → END，保留已生成内容
 - State 新增 plan_revision_count 防死循环
 """
-import json
 import logging
 
-from langchain_core.messages import HumanMessage
 from langgraph.graph import END
 from langgraph.types import StreamWriter, Command
 
 from ..state import AgentState
-from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs, raise_interrupt
-from ._parsing import _invoke_json_agent
+from ._shared import colorize, log_inputs, raise_interrupt
+from ._parsing import _invoke_structured_agent, StructuredOutputError
 from ._evidence import _default_plan, _derive_search_plan
 
 logger = logging.getLogger("mult_agents")
@@ -30,36 +28,40 @@ async def plan_node(state: AgentState, agent, agent_name: str, writer: StreamWri
     if writer:
         writer({"node": "plan", "message": "正在生成研究计划..."})
     log_inputs("plan", agent_name, {"query": state["query"]})
-    fallback = _default_plan(state)
 
     # 如果是 revise 回环，携带修改原因
     revision_reason = state.get("user_feedback", {}).get("feedback", "") if isinstance(state.get("user_feedback"), dict) else ""
     plan_revision_count = state.get("plan_revision_count", 0)
 
-    prompt = f"用户需求：{state['query']}\n请先做大纲与问题拆解，再输出规划 JSON。"
+    prompt = f"用户需求：{state['query']}"
     if revision_reason:
         prompt = (
             f"原问题：{state['query']}\n"
             f"用户修改意见：{revision_reason}\n"
-            f"上一版计划已生成但不满足需求，请根据用户意见调整计划，输出修订后的规划 JSON。"
+            f"上一版计划已生成但不满足需求，请根据用户意见调整计划。"
         )
 
-    # 第三元素是 LLM 原始文本，仅用于日志/调试，不进 state
-    payload, _, messages = await _invoke_json_agent(
-        state,
-        prompt,
-        agent,
-        agent_name,
-        "plan",
-        fallback,
-        writer=writer,
-    )
-    outline = payload.get("outline") if isinstance(payload.get("outline"), list) else fallback["outline"]
-    sub_questions = payload.get("sub_questions") if isinstance(payload.get("sub_questions"), list) else fallback["sub_questions"]
-    research_questions = payload.get("research_questions") if isinstance(payload.get("research_questions"), list) else fallback["research_questions"]
-    budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else fallback["budget"]
+    try:
+        draft, messages = await _invoke_structured_agent(
+            state, prompt, agent, agent_name, "plan", writer=writer
+        )
+        outline = [section.model_dump() for section in draft.outline]
+        sub_questions = list(draft.sub_questions)
+        research_questions = list(draft.research_questions)
+        budget = draft.budget.model_dump()
+        plan_summary = draft.objective or state["query"]
+    except StructuredOutputError as exc:
+        # 降级必须留痕：默认计划只含原问题，会显著削弱检索覆盖面
+        logger.warning("%s 结构化输出失败，回退默认计划 | %s", colorize("[plan]", "yellow"), exc)
+        fallback = _default_plan(state)
+        outline = fallback["outline"]
+        sub_questions = fallback["sub_questions"]
+        research_questions = fallback["research_questions"]
+        budget = fallback["budget"]
+        plan_summary = fallback["objective"]
+        messages = []
+
     search_plan = _derive_search_plan(outline, sub_questions, research_questions, state["query"])
-    plan_summary = payload.get("objective") or state["query"]
 
     # ── HITL: plan_approval 三分支 ──
     if state.get("hitl_enabled", False) and state.get("hitl_config", {}).get("plan_review", True):

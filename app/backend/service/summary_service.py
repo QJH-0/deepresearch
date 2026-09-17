@@ -98,7 +98,8 @@ class SummaryService:
         existing_summary: str,
     ) -> str:
         """调用 LLM 生成摘要文本。"""
-        from langchain_community.chat_models import ChatTongyi
+        from backend.config.settings import get_business_settings
+        from mult_agents.models import build_aux_llm
 
         lines = []
         if existing_summary:
@@ -112,10 +113,12 @@ class SummaryService:
         prompt = f"{_SUMMARY_SYSTEM_PROMPT}\n\n" + "\n".join(lines)
 
         try:
-            llm = ChatTongyi(
-                model=self._model,
-                temperature=0.1,
-                dashscope_api_key=self._api_key,
+            biz = get_business_settings()
+            llm = build_aux_llm(
+                self._model,
+                self._api_key,
+                timeout=biz.llm_timeout_seconds,
+                max_retries=biz.llm_max_retries,
             )
             resp = await llm.ainvoke([HumanMessage(content=prompt)])
             return resp.content.strip()

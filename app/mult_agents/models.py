@@ -1,7 +1,8 @@
-"""动态模型工厂：按 config.json node_models 配置为每个节点绑定模型实例。
+"""动态模型工厂：按 config.json 的 node_models 为每个节点绑定模型实例。
 
-G5：config.json 节点级模型映射，默认 ChatTongyi(qwen)。
-支持 OpenAI 兼容 API（DeepSeek 等）通过 base_url + api_key 注入。
+统一走 DashScope 的 OpenAI 兼容通道，不再混用原生 SDK 通道：
+结构化输出依赖 response_format 的 json_schema 模式，原生 SDK 通道不支持；
+兼容通道同时提供思考模式（enable_thinking）与流式。
 """
 
 import logging
@@ -9,19 +10,36 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from langchain_community.chat_models import ChatTongyi
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
 from .config import AppConfig
-from .output_schemas import IntentDecision
+from .output_schemas import AnalysisDraft, IntentDecision, PlanDraft, ReflectionDraft
 from .prompts import PROMPTS
 from .rag.core import RAGConfig
 from .tools import init_rag_system
 from .runtime import AgentBundle
 
 logger = logging.getLogger("mult_agents")
+
+_DASHSCOPE_COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# 支持 response_format={"type": "json_schema"} 的型号（百炼结构化输出文档）。
+# 范围比 JSON Object 模式窄得多，结构化节点配错型号必须启动即失败，
+# 否则会退化到运行期才报 schema 校验错误。
+JSON_SCHEMA_MODELS = (
+    "qwen3.7-plus",
+    "qwen3.7-flash",
+    "qwen3.7-max",
+    "qwen3.8-flash",
+    "qwen3.8-max",
+)
+
+
+def supports_json_schema(model: str) -> bool:
+    """判断型号是否支持 JSON Schema 模式；带日期后缀的快照版本同样算支持。"""
+    return any(model == name or model.startswith(f"{name}-") for name in JSON_SCHEMA_MODELS)
 
 
 def _build_llm(
@@ -33,32 +51,22 @@ def _build_llm(
     max_retries: int,
     enable_thinking: bool = False,
 ):
-    """构建底层对话模型。"""
+    """构建底层对话模型。
+
+    enable_thinking 始终显式下发：Qwen3.7-Flash 等型号默认开启思考，
+    不显式关闭会让本应快速的判定节点（意图/规划）付出成倍的延迟与成本。
+    """
     if api_key:
         os.environ["DASHSCOPE_API_KEY"] = api_key
 
-    if enable_thinking:
-        return ChatOpenAI(
-            api_key=api_key or os.getenv("DASHSCOPE_API_KEY", ""),
-            model=model,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            temperature=temperature,
-            timeout=timeout,
-            max_retries=max_retries,
-            extra_body={"enable_thinking": True},
-        )
-
-    # streaming=True 是 token 级流式的前提：ChatTongyi 默认 False 时，
-    # astream(stream_mode="messages") 只产出一个整块响应，
-    # 前端表现为「答案一大段直接吐出」而不是打字机式输出。
-    # ChatTongyi 没有 timeout 字段，只能经 model_kwargs 透传 dashscope 的 request_timeout；
-    # 其 max_retries 默认为 10，是长尾请求的真实来源，统一由配置收窄。
-    return ChatTongyi(
+    return ChatOpenAI(
+        api_key=api_key or os.getenv("DASHSCOPE_API_KEY", ""),
         model=model,
+        base_url=_DASHSCOPE_COMPAT_BASE_URL,
         temperature=temperature,
-        streaming=True,
+        timeout=timeout,
         max_retries=max_retries,
-        model_kwargs={"request_timeout": timeout},
+        extra_body={"enable_thinking": enable_thinking},
     )
 
 
@@ -89,18 +97,54 @@ def build_agent(
     return create_agent(model=llm, tools=tools, system_prompt=PROMPTS[prompt_key])
 
 
+def build_aux_llm(
+    model: str,
+    api_key: str,
+    *,
+    timeout: float,
+    max_retries: int,
+    temperature: float = 0.1,
+):
+    """辅助任务（会话标题 / 对话摘要 / 记忆抽取）用的轻量模型。
+
+    与主链路共用同一客户端：原生 SDK 通道不支持 Qwen3.7/3.8 系列，
+    继续用它会把辅助链路锁死在旧型号上。
+    """
+    return _build_llm(
+        model,
+        api_key,
+        temperature,
+        timeout=timeout,
+        max_retries=max_retries,
+        enable_thinking=False,
+    )
+
+
 @dataclass(frozen=True)
 class StructuredAgent:
     """决策节点的结构化执行体。
 
+    走 DashScope 的 JSON Schema 模式（response_format.type=json_schema + strict），
+    由 provider 保证输出结构，调用方只需按 schema 反序列化。
     不走 create_agent：langchain 1.x 的 response_format 依赖强制 tool_choice，
-    而 DashScope 只接受 none/auto，实测报 InvalidParameter。改为直接绑定 schema，
-    由模型以工具调用形式产出，调用方再按 schema 校验。
+    而 DashScope 只接受 none/auto，实测报 InvalidParameter。
     """
 
     runnable: object
     system_prompt: str
     schema: type[BaseModel]
+
+
+def _json_schema_response_format(schema: type[BaseModel]) -> dict:
+    """把 Pydantic 模型转成百炼 JSON Schema 模式的 response_format。"""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema.__name__,
+            "strict": True,
+            "schema": schema.model_json_schema(),
+        },
+    }
 
 
 def build_structured_agent(
@@ -112,11 +156,24 @@ def build_structured_agent(
     timeout: float,
     max_retries: int,
     response_format: type[BaseModel],
+    enable_thinking: bool = False,
 ) -> StructuredAgent:
     """构建决策节点的结构化执行体。"""
-    llm = _build_llm(model, api_key, temperature, timeout=timeout, max_retries=max_retries)
+    if not supports_json_schema(model):
+        raise ValueError(
+            f"型号 {model} 不支持 response_format 的 json_schema 模式，"
+            f"无法用于结构化节点 {prompt_key}。可选型号：{', '.join(JSON_SCHEMA_MODELS)}"
+        )
+    llm = _build_llm(
+        model,
+        api_key,
+        temperature,
+        timeout=timeout,
+        max_retries=max_retries,
+        enable_thinking=enable_thinking,
+    )
     return StructuredAgent(
-        runnable=llm.bind_tools([response_format]),
+        runnable=llm.bind(response_format=_json_schema_response_format(response_format)),
         system_prompt=PROMPTS[prompt_key],
         schema=response_format,
     )
@@ -139,8 +196,8 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
     )
     init_rag_system(api_key=api_key, config=rag_config)
 
-    # node_models 配置示例：
-    # {"plan": {"model": "qwen-plus"}, "compress": {"model": "qwen-turbo"}}
+    # node_models 示例：
+    # {"write": {"model": "qwen3.8-max"}, "intent_router": {"model": "qwen3.7-flash"}}
     node_models = getattr(config, "node_models", None) or {}
 
     def _model_for(node_key: str, default_temp: float, enable_thinking: bool = False):
@@ -155,7 +212,12 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
             enable_thinking=enable_thinking,
         )
 
-    def _structured_for(node_key: str, default_temp: float, response_format):
+    def _structured_for(
+        node_key: str,
+        default_temp: float,
+        response_format,
+        enable_thinking: bool = False,
+    ):
         """决策节点的模型配置解析，与 _model_for 同源。"""
         node_cfg = node_models.get(node_key, {})
         return build_structured_agent(
@@ -166,21 +228,22 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
             timeout=config.llm_timeout_seconds,
             max_retries=config.llm_max_retries,
             response_format=response_format,
+            enable_thinking=enable_thinking,
         )
 
     thinking_nodes = set(getattr(config, "thinking_nodes", None) or [])
     return AgentBundle(
         intent_router=_structured_for("intent_router", 0.0, IntentDecision),
-        planner=_model_for("plan", 0.3),
+        planner=_structured_for("plan", 0.3, PlanDraft),
+        reflector=_structured_for("reflect", 0.3, ReflectionDraft),
         scout_web=_model_for("web_search", 0.4),
         scout_local=_model_for("local_rag", 0.4),
         evidence_judge=_model_for("deep_dive", 0.2, enable_thinking="deep_dive" in thinking_nodes),
-        analyst=_model_for("analyze", 0.3, enable_thinking="analyze" in thinking_nodes),
+        analyst=_structured_for(
+            "analyze", 0.3, AnalysisDraft, enable_thinking="analyze" in thinking_nodes
+        ),
         direct_responder=_model_for("direct_answer", 0.2),
         writer=_model_for("write", 0.4, enable_thinking="write" in thinking_nodes),
-        clarifier=build_agent(
-            "qwen-turbo", api_key, "clarify", 0.0, [],
-            timeout=config.llm_timeout_seconds,
-            max_retries=config.llm_max_retries,
-        ),
+        # 澄清节点不再硬编码 qwen-turbo：它同样应可通过 node_models 分档
+        clarifier=_model_for("clarify", 0.0),
     )

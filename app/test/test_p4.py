@@ -70,14 +70,37 @@ class _WildcardMockFinder(importlib.abc.MetaPathFinder):
 
 # ── 预注册需要具体类/函数的模块 ──
 
+def _dependencies_installed() -> bool:
+    """依赖齐全时无需 mock：真实模块比不完整的假模块更可靠。"""
+    import importlib.util
+
+    return all(
+        importlib.util.find_spec(name) is not None
+        for name in ("langgraph", "langchain", "langchain_core", "langchain_community")
+    )
+
+
 def _setup_mocks():
-    """注册所有需要的 mock 模块。"""
+    """注册所有需要的 mock 模块。
+
+    依赖已安装时只挂通配 finder，不替换任何真实模块。
+    此前无条件按「包缺失」分支注册 mock，在依赖齐全的环境里会把子模块替换成
+    属性不全的假模块（缺 END / SystemMessage 等），整个文件无法被收集。
+    """
+    finder = _WildcardMockFinder()
+    if not any(isinstance(f, _WildcardMockFinder) for f in sys.meta_path):
+        sys.meta_path.append(finder)
+
+    if _dependencies_installed():
+        return
 
     # langgraph
     if "langgraph" not in sys.modules:
         lg = types.ModuleType("langgraph")
         lg.__path__ = []
         sys.modules["langgraph"] = lg
+    else:
+        lg = sys.modules["langgraph"]
 
     if "langgraph.types" not in sys.modules:
         lgt = types.ModuleType("langgraph.types")
@@ -101,6 +124,8 @@ def _setup_mocks():
         lgg.__path__ = []
         sys.modules["langgraph.graph"] = lgg
         lg.graph = lgg
+    else:
+        lgg = sys.modules["langgraph.graph"]
 
     if "langgraph.graph.message" not in sys.modules:
         lgm = types.ModuleType("langgraph.graph.message")
@@ -113,6 +138,8 @@ def _setup_mocks():
         lc = types.ModuleType("langchain_core")
         lc.__path__ = []
         sys.modules["langchain_core"] = lc
+    else:
+        lc = sys.modules["langchain_core"]
 
     if "langchain_core.messages" not in sys.modules:
         lcm = types.ModuleType("langchain_core.messages")
@@ -123,6 +150,7 @@ def _setup_mocks():
         lcm.HumanMessage = _HumanMessage
         lcm.BaseMessage = type("BaseMessage", (), {})
         lcm.AIMessage = type("AIMessage", (), {})
+        lcm.SystemMessage = type("SystemMessage", (), {})
         sys.modules["langchain_core.messages"] = lcm
         lc.messages = lcm
 
@@ -175,16 +203,12 @@ def _setup_mocks():
         te.Annotated = typing.Annotated
         sys.modules["typing_extensions"] = te
 
-    # 注册通配 finder
-    finder = _WildcardMockFinder()
-    if not any(isinstance(f, _WildcardMockFinder) for f in sys.meta_path):
-        sys.meta_path.append(finder)
-
 
 _setup_mocks()
 
 # ── 现在可以安全导入了 ──
 
+from mult_agents.output_schemas import PlanDraft  # noqa: E402
 from mult_agents.state import create_initial_state, AgentState
 from mult_agents.nodes._shared import raise_interrupt, colorize, emit, detect_intent
 from mult_agents.nodes.clarify import (
@@ -324,11 +348,10 @@ class TestPlanApproval:
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "approve"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_structured_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
-                    {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
-                     "budget": {}, "objective": "test"},
-                    "content", [],
+                    PlanDraft(objective="test", sub_questions=["Q1"], outline=[]),
+                    [],
                 )
                 result = await plan_node(state, mock_agent, "test_agent")
 
@@ -344,11 +367,10 @@ class TestPlanApproval:
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "revise", "reason": "需要更多子问题"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_structured_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
-                    {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
-                     "budget": {}, "objective": "test"},
-                    "content", [],
+                    PlanDraft(objective="test", sub_questions=["Q1"], outline=[]),
+                    [],
                 )
                 result = await plan_node(state, mock_agent, "test_agent")
 
@@ -365,11 +387,10 @@ class TestPlanApproval:
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "revise", "reason": "再改一次"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_structured_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
-                    {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
-                     "budget": {}, "objective": "test"},
-                    "content", [],
+                    PlanDraft(objective="test", sub_questions=["Q1"], outline=[]),
+                    [],
                 )
                 result = await plan_node(state, mock_agent, "test_agent")
 
@@ -385,11 +406,10 @@ class TestPlanApproval:
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_intr.return_value = {"action": "reject", "reason": "方向不对"}
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_structured_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
-                    {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
-                     "budget": {}, "objective": "test"},
-                    "content", [],
+                    PlanDraft(objective="test", sub_questions=["Q1"], outline=[]),
+                    [],
                 )
                 result = await plan_node(state, mock_agent, "test_agent")
 
@@ -404,11 +424,10 @@ class TestPlanApproval:
 
         with patch(_INTERRUPT_TARGET) as mock_intr:
             mock_agent = MagicMock()
-            with patch("mult_agents.nodes.plan._invoke_json_agent", new_callable=AsyncMock) as mock_invoke:
+            with patch("mult_agents.nodes.plan._invoke_structured_agent", new_callable=AsyncMock) as mock_invoke:
                 mock_invoke.return_value = (
-                    {"outline": [], "sub_questions": ["Q1"], "research_questions": [],
-                     "budget": {}, "objective": "test"},
-                    "content", [],
+                    PlanDraft(objective="test", sub_questions=["Q1"], outline=[]),
+                    [],
                 )
                 result = await plan_node(state, mock_agent, "test_agent")
 

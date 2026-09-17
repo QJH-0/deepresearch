@@ -180,8 +180,36 @@ def test_config_loading_from_env_and_json():
     assert "api_key" not in config_json, "config.json 仍含明文 api_key"
 
     # business 配置从 config.json 读取
-    assert settings.business.model == "qwen-plus"
+    assert settings.business.model == config_json["model"]
     assert settings.business.max_iterations == 3
+
+
+def test_default_model_supports_json_schema():
+    """默认模型必须支持 json_schema 模式，否则四个结构化节点全部不可用。
+
+    断言的是「型号能力」而非某个具体型号名 —— 换型号时这条约束仍然成立。
+    """
+    from mult_agents.config import AppConfig
+    from mult_agents.models import JSON_SCHEMA_MODELS, supports_json_schema
+
+    config = AppConfig.from_file()
+
+    assert supports_json_schema(config.model), (
+        f"默认模型 {config.model} 不支持 json_schema，可选：{', '.join(JSON_SCHEMA_MODELS)}"
+    )
+
+
+def test_structured_nodes_configured_with_schema_capable_models():
+    """node_models 里给结构化节点配的型号也必须支持 json_schema。"""
+    from mult_agents.config import AppConfig
+    from mult_agents.models import supports_json_schema
+
+    config = AppConfig.from_file()
+    structured_nodes = ("intent_router", "plan", "reflect", "analyze")
+
+    for node in structured_nodes:
+        node_model = config.node_models.get(node, {}).get("model", config.model)
+        assert supports_json_schema(node_model), f"{node} 配了不支持 json_schema 的型号 {node_model}"
 
 
 def test_appconfig_from_file_delegates_to_settings():
@@ -190,7 +218,7 @@ def test_appconfig_from_file_delegates_to_settings():
 
     config = AppConfig.from_file()
     assert config.api_key, "api_key 未从 .env 读取"
-    assert config.model == "qwen-plus"
+    assert config.model
     assert config.max_iterations == 3
     assert config.hitl_enabled is True
     assert config.hitl_config["plan_review"] is True

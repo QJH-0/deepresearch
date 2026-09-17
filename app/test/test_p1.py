@@ -101,7 +101,7 @@ def test_graph_topology_has_clarify():
 
     # 用 mock agents 避免 LLM 初始化
     mock_agents = AgentBundle(
-        intent_router=None, planner=None, scout_web=None,
+        intent_router=None, planner=None, reflector=None, scout_web=None,
         scout_local=None, evidence_judge=None, analyst=None,
         direct_responder=None, writer=None, clarifier=None,
     )
@@ -212,7 +212,7 @@ def test_models_import():
 
 
 def test_llm_resilience_defaults():
-    """默认值收窄 ChatTongyi 的 max_retries=10，并给长尾请求设上限。"""
+    """超时与重试必须有配置默认值，避免长尾请求拖死整轮研究。"""
     import dataclasses
 
     from mult_agents.config import AppConfig

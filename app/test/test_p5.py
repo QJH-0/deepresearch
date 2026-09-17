@@ -443,8 +443,8 @@ class TestT58LangmemSignature:
 
         fake_manager = MagicMock()
         with patch.object(memory_service, "create_memory_store_manager", return_value=fake_manager) as mock_factory, \
-             patch.object(memory_service, "ChatTongyi") as mock_llm_cls:
-            mock_llm_cls.return_value = MagicMock()
+             patch("mult_agents.models.build_aux_llm") as mock_llm_builder:
+            mock_llm_builder.return_value = MagicMock()
             svc = memory_service.MemoryService(api_key="test-key")
             manager = svc._ensure_manager()
 

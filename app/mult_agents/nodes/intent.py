@@ -2,14 +2,13 @@
 
 纪律：纯搬迁，零行为变更。每个文件只负责一类节点或辅助函数。
 """
-import json
 import logging
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import StreamWriter
 
 from ..state import AgentState
-from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs, detect_intent
+from ._shared import colorize, emit, with_memory_context, detect_intent
 from ._parsing import _last_content, _invoke_structured_agent, StructuredOutputError
 
 logger = logging.getLogger("mult_agents")

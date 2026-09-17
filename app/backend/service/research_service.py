@@ -35,10 +35,17 @@ from backend.service.summary_service import get_summary_service
 
 
 async def _generate_llm_title(query: str, report_summary: str, api_key: str) -> str:
-    """P6-6: 用 qwen-turbo 从用户问题+报告摘要生成 ≤20 字标题。"""
-    from langchain_community.chat_models import ChatTongyi
+    """P6-6: 用轻量模型从用户问题+报告摘要生成 ≤20 字标题。"""
+    from backend.config.settings import get_business_settings
+    from mult_agents.models import build_aux_llm
 
-    llm = ChatTongyi(model="qwen-turbo", temperature=0.1, dashscope_api_key=api_key)
+    biz = get_business_settings()
+    llm = build_aux_llm(
+        biz.title_model,
+        api_key,
+        timeout=biz.llm_timeout_seconds,
+        max_retries=biz.llm_max_retries,
+    )
     prompt = (
         f"请根据以下用户提问和研究报告摘要，生成一个不超过20个字的简洁中文标题。\n"
         f"只输出标题文字，不要引号、不要标点。\n\n"

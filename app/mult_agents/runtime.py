@@ -50,6 +50,7 @@ class AgentBundle:
 
     intent_router: any
     planner: any
+    reflector: any
     scout_web: any
     scout_local: any
     evidence_judge: any
