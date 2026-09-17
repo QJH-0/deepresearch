@@ -1028,7 +1028,7 @@ class TestAgentBuilderConsolidation:
 
         captured_tools = []
 
-        def fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False):
+        def fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False, **kwargs):
             captured_tools.append((prompt_key, tools))
             return MagicMock()
 
@@ -1603,3 +1603,108 @@ class TestEvidenceEnrichmentKeepsSectionPath:
         out = _enrich_evidence_from_raw([{"source_id": "NOPE"}], [])
 
         assert "section_path" not in out[0]
+
+
+# ──────────────────────────────────────────────────────────────
+# 上传内容真实性校验（扩展名可伪造，内容签名不可）
+# ──────────────────────────────────────────────────────────────
+
+
+def _make_docx_zip(entries) -> bytes:
+    """构造最小 OOXML 包：entries 为 (条目名, 内容) 列表。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, payload in entries:
+            zf.writestr(name, payload)
+    return buf.getvalue()
+
+
+class TestUploadTypeGuard:
+    """扩展名只是用户输入，真实类型必须按文件头判定。"""
+
+    def test_pdf_magic_accepted(self):
+        from backend.service.upload_guard import check_upload
+
+        assert check_upload("a.pdf", b"%PDF-1.7\n%%EOF") is None
+
+    def test_pdf_name_with_plain_text_rejected(self):
+        from backend.service.upload_guard import check_upload
+
+        reason = check_upload("a.pdf", b"just some text")
+
+        assert reason is not None and "不符" in reason
+
+    def test_docx_requires_word_document_xml(self):
+        from backend.service.upload_guard import check_upload
+
+        plain_zip = _make_docx_zip([("readme.txt", "hello")])
+
+        reason = check_upload("a.docx", plain_zip)
+
+        assert reason is not None and "word/document.xml" in reason
+
+    def test_valid_docx_accepted(self):
+        from backend.service.upload_guard import check_upload
+
+        docx = _make_docx_zip([("word/document.xml", "<w:document/>")])
+
+        assert check_upload("a.docx", docx) is None
+
+    def test_doc_requires_ole2_container(self):
+        from backend.service.upload_guard import check_upload
+
+        assert check_upload("legacy.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1rest") is None
+        assert check_upload("fake.doc", b"%PDF-1.7") is not None
+
+    def test_text_extension_rejects_binary(self):
+        from backend.service.upload_guard import check_upload
+
+        assert check_upload("a.txt", "中文内容".encode("utf-8")) is None
+        assert check_upload("a.txt", b"\x00\x01\x02\xff") is not None
+
+    def test_unsupported_extension_rejected(self):
+        from backend.service.upload_guard import check_upload
+
+        reason = check_upload("payload.exe", b"MZ\x90\x00")
+
+        assert reason is not None and "不支持" in reason
+
+    def test_router_returns_400_on_mismatch(self):
+        """路由层必须真正接上校验，否则 guard 是死代码。"""
+        from importlib import import_module
+
+        dr = import_module("backend.router.document_router")
+
+        assert dr.check_upload("a.pdf", b"not a pdf") is not None
+
+
+class TestAgentBuilderResilience:
+    """LLM 超时与重试必须由配置驱动，不能各层各写一份默认值。"""
+
+    def test_timeout_and_max_retries_are_required(self):
+        from mult_agents import models
+
+        with pytest.raises(TypeError):
+            models.build_agent("qwen-plus", "", "plan", 0.3, [])
+
+    def test_settings_from_config_reach_build_agent(self, monkeypatch):
+        from mult_agents import models
+
+        captured = []
+
+        def fake_build_agent(model, api_key, prompt_key, temperature, tools, **kwargs):
+            captured.append(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(models, "build_agent", fake_build_agent)
+        monkeypatch.setattr(models, "init_rag_system", lambda **kw: None)
+
+        config = _minimal_app_config(llm_timeout_seconds=12.5, llm_max_retries=1)
+        models.build_agents("qwen-plus", "", config)
+
+        assert captured, "未捕获到任何 agent 构建调用"
+        assert all(c["timeout"] == 12.5 for c in captured)
+        assert all(c["max_retries"] == 1 for c in captured)

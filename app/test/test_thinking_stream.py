@@ -100,7 +100,7 @@ class TestThinkingNodesConfig:
 
         call_log = []
 
-        def _fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False):
+        def _fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False, **kwargs):
             call_log.append({"prompt_key": prompt_key, "enable_thinking": enable_thinking})
             return MagicMock()
 

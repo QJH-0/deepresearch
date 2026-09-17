@@ -78,6 +78,9 @@ class AppConfig:
     enable_rerank_model: bool = True
     evidence_llm_fusion: bool = True
     evidence_prior_weight: float = 0.4
+    # ── LLM 调用韧性 ──
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 2
 
     def with_overrides(self, **kwargs) -> "AppConfig":
         cleaned = {k: v for k, v in kwargs.items() if v is not None}
@@ -109,6 +112,15 @@ class AppConfig:
             val = os.getenv(key)
             if val and val.strip():
                 return val.strip().lower() == "true"
+            return default
+
+        def _env_float(key: str, default: float) -> float:
+            val = os.getenv(key)
+            if val and val.strip():
+                try:
+                    return float(val.strip())
+                except ValueError:
+                    pass
             return default
 
         # api_key 从 .env (DASHSCOPE_API_KEY) 读取，不从 config.json
@@ -158,6 +170,8 @@ class AppConfig:
             enable_rerank_model=getattr(biz, "enable_rerank_model", True),
             evidence_llm_fusion=getattr(biz, "evidence_llm_fusion", True),
             evidence_prior_weight=getattr(biz, "evidence_prior_weight", 0.4),
+            llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", getattr(biz, "llm_timeout_seconds", 60.0)),
+            llm_max_retries=_env_int("LLM_MAX_RETRIES", getattr(biz, "llm_max_retries", 2)),
         )
 
     @staticmethod

@@ -98,6 +98,10 @@ class BusinessSettings(BaseSettings):
     thinking_nodes: list = ["write", "deep_dive", "analyze"]
     # ── chunk 消费重试上限（超限进 DLQ）──
     chunk_retry_limit: int = 3
+    # ── LLM 调用韧性 ──
+    # ChatTongyi.max_retries 默认 10，是长尾请求的真实来源，统一收窄为 2。
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 2
 
     @model_validator(mode="before")
     @classmethod

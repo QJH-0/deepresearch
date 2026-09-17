@@ -22,8 +22,22 @@ from .runtime import AgentBundle
 logger = logging.getLogger("mult_agents")
 
 
-def build_agent(model: str, api_key: str, prompt_key: str, temperature: float, tools: list, enable_thinking: bool = False):
-    """构建单个 Agent。"""
+def build_agent(
+    model: str,
+    api_key: str,
+    prompt_key: str,
+    temperature: float,
+    tools: list,
+    *,
+    timeout: float,
+    max_retries: int,
+    enable_thinking: bool = False,
+):
+    """构建单个 Agent。
+
+    timeout / max_retries 为必填关键字参数：不给默认值是为了强制调用方从 config 取值，
+    避免模型层自带默认值与配置分叉后各说各话。
+    """
     if api_key:
         os.environ["DASHSCOPE_API_KEY"] = api_key
     prompt = PROMPTS[prompt_key]
@@ -34,13 +48,23 @@ def build_agent(model: str, api_key: str, prompt_key: str, temperature: float, t
             model=model,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             temperature=temperature,
+            timeout=timeout,
+            max_retries=max_retries,
             extra_body={"enable_thinking": True},
         )
     else:
         # streaming=True 是 token 级流式的前提：ChatTongyi 默认 False 时，
         # astream(stream_mode="messages") 只产出一个整块响应，
         # 前端表现为「答案一大段直接吐出」而不是打字机式输出。
-        llm = ChatTongyi(model=model, temperature=temperature, streaming=True)
+        # ChatTongyi 没有 timeout 字段，只能经 model_kwargs 透传 dashscope 的 request_timeout；
+        # 其 max_retries 默认为 10，是长尾请求的真实来源，统一由配置收窄。
+        llm = ChatTongyi(
+            model=model,
+            temperature=temperature,
+            streaming=True,
+            max_retries=max_retries,
+            model_kwargs={"request_timeout": timeout},
+        )
 
     return create_agent(model=llm, tools=tools, system_prompt=prompt)
 
@@ -71,7 +95,12 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         node_cfg = node_models.get(node_key, {})
         node_model = node_cfg.get("model", model)
         node_temp = node_cfg.get("temperature", default_temp)
-        return build_agent(node_model, api_key, node_key, node_temp, [], enable_thinking=enable_thinking)
+        return build_agent(
+            node_model, api_key, node_key, node_temp, [],
+            timeout=config.llm_timeout_seconds,
+            max_retries=config.llm_max_retries,
+            enable_thinking=enable_thinking,
+        )
 
     thinking_nodes = set(getattr(config, "thinking_nodes", None) or [])
     return AgentBundle(
@@ -83,5 +112,9 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         analyst=_model_for("analyze", 0.3, enable_thinking="analyze" in thinking_nodes),
         direct_responder=_model_for("direct_answer", 0.2),
         writer=_model_for("write", 0.4, enable_thinking="write" in thinking_nodes),
-        clarifier=build_agent("qwen-turbo", api_key, "clarify", 0.0, []),
+        clarifier=build_agent(
+            "qwen-turbo", api_key, "clarify", 0.0, [],
+            timeout=config.llm_timeout_seconds,
+            max_retries=config.llm_max_retries,
+        ),
     )

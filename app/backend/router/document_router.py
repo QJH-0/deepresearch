@@ -17,6 +17,7 @@ from backend.schemas import (
 )
 from backend.auth import User, get_current_user
 from backend.service.document_service import DocumentService, get_document_service
+from backend.service.upload_guard import check_upload
 
 logger = logging.getLogger("backend.document_router")
 
@@ -82,6 +83,13 @@ async def upload_document(
         )
 
     content = await _read_within_limit(file)
+
+    # 扩展名是用户可控的，内容签名才是真实类型：白名单之后再验一次
+    rejection = check_upload(filename, content)
+    if rejection:
+        logger.warning("[upload] 内容校验拒绝 | filename=%s | reason=%s", filename, rejection)
+        raise HTTPException(status_code=400, detail=rejection)
+
     result = service.upload_and_ingest(
         file_content=content,
         filename=filename,

@@ -206,6 +206,40 @@ def test_models_import():
 # ──────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────
+# LLM 调用韧性（timeout / max_retries 由配置驱动）
+# ──────────────────────────────────────────────
+
+
+def test_llm_resilience_defaults():
+    """默认值收窄 ChatTongyi 的 max_retries=10，并给长尾请求设上限。"""
+    import dataclasses
+
+    from mult_agents.config import AppConfig
+
+    defaults = {
+        f.name: f.default
+        for f in dataclasses.fields(AppConfig)
+        if f.default is not dataclasses.MISSING
+    }
+
+    assert defaults["llm_timeout_seconds"] == 60.0
+    assert defaults["llm_max_retries"] == 2
+
+
+def test_llm_resilience_env_override(monkeypatch):
+    from mult_agents.config import AppConfig
+
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "5.5")
+    monkeypatch.setenv("LLM_MAX_RETRIES", "7")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+
+    cfg = AppConfig.from_file()
+
+    assert cfg.llm_timeout_seconds == 5.5
+    assert cfg.llm_max_retries == 7
+
+
 def test_all_nodes_importable():
     """每个节点可从 nodes 包导入。"""
     from mult_agents.nodes import (
