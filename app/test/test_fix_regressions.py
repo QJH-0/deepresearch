@@ -658,18 +658,35 @@ class TestConversationSummaryMessageId:
 
 class TestNodesDoNotPolluteDraft:
     async def test_intent_node_does_not_write_draft(self, monkeypatch):
-        """draft 语义是「报告草稿」，路由 JSON 不应写进去。"""
+        """draft 语义是「报告草稿」，路由结果不应写进去。"""
         from mult_agents.nodes import intent
+        from mult_agents.output_schemas import IntentDecision
 
-        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
-            return {"route": "multiagent", "reason": "r"}, "raw llm text", []
+        async def fake_invoke(state, prompt, agent, agent_name, node, writer=None):
+            return IntentDecision(route="multiagent", reason="r"), []
 
-        monkeypatch.setattr(intent, "_invoke_json_agent", fake_invoke)
+        monkeypatch.setattr(intent, "_invoke_structured_agent", fake_invoke)
 
         out = await intent.intent_node({"query": "q"}, None, "intent_router")
 
         assert out["intent"] == "multiagent"
         assert "draft" not in out
+
+    async def test_intent_node_falls_back_to_rule_engine(self, monkeypatch):
+        """结构化输出失败时按规则引擎路由，且不写入 agent_messages。"""
+        from mult_agents.nodes import intent
+        from mult_agents.nodes._parsing import StructuredOutputError
+
+        async def fake_invoke(state, prompt, agent, agent_name, node, writer=None):
+            raise StructuredOutputError("未返回结构化结果")
+
+        monkeypatch.setattr(intent, "_invoke_structured_agent", fake_invoke)
+        monkeypatch.setattr(intent, "detect_intent", lambda query: "multiagent")
+
+        out = await intent.intent_node({"query": "q"}, None, "intent_router")
+
+        assert out["intent"] == "multiagent"
+        assert out["agent_messages"] == []
 
     async def test_plan_node_does_not_write_draft(self, monkeypatch):
         from mult_agents.nodes import plan

@@ -242,3 +242,53 @@
 | `pytest app/test/test_fix_regressions.py -q`（整文件） | **挂起**，卡在 MQ 连接用例（既有环境依赖，非本次改动引入） |
 
 **未验证部分**：未用真实伪装文件走一遍 HTTP 上传路径（仅覆盖 `verify_upload` 单元层）；未跑全量 `app/test/`（含需 DB / Milvus / RabbitMQ 的用例）。
+
+---
+
+## 九、批次 2 执行记录（第一步：intent 试点）
+
+### 阻塞问题 1 的实测结论：`response_format` 方案被证伪
+
+| 尝试 | 结果 |
+| --- | --- |
+| `create_agent(response_format=IntentDecision)` | **失败** —— langchain 1.x 走强制 `tool_choice`（指定 function），DashScope 只接受 `none`/`auto`，报 `InvalidParameter` |
+| `with_structured_output(schema, method="json_mode")` | **失败** —— `ChatTongyi.with_structured_output` 不接受 `method` 参数，`Received unsupported arguments` |
+| `with_structured_output(schema)` | 可用，但内部固定走 `bind_tools` + `PydanticToolsParser`，**不透出流式增量**，深度思考节点会失去 reasoning 流式 |
+| `bind_tools([schema])` + `astream` + 逐块合并 | **采用** —— 既拿到受 schema 约束的工具调用结果，又保留 reasoning 流式 |
+
+### 关键坑：提示词里的输出格式要求会与 schema 约束打架
+
+首轮实现后真实调用返回 `agent_messages=0`（走了规则引擎降级）。诊断发现：`intent_router` 原文含「你必须只输出 JSON，格式固定为 `{"route":...}`」，模型**照着提示词回了一段文本 JSON**，而不是发起工具调用 → `tool_calls` 为空 → 结构化路径判定失败。
+
+**结论：结构化节点的提示词不得规定输出格式**，只描述判断标准；格式由 schema 承担。已加入回归测试锁住该约束。
+
+### 已完成的代码改动
+
+| 项 | 文件 | 内容 |
+| --- | --- | --- |
+| 输出 schema | 新增 `app/mult_agents/output_schemas.py` | `IntentDecision`（`route` 为 `Literal` 枚举、`reason` 带 `max_length`） |
+| 结构化执行体 | `app/mult_agents/models.py` | 抽出 `_build_llm` 供两条路径共用；新增 `StructuredAgent` 与 `build_structured_agent`（`bind_tools` 绑定 schema） |
+| 结构化调用 | `app/mult_agents/nodes/_parsing.py` | 新增 `StructuredOutputError` 与 `_invoke_structured_agent`（逐块合并 + schema 校验 + reasoning 透传） |
+| 节点改造 | `app/mult_agents/nodes/intent.py` | 改走结构化路径；失败时显式告警并回退规则引擎 |
+| 提示词 | `app/mult_agents/prompts.py` | `intent_router` 去掉 JSON 格式要求 |
+| 测试隔离 | `app/test/conftest.py` | 新增 autouse fixture 隔离 `DASHSCOPE_API_KEY`（`_build_llm` 会写 `os.environ`，泄漏会让后续读取 `.env` 的用例失败） |
+| 测试 | 新增 `app/test/test_structured_output.py` | 7 例：校验成功 / 分块参数合并 / 无 tool_calls 失败 / 枚举越界失败 / 构建器绑定 / 装配 / 提示词无格式要求 |
+
+### 真实调用验证
+
+用 `qwen-plus` 对 `intent_node` 跑三条真实输入，均走结构化路径（`agent_messages=2`，无降级告警）：
+
+| 输入 | 路由 |
+| --- | --- |
+| 你好，你是谁？ | direct |
+| 帮我调研 2026 年国内 AI Agent 市场格局 | multiagent |
+| 今天天气如何 | direct |
+
+### 验证结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `pytest test_structured_output + test_p1 + test_thinking_stream + test_events + TestNodesDoNotPolluteDraft -q` | **49 passed** |
+| 批次 1 + 批次 2 相关全量（20 个文件/类） | **226 passed** |
+
+**未做**：`plan` / `analyze` / `reflect` 的推广（本批次第二步）；`web_search` / `local_rag` / `deep_dive` 的证据结构未结构化（结构复杂且非决策节点，暂不纳入）。

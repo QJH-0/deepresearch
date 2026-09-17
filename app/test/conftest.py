@@ -462,6 +462,18 @@ def project_root():
     return _PROJECT_ROOT
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dashscope_api_key(monkeypatch):
+    """隔离 DASHSCOPE_API_KEY，避免用例之间互相污染。
+
+    mult_agents.models._build_llm 在 api_key 非空时会写 os.environ，
+    测试传入的占位值会泄漏到进程环境；随后读取 .env 的用例（如
+    test_events 的配置加载断言要求 key 以 sk- 开头）就会读到测试值。
+    先删除再由 monkeypatch 在用例结束时还原，使每个用例都从干净状态开始。
+    """
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+
+
 @pytest.fixture
 def app_path():
     """返回 app/ 路径。"""

@@ -99,12 +99,18 @@ class TestThinkingNodesConfig:
         from mult_agents.config import AppConfig
 
         call_log = []
+        structured_log = []
 
         def _fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False, **kwargs):
             call_log.append({"prompt_key": prompt_key, "enable_thinking": enable_thinking})
             return MagicMock()
 
+        def _fake_build_structured(model, api_key, prompt_key, temperature, **kwargs):
+            structured_log.append({"prompt_key": prompt_key, "response_format": kwargs.get("response_format")})
+            return MagicMock()
+
         with patch("mult_agents.models.build_agent", side_effect=_fake_build_agent), \
+             patch("mult_agents.models.build_structured_agent", side_effect=_fake_build_structured), \
              patch("mult_agents.models.init_rag_system"):
             from mult_agents.models import build_agents
 
@@ -136,9 +142,8 @@ class TestThinkingNodesConfig:
         assert len(write_calls) == 1
         assert write_calls[0]["enable_thinking"] is True
 
-        intent_calls = [c for c in call_log if c["prompt_key"] == "intent_router"]
-        assert len(intent_calls) == 1
-        assert intent_calls[0]["enable_thinking"] is False
+        # 意图路由走结构化执行体，不参与 thinking_nodes 配置
+        assert [c["prompt_key"] for c in structured_log] == ["intent_router"]
 
 
 # ──────────────────────────────────────────────

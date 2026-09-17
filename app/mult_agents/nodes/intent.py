@@ -10,7 +10,7 @@ from langgraph.types import StreamWriter
 
 from ..state import AgentState
 from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs, detect_intent
-from ._parsing import _last_content, _invoke_json_agent
+from ._parsing import _last_content, _invoke_structured_agent, StructuredOutputError
 
 logger = logging.getLogger("mult_agents")
 
@@ -20,23 +20,19 @@ async def intent_node(state: AgentState, agent, agent_name: str, writer: StreamW
     if writer:
         writer({"node": "intent", "message": "正在判断问题意图..."})
     rule_route = detect_intent(state["query"])
-    prompt = (
-        f"用户问题：{state['query']}\n"
-        f"规则引擎初判：{rule_route}\n"
-        "请输出 JSON：{\"route\":\"direct|multiagent\",\"reason\":\"...\"}"
-    )
-    payload, _, messages = await _invoke_json_agent(
-        state,
-        prompt,
-        agent,
-        agent_name,
-        "intent",
-        {"route": rule_route, "reason": "rule"},
-        writer=writer,
-    )
-    route = str(payload.get("route", rule_route)).strip().lower()
-    if route not in {"direct", "multiagent"}:
-        route = rule_route
+    prompt = f"用户问题：{state['query']}\n规则引擎初判：{rule_route}"
+    try:
+        decision, messages = await _invoke_structured_agent(
+            state, prompt, agent, agent_name, "intent", writer=writer
+        )
+        route = decision.route
+    except StructuredOutputError as exc:
+        # 规则引擎是意图判定的合法基线而非兜底补丁：模型不可用时按规则路由，
+        # 比让整轮研究失败更合理。降级必须留痕，不能静默。
+        logger.warning("%s 结构化输出失败，回退规则引擎 | %s", colorize("[intent]", "yellow"), exc)
+        if writer:
+            writer({"node": "intent", "message": f"意图判定回退规则引擎: {rule_route}"})
+        return {"intent": rule_route, "agent_messages": []}
     logger.info("%s 路由: %s", colorize("[intent]", "green"), route)
     if writer:
         writer({"node": "intent", "message": f"意图判定完成: {route}"})
