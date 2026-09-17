@@ -11,7 +11,8 @@ pydantic-settings>=2.4
 python-dotenv>=1.0
 
 # LangChain / LangGraph
-langchain>=0.2
+# langchain>=1.2：结构化输出用 ProviderStrategy(strict=...)，strict 参数是 1.2 加入的
+langchain>=1.2
 langchain-community>=0.2
 langchain-tongyi>=0.1
 langgraph>=1.0
