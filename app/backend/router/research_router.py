@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, Response
@@ -541,6 +542,9 @@ async def export_pdf(
 ):
     """导出会话最终报告为 PDF（Playwright headless Chromium）。
 
+    导出前跑质量门禁：error 阻断（422，附问题清单），warning 随响应头回传。
+    Markdown 导出不做阻断 —— 它是内容逃生通道，PDF 被拦时用户仍能拿到原文。
+
     降级策略：Playwright 失败 → 返回 Markdown 文件（保内容不保排版）。
     """
     messages = await research_service.get_thread_messages(thread_id)
@@ -558,17 +562,24 @@ async def export_pdf(
         raise HTTPException(status_code=404, detail="无可导出的报告内容")
 
     from backend.service import get_pdf_export_service
-    from backend.service.pdf_export_service import render_report_html
+    from backend.service.pdf_export_service import render_report_html, verify_pdf
+    from backend.service.report_check import check_report
+
+    pre_check = check_report(report_content)
+    if not pre_check.export_allowed:
+        logger.warning(
+            "[export] 报告未通过导出前检查 | thread=%s | %s",
+            thread_id,
+            [item.code for item in pre_check.errors],
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "报告未通过导出前检查", "issues": pre_check.as_dicts()},
+        )
 
     service = get_pdf_export_service()
     try:
         pdf_bytes = await service.export(render_report_html(report_content))
-        filename = f"report_{thread_id[:12]}.pdf"
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
     except Exception as exc:
         logger.error("[export] PDF 生成失败，降级 Markdown | thread=%s | %s", thread_id, exc)
         filename = f"report_{thread_id[:12]}.md"
@@ -577,3 +588,23 @@ async def export_pdf(
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    post_check = verify_pdf(pdf_bytes, report_content)
+    if not post_check.export_allowed:
+        logger.error(
+            "[export] 产物回读校验未通过 | thread=%s | %s",
+            thread_id,
+            [item.code for item in post_check.errors],
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "生成的 PDF 未通过回读校验", "issues": post_check.as_dicts()},
+        )
+
+    filename = f"report_{thread_id[:12]}.pdf"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    issues = pre_check.as_dicts() + post_check.as_dicts()
+    if issues:
+        # 回传 warning 供前端提示核对；用 URL 编码避免中文进 header 出错
+        headers["X-Report-Warnings"] = quote(json.dumps(issues, ensure_ascii=False))
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)

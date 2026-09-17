@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from functools import lru_cache
 
 import markupsafe
 import markdown as md_lib
+
+from .report_check import ReportCheckResult, ReportIssue, dedupe_issues
 
 logger = logging.getLogger("backend.service.pdf_export")
 
@@ -97,3 +100,64 @@ class PdfExportService:
 def get_pdf_export_service() -> PdfExportService:
     """单例获取 PdfExportService。"""
     return PdfExportService()
+
+
+def verify_pdf(pdf_bytes: bytes, report_markdown: str) -> ReportCheckResult:
+    """导出后回读生成的 PDF，确认文件本身成立。
+
+    只校验「文件是否可用」—— 能否打开、有没有页、正文是否真的落在里面；
+    排版观感与内容质量由导出前检查负责，两者不重复。
+
+    结构性失败（打不开 / 零页）判 error；文本提取失败判 warning ——
+    中文字体子集化有时会让提取拿不到文字，但文件本身仍可正常阅读，
+    不该因此阻断导出。
+    """
+    import io
+
+    from pypdf import PdfReader
+
+    issues: list[ReportIssue] = []
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        page_count = len(reader.pages)
+    except Exception as exc:
+        issues.append(ReportIssue("error", "pdf_unreadable", f"生成的 PDF 无法打开：{exc}"))
+        return ReportCheckResult(dedupe_issues(issues))
+
+    if page_count < 1:
+        issues.append(ReportIssue("error", "pdf_empty", "生成的 PDF 没有任何页面"))
+        return ReportCheckResult(dedupe_issues(issues))
+
+    try:
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception as exc:
+        logger.warning("[pdf_verify] 文本提取失败 | %s", exc)
+        text = ""
+
+    if not text.strip():
+        issues.append(
+            ReportIssue("warning", "pdf_text_not_extractable", "PDF 文本无法提取，请人工确认内容完整")
+        )
+        return ReportCheckResult(dedupe_issues(issues))
+
+    title = _first_heading(report_markdown)
+    if title and _normalize(title) not in _normalize(text):
+        issues.append(
+            ReportIssue("warning", "pdf_title_missing", f"PDF 中未找到报告标题「{title}」")
+        )
+
+    return ReportCheckResult(dedupe_issues(issues))
+
+
+def _first_heading(markdown: str) -> str:
+    for line in (markdown or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+    return ""
+
+
+def _normalize(text: str) -> str:
+    """去掉空白后再比对：PDF 提取会把词间空格打散，直接子串匹配会误报。"""
+    return re.sub(r"\s+", "", text)
+

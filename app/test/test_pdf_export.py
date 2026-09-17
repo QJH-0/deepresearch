@@ -32,8 +32,27 @@ def _make_research_service_mock(messages=None):
     return svc
 
 
-def _make_mock_playwright(pdf_bytes=b"%PDF-1.4 mock"):
-    """构造 mock async_playwright，page.pdf 返回假 PDF 字节。"""
+def _blank_pdf() -> bytes:
+    """生成结构合法的空白 PDF。
+
+    导出后回读校验会真的打开文件，所以 mock 不能再用假字节 ——
+    假字节会被判为 pdf_unreadable 并阻断导出。
+    """
+    import io
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def _make_mock_playwright(pdf_bytes=None):
+    """构造 mock async_playwright，page.pdf 返回合法 PDF 字节。"""
+    if pdf_bytes is None:
+        pdf_bytes = _blank_pdf()
     mock_page = MagicMock()
     mock_page.set_content = AsyncMock()
     mock_page.pdf = AsyncMock(return_value=pdf_bytes)
@@ -73,7 +92,7 @@ class TestExportPdfSuccess:
         from backend.service.pdf_export_service import get_pdf_export_service
 
         svc = _make_research_service_mock()
-        mock_cm = _make_mock_playwright(b"%PDF-1.4 fake-content")
+        mock_cm = _make_mock_playwright()
 
         get_pdf_export_service.cache_clear()
 
@@ -204,3 +223,84 @@ class TestWeasyprintRemoved:
         req_path = _PROJECT_ROOT / "requirements.txt"
         content = req_path.read_text(encoding="utf-8")
         assert "weasyprint" not in content.lower(), "requirements.txt 仍含 weasyprint"
+
+
+# ── 导出前质量门禁与导出后回读校验 ──────────────────────────
+
+
+class TestExportPdfQualityGate:
+    """error 阻断导出（422 + 问题清单），warning 随响应头回传。"""
+
+    @pytest.mark.asyncio
+    async def test_precheck_error_blocks_export(self):
+        """正文有引用却没有参考资料段落 —— 引用无法核对，必须阻断。"""
+        from backend.router.research_router import export_pdf
+        from backend.service.pdf_export_service import get_pdf_export_service
+
+        svc = _make_research_service_mock([
+            {"role": "user", "content": "测试问题"},
+            {"role": "assistant", "content": "# 报告\n\n结论有据 [WEB1_1-1]。"},
+        ])
+        mock_cm = _make_mock_playwright()
+        get_pdf_export_service.cache_clear()
+
+        with patch("playwright.async_api.async_playwright", return_value=mock_cm):
+            with pytest.raises(HTTPException) as exc:
+                await export_pdf("test-thread-abc123", _test_user(), svc)
+
+        assert exc.value.status_code == 422
+        codes = [item["code"] for item in exc.value.detail["issues"]]
+        assert "missing_reference_section" in codes
+        # 阻断发生在渲染之前，不应白白起一次浏览器
+        mock_cm.__aenter__.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_verify_error_blocks_export(self):
+        """回读发现产物打不开时也必须阻断，不能把坏文件交出去。"""
+        from backend.router.research_router import export_pdf
+        from backend.service.pdf_export_service import get_pdf_export_service
+
+        svc = _make_research_service_mock()
+        mock_cm = _make_mock_playwright(b"%PDF-1.4 broken")
+        get_pdf_export_service.cache_clear()
+
+        with patch("playwright.async_api.async_playwright", return_value=mock_cm):
+            with pytest.raises(HTTPException) as exc:
+                await export_pdf("test-thread-abc123", _test_user(), svc)
+
+        assert exc.value.status_code == 422
+        codes = [item["code"] for item in exc.value.detail["issues"]]
+        assert "pdf_unreadable" in codes
+
+    @pytest.mark.asyncio
+    async def test_warnings_are_returned_in_header(self):
+        """短报告只有 warning，应放行并把问题清单回传给前端。"""
+        from backend.router.research_router import export_pdf
+        from backend.service.pdf_export_service import get_pdf_export_service
+
+        svc = _make_research_service_mock()
+        mock_cm = _make_mock_playwright()
+        get_pdf_export_service.cache_clear()
+
+        with patch("playwright.async_api.async_playwright", return_value=mock_cm):
+            response = await export_pdf("test-thread-abc123", _test_user(), svc)
+
+        assert response.media_type == "application/pdf"
+        assert response.headers.get("x-report-warnings")
+
+
+class TestMarkdownExportNotGated:
+    """Markdown 是内容逃生通道，不做阻断 —— PDF 被拦时用户仍能拿到原文。"""
+
+    @pytest.mark.asyncio
+    async def test_markdown_export_ignores_gate(self):
+        from backend.router.research_router import export_markdown
+
+        svc = _make_research_service_mock([
+            {"role": "user", "content": "测试问题"},
+            {"role": "assistant", "content": "# 报告\n\n结论有据 [WEB1_1-1]。"},
+        ])
+
+        response = await export_markdown("test-thread-abc123", _test_user(), svc)
+
+        assert response.media_type.startswith("text/markdown")

@@ -377,3 +377,67 @@
 | 真实调用：5 个型号 × JSON Schema（非流式 + 流式） | 全部返回可校验 JSON |
 
 **未验证**：未跑完整端到端研究流程（需 Milvus / RabbitMQ / PG 全栈中间件）；未验证 `web_search` / `local_rag` / `deep_dive` 在新型号下的检索与证据抽取质量（这些节点仍走自由文本 JSON 解析）。
+
+---
+
+## 十一、批次 3 执行记录（导出质量门禁与回读验证）
+
+### 11.1 分级规则
+
+判定依据是「这份文件交出去会不会出错」，而不是「写得够不够好」—— 后者是主观判断，不该由代码替用户决定。
+
+| severity | code | 触发条件 |
+| --- | --- | --- |
+| **error** | `empty_report` | 正文为空 |
+| **error** | `missing_reference_section` | 正文含引用标记但完全没有参考资料段落 → 引用无法核对 |
+| **error** | `empty_reference_section` | 参考资料段落存在但没有任何条目 |
+| **error** | `pdf_unreadable` / `pdf_empty` | 回读时产物打不开 / 零页 |
+| warning | `short_body` | 正文字数 < 800（去掉标题行与空白后统计） |
+| warning | `no_citation` | 正文零引用 → 结论无法溯源 |
+| warning | `single_source_dominant` | 单一来源占全部引用的 > 60% |
+| warning | `reference_not_cited` | 参考资料列出了正文完全没引用过的条目 |
+| warning | `pdf_text_not_extractable` | PDF 文本无法提取（字体子集化常见，不影响阅读） |
+| warning | `pdf_title_missing` | 回读未在 PDF 中找到报告标题 |
+
+问题按 `severity + code + message` 去重，避免同类问题刷屏。
+
+### 11.2 设计偏差：为什么没做「引用编号悬空」的逐编号比对
+
+原计划把「引用编号悬空」列为 error。实现时发现它会**在每份正常报告上误报**：参考资料清单按 `locator` 对本地来源去重（同一文件的多个 chunk 只列一个代表），因此正文引用 `[LOC1_1-3]` 而清单只列 `[LOC1_1-1]` 是正常现象（见 `nodes/_fallbacks.py:283-293`）。
+
+改为检查更可靠的信号：**有引用就必须有非空的参考资料段落**。这是结构性缺失，不受去重影响。已加测试 `test_local_source_dedup_does_not_trigger_error` 锁住该行为。
+
+### 11.3 接线方式
+
+| 端点 | 门禁 |
+| --- | --- |
+| `GET /threads/{id}/export/pdf` | 导出前 `check_report` → error 则 **422 + 问题清单**；渲染后 `verify_pdf` → error 同样 422；仅 warning 时放行，并把问题清单经 `X-Report-Warnings` 头（URL 编码）回传前端 |
+| `GET /threads/{id}/export/md` | **不做阻断** —— 它是内容逃生通道，PDF 被拦时用户仍能拿到原文 |
+
+阻断发生在渲染之前（已有测试断言 `__aenter__` 未被调用），不为一份注定失败的导出白起一次浏览器。
+
+### 11.4 顺带发现并修复的问题
+
+1. **PDF 导出在当前环境根本不可用** —— Playwright 浏览器从未安装（`Executable doesn't exist at .../chrome-headless-shell.exe`）。既有测试全部 mock 了 Playwright，所以这个缺口一直没暴露。已执行 `playwright install chromium` 补齐，并做了真实端到端验证（见 11.6）。
+2. **既有测试用假 PDF 字节** —— `test_pdf_export.py` 的 mock 返回 `b"%PDF-1.4 fake-content"`，加了回读校验后必然被判 `pdf_unreadable`。已改为用 `pypdf` 生成结构合法的空白 PDF，并新增「回读失败必须阻断」的用例。
+3. **`pypdf` 未在依赖中声明** —— 已在 `requirements.txt` 补登（`pypdf>=4.0`）。
+
+### 11.5 新增文件与改动
+
+| 文件 | 内容 |
+| --- | --- |
+| 新增 `app/backend/service/report_check.py` | `ReportIssue` / `ReportCheckResult` / `check_report` / `dedupe_issues` |
+| `app/backend/service/pdf_export_service.py` | 新增 `verify_pdf`（回读校验）+ `_first_heading` / `_normalize` |
+| `app/backend/router/research_router.py` | `export_pdf` 接入前后双重门禁；`export_markdown` 保持不阻断 |
+| 新增 `app/test/test_report_check.py` | 15 例：三类 error、正常报告放行、locator 去重不误报、四类 warning、去重、回读四种情形 |
+| `app/test/test_pdf_export.py` | 改为合法 PDF；新增 4 例（前检阻断 / 回读阻断 / warning 回传 / Markdown 不阻断） |
+| `requirements.txt` | 补 `pypdf>=4.0` |
+
+### 11.6 验证结果
+
+| 命令 | 结果 |
+| --- | --- |
+| 22 个测试文件 | **342 passed** |
+| 真实浏览器端到端（真实 Chromium 渲染 → pypdf 回读） | 见下方 |
+
+**未验证**：前端尚未消费 `X-Report-Warnings` 头与 422 问题清单（本批次未含前端改动）；`export_markdown` 的逃生通道语义未在真实用户路径上走查。
