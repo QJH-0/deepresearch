@@ -109,6 +109,9 @@ class BusinessSettings(BaseSettings):
     # 显式设定：客户端默认重试次数随 SDK 版本变化，不依赖其默认值。
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 2
+    # ── 单次检索超时（含整条 Provider 链）──
+    # 搜索源不可达时每个查询都要空等满超时才降级，6 个查询即 6 分钟纯等待。
+    search_timeout_seconds: float = 15.0
     # ── 单轮研究总时长上限（看门狗）──
     # llm_timeout_seconds 只约束单次调用；一轮研究有 15~25 次 LLM 调用加
     # 十余次检索，任何一处慢下来都会让前端一直转圈。0 表示不限制。

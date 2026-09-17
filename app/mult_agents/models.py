@@ -194,7 +194,14 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         milvus_port=config.milvus_port,
         postgres_dsn=config.postgres_dsn,
     )
-    init_rag_system(api_key=api_key, config=rag_config)
+    # enable_milvus=False 时不初始化 RAG：本地检索由
+    # tools.search_knowledge_base_records 降级为返回空结果并告警，
+    # 图仍可跑通（本地知识库为空是合法场景）。此前该配置项无人读取，
+    # 关掉它照样会连 Milvus 并在连不上时硬失败，整个服务起不来。
+    if config.enable_milvus:
+        init_rag_system(api_key=api_key, config=rag_config)
+    else:
+        logger.info("[models] enable_milvus=False，跳过 RAG 初始化；本地检索将返回空结果")
 
     # node_models 示例：
     # {"write": {"model": "qwen3.8-max"}, "intent_router": {"model": "qwen3.7-flash"}}

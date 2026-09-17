@@ -260,3 +260,69 @@ def test_all_nodes_importable():
         local_rag_node, deep_dive_node, analyze_node, reflect_node,
         write_node, clarify_node, bind_agent,
     ])
+
+
+# ──────────────────────────────────────────────
+# 检索超时（搜索源不可达时快速失败）
+# ──────────────────────────────────────────────
+
+
+class _HangingChain:
+    """模拟搜索源不可达：链会一直挂着，只能靠外层超时收口。"""
+
+    def __init__(self):
+        self.cancelled = False
+
+    async def search(self, query, max_results=5):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return []
+
+
+def test_search_timeout_default_when_settings_unavailable(monkeypatch):
+    """读不到配置时回落到 15 秒，而不是无上限。"""
+    from mult_agents import tools
+
+    def _boom():
+        raise RuntimeError("settings unavailable")
+
+    monkeypatch.setattr("backend.config.settings.get_business_settings", _boom)
+
+    assert tools._search_timeout_seconds() == 15.0
+
+
+def test_web_search_records_times_out_in_loop(monkeypatch):
+    """有运行中事件循环时（生产路径）：超时返回空结果，并取消挂起的检索。
+
+    不取消的话，检索会连同连接一起留在常驻后台循环上，多次超时会不断累积。
+    """
+    import time
+
+    from mult_agents import tools
+
+    chain = _HangingChain()
+    monkeypatch.setattr(tools, "_get_provider_chain", lambda: chain)
+    monkeypatch.setattr(tools, "_search_timeout_seconds", lambda: 0.2)
+
+    async def _call():
+        return tools.web_search_records("q", 3)
+
+    assert asyncio.run(_call()) == []
+
+    deadline = time.time() + 2
+    while time.time() < deadline and not chain.cancelled:
+        time.sleep(0.05)
+    assert chain.cancelled, "超时后必须取消挂起的检索"
+
+
+def test_web_search_records_times_out_without_running_loop(monkeypatch):
+    """同步上下文调用同样受超时约束（此前该分支完全没有超时）。"""
+    from mult_agents import tools
+
+    monkeypatch.setattr(tools, "_get_provider_chain", lambda: _HangingChain())
+    monkeypatch.setattr(tools, "_search_timeout_seconds", lambda: 0.2)
+
+    assert tools.web_search_records("q", 3) == []

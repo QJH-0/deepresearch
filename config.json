@@ -48,5 +48,6 @@
   "llm_timeout_seconds": 60,
   "llm_max_retries": 2,
   "run_timeout_seconds": 900,
+  "search_timeout_seconds": 15,
   "chunk_retry_limit": 3
 }

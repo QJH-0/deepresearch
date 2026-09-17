@@ -13,6 +13,7 @@ import logging
 import os
 import urllib.parse
 import urllib.request
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Optional
 
 from .rag.core import RAGConfig, RAGSystem
@@ -346,14 +347,32 @@ def search_knowledge_base_records(query: str, limit: int = 5) -> list[dict]:
         return []
 
 
+def _search_timeout_seconds() -> float:
+    """单次检索（含整条 Provider 链）的时间上限。
+
+    搜索源不可达时，每个查询都要空等满超时才降级 —— 6 个查询就是 6 分钟纯等待，
+    用户只看到界面转圈。默认 15 秒是「单源可用时够用、不可达时快速失败」的折中。
+    """
+    try:
+        from backend.config.settings import get_business_settings
+
+        return float(get_business_settings().search_timeout_seconds)
+    except Exception:
+        return 15.0
+
+
 def web_search_records(query: str, count: int = 5) -> list[dict]:
     """统一的 Web 搜索入口，采用可配置的 Provider 链式降级策略。
 
     按 config.json 的 search_providers 顺序依次尝试，任一 Provider 成功即返回。
     保持同步签名（调用方 web_search_node 为同步函数），内部通过专用后台事件循环
     线程运行异步 Provider 链。
+
+    超时一律降级为空结果并告警，与 Provider 自身的失败处理保持一致 ——
+    检索不到东西是合法场景，不该让整轮研究卡死。
     """
     chain = _get_provider_chain()
+    timeout = _search_timeout_seconds()
     try:
         asyncio.get_running_loop()
         in_loop = True
@@ -365,5 +384,23 @@ def web_search_records(query: str, count: int = 5) -> list[dict]:
         future = asyncio.run_coroutine_threadsafe(
             chain.search(query, max_results=count), loop
         )
-        return future.result(timeout=60)
-    return asyncio.run(chain.search(query, max_results=count))
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            # 链跑在常驻后台循环里，超时后必须显式取消，
+            # 否则挂起的检索会连同连接一起留在那个循环上
+            future.cancel()
+            logger.warning(
+                "[search-chain] 检索超时 %.0fs，降级为空结果 | query=%s", timeout, query[:60]
+            )
+            return []
+
+    try:
+        return asyncio.run(
+            asyncio.wait_for(chain.search(query, max_results=count), timeout=timeout)
+        )
+    except (asyncio.TimeoutError, FuturesTimeoutError):
+        logger.warning(
+            "[search-chain] 检索超时 %.0fs，降级为空结果 | query=%s", timeout, query[:60]
+        )
+        return []

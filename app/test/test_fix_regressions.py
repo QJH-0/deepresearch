@@ -1821,3 +1821,36 @@ class TestRenderOutlineForPrompt:
 
         assert "好章节" in rendered
         assert "坏数据" not in rendered
+
+
+# ──────────────────────────────────────────────────────────────
+# 断链修复：enable_milvus 曾是死配置
+# ──────────────────────────────────────────────────────────────
+
+
+class TestEnableMilvusActuallyGatesRagInit:
+    """回归：enable_milvus 定义、映射都有，但全项目无人读取。
+
+    后果是把它设为 false 照样会连 Milvus，连不上就在 build_agents 里硬失败，
+    整个服务起不来 —— 配置项承诺的「可不依赖 Milvus 运行」从未兑现。
+    """
+
+    @staticmethod
+    def _rag_init_calls(monkeypatch, enable_milvus: bool):
+        from mult_agents import models
+
+        calls: list[dict] = []
+        monkeypatch.setattr(models, "init_rag_system", lambda **kwargs: calls.append(kwargs))
+        monkeypatch.setattr(models, "build_agent", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(models, "build_structured_agent", lambda *a, **kw: MagicMock())
+
+        models.build_agents(
+            "qwen3.8-max", "test-key", _minimal_app_config(enable_milvus=enable_milvus)
+        )
+        return calls
+
+    def test_disabled_skips_rag_init(self, monkeypatch):
+        assert self._rag_init_calls(monkeypatch, False) == []
+
+    def test_enabled_calls_rag_init_once(self, monkeypatch):
+        assert len(self._rag_init_calls(monkeypatch, True)) == 1
