@@ -318,12 +318,11 @@ export function useEventStream() {
   }
 
   /**
-   * 智能续流入口：区分三种用户意图。
+   * 停止后续研的归宿。
    *
-   * 逻辑：
-   * 1. 用户手动停止后（userStopped=true），输入含“继续/continue/resume”等关键词 → mode=continue 续流
-   * 2. 用户手动停止后，输入新条件（非关键词） → mode=modify 追加消息后续跑
-   * 3. 非手动停止场景 → 走全新 run
+   * 关键词分流是「猜用户意图」，停止态输入框里的两个显式入口是「用户明确表态」。
+   * 两者共存：随手打字走关键词，想明确表态就点按钮。关键词分流的已知误判
+   * （例如「继续调研AI」既像续流又像新任务）由显式入口兜底。
    */
   const RESUME_KEYWORDS = ['继续', '续流', 'resume', 'continue', '接着', '接着来', 'go on', 'proceed']
 
@@ -332,72 +331,107 @@ export function useEventStream() {
     return RESUME_KEYWORDS.some((kw) => normalized.includes(kw.toLowerCase()))
   }
 
+  /** checkpoint 是否真的能续。不能续时任何续流入口都必须退回新研究，不能吞掉用户输入 */
+  async function canResumeFromCheckpoint(threadId: string): Promise<boolean> {
+    try {
+      const state = await fetchThreadState(threadId)
+      return Boolean(state.resumable) && state.status !== 'running'
+    } catch {
+      return false
+    }
+  }
+
+  /** 续流：从最后 checkpoint 的节点接着跑，已检索的证据与已形成的结论全部保留 */
+  async function continueFromCheckpoint(threadId: string): Promise<void> {
+    chat.setUserStopped(threadId, false)
+    await syncThreadMessages(threadId)
+    try {
+      const resp = await postStream('/api/v1/research/resume', {
+        thread_id: threadId,
+        mode: 'continue',
+      })
+      await consume(threadId, resp)
+      setAttempts(threadId, 0)
+    } catch (err) {
+      if (isAbortError(err) || isUserCancelled(threadId)) return
+      await scheduleReconnect(threadId)
+    }
+  }
+
+  /** 补条件续研：把新条件追加进 state 后从入口重跑，旧的检索结果仍在 */
+  async function resumeWithModify(threadId: string, condition: string): Promise<void> {
+    chat.setUserStopped(threadId, false)
+    await syncThreadMessages(threadId)
+    try {
+      const resp = await postStream('/api/v1/research/resume', {
+        thread_id: threadId,
+        mode: 'modify',
+        resume_value: condition,
+      })
+      await consume(threadId, resp)
+      setAttempts(threadId, 0)
+    } catch (err) {
+      if (isAbortError(err) || isUserCancelled(threadId)) return
+      await scheduleReconnect(threadId)
+    }
+  }
+
   async function runOrResume(threadId: string, query: string, options?: {
     user_id?: string
     tenant_id?: string
     hitl_enabled?: boolean
   }): Promise<void> {
-    if (chat.isUserStopped(threadId)) {
-      // 先检查 checkpoint 是否可恢复
-      let state
-      try {
-        state = await fetchThreadState(threadId)
-      } catch {
-        // 状态检查失败，降级走新 run
-        chat.setUserStopped(threadId, false)
-        await run(threadId, query, options)
-        return
-      }
-
-      if (!state.resumable || state.status === 'running') {
-        // checkpoint 不可恢复 → 新任务
-        chat.setUserStopped(threadId, false)
-        await run(threadId, query, options)
-        return
-      }
-
+    if (chat.isUserStopped(threadId) && (await canResumeFromCheckpoint(threadId))) {
       chat.ensureThread(threadId)
       chat.addUserMessage(threadId, query)
       void threads.refresh()
 
       if (matchesResumeKeyword(query)) {
-        // 路1：关键词匹配 → mode=continue 从断点续流，旧数据保留
-        chat.setUserStopped(threadId, false)
-        await syncThreadMessages(threadId)
-        try {
-          const resp = await postStream('/api/v1/research/resume', {
-            thread_id: threadId,
-            mode: 'continue',
-          })
-          await consume(threadId, resp)
-          setAttempts(threadId, 0)
-        } catch (err) {
-          if (isAbortError(err) || isUserCancelled(threadId)) return
-          await scheduleReconnect(threadId)
-        }
-        return
-      }
-
-      // 路2：非关键词 → mode=modify 追加用户消息后重新执行
-      chat.setUserStopped(threadId, false)
-      await syncThreadMessages(threadId)
-      try {
-        const resp = await postStream('/api/v1/research/resume', {
-          thread_id: threadId,
-          mode: 'modify',
-          resume_value: query,
-        })
-        await consume(threadId, resp)
-        setAttempts(threadId, 0)
-      } catch (err) {
-        if (isAbortError(err) || isUserCancelled(threadId)) return
-        await scheduleReconnect(threadId)
+        await continueFromCheckpoint(threadId)
+      } else {
+        await resumeWithModify(threadId, query)
       }
       return
     }
 
-    // 路3：非手动停止场景 → 新任务
+    // 非手动停止，或 checkpoint 已不可续 → 新任务
     await run(threadId, query, options)
+  }
+
+  /**
+   * 显式入口（停止态输入框）：「补充条件继续研究」→ mode=modify。
+   *
+   * 不依赖关键词匹配 —— 点这个按钮就是明确要「在原有研究上补条件」。
+   * checkpoint 不可续时退回新研究，避免把用户输入丢掉。
+   */
+  async function resumeWithCondition(threadId: string, condition: string, options?: {
+    user_id?: string
+    tenant_id?: string
+    hitl_enabled?: boolean
+  }): Promise<void> {
+    if (!(await canResumeFromCheckpoint(threadId))) {
+      await run(threadId, condition, options)
+      return
+    }
+    chat.ensureThread(threadId)
+    chat.addUserMessage(threadId, condition)
+    void threads.refresh()
+    await resumeWithModify(threadId, condition)
+  }
+
+  /**
+   * 显式入口（停止态输入框）：「换个主题重新研究」→ 开新 thread 走 /run。
+   *
+   * 必须开新 thread：复用当前 thread 会让上一次研究的证据与结论混进新主题，
+   * 报告里出现与主题无关的引用。旧 thread 与其 checkpoint 保持不动，用户仍可切回续研。
+   */
+  async function startNewTopic(topic: string, options?: {
+    user_id?: string
+    tenant_id?: string
+    hitl_enabled?: boolean
+  }): Promise<void> {
+    const newThreadId = threads.startNewThread()
+    await run(newThreadId, topic, options)
   }
 
   /** 恢复中断的研究（HITL 入口，不套重连状态机） */
@@ -412,5 +446,8 @@ export function useEventStream() {
     await consume(threadId, resp)
   }
 
-  return { run, resume, runOrResume, consume, dispatch, scheduleReconnect, syncThreadMessages }
+  return {
+    run, resume, runOrResume, resumeWithCondition, startNewTopic,
+    consume, dispatch, scheduleReconnect, syncThreadMessages,
+  }
 }

@@ -145,7 +145,10 @@ describe('T7-5: 导出', () => {
 
     const blob = await exportMarkdown('thread-123')
 
-    expect(blob).toBeInstanceOf(Blob)
+    // jsdom 的 Blob 与 Node Response.blob() 返回的 Blob 属于不同 realm，
+    // instanceof 必然失败；断言 blob 的关键特征即可。
+    expect(blob.size).toBeGreaterThan(0)
+    expect(typeof blob.text).toBe('function')
     const [url, init] = mockFetch.mock.calls[0]
     expect(String(url)).toContain('thread-123')
     expect(String(url)).toContain('/export/md')
@@ -158,7 +161,9 @@ describe('T7-5: 导出', () => {
 
     const blob = await exportPdf('thread-456')
 
-    expect(blob).toBeInstanceOf(Blob)
+    // 同上：跨 realm 的 instanceof 不可靠，断言 blob 的关键特征。
+    expect(blob.size).toBeGreaterThan(0)
+    expect(typeof blob.text).toBe('function')
     const [url, init] = mockFetch.mock.calls[0]
     expect(String(url)).toContain('thread-456')
     expect(String(url)).toContain('/export/pdf')

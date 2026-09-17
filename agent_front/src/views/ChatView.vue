@@ -24,12 +24,14 @@ const route = useRoute()
 const chat = useChatStore()
 const threads = useThreadsStore()
 const intr = useInterruptStore()
-const { run, resume, runOrResume } = useEventStream()
+const { resume, runOrResume, resumeWithCondition, startNewTopic } = useEventStream()
 
 const messageList = ref<HTMLElement | null>(null)
 const composer = ref<InstanceType<typeof Composer> | null>(null)
 const loading = computed(() => chat.isRunning(threads.currentThreadId))
 const isReconnecting = computed(() => chat.isReconnecting(threads.currentThreadId))
+/** 停止态：用户手动停止过该会话。此时输入框给出两个显式动作入口 */
+const isStopped = computed(() => chat.isUserStopped(threads.currentThreadId))
 const hitlEnabled = ref(false)
 
 const messages = computed(() => chat.getMessages(threads.currentThreadId))
@@ -97,6 +99,24 @@ async function onSend(text: string) {
 
 function onResume(payload: Record<string, unknown>) {
   void resume(threads.currentThreadId, payload)
+}
+
+/**
+ * 停止态显式入口：「补充条件继续研究」。
+ * 与直接发送的区别是不再靠关键词猜意图 —— 点这个按钮就是要在原研究上补条件。
+ */
+async function onContinueWithCondition(text: string) {
+  await resumeWithCondition(threads.currentThreadId, text, { hitl_enabled: hitlEnabled.value })
+  scrollToBottom()
+}
+
+/**
+ * 停止态显式入口：「换个主题重新研究」。
+ * 开新 thread，旧会话与其 checkpoint 保持不动，可随时切回续研。
+ */
+async function onRestartTopic(text: string) {
+  await startNewTopic(text, { hitl_enabled: hitlEnabled.value })
+  scrollToBottom()
 }
 
 async function onStop() {
@@ -259,8 +279,11 @@ onUnmounted(() => { /* SSE 由 useEventStream 内部管理 */ })
       ref="composer"
       :disabled="loading"
       :loading="loading"
+      :stopped="isStopped"
       @send="onSend"
       @stop="onStop"
+      @continue-with-condition="onContinueWithCondition"
+      @restart-topic="onRestartTopic"
     />
   </main>
 </template>

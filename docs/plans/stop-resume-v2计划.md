@@ -144,3 +144,55 @@ ChatView.onSend("帮我查天气")
 - 检测到 `resumable: true` 且 `userStopped: true` 时，弹出选择卡片
 - "继续上次研究" / "开始新研究"
 - 无误判，但多一步交互
+
+---
+
+## 实施记录（方案 B：关键词分流 + 停止态两个显式动作入口）
+
+> 追加日期 2026-09-17
+> 决策：采用 **B = A + 前端分流**。停止态输入框给出两个显式动作入口，**后端零改动**。
+
+### 为什么需要显式入口
+
+方案 A（关键词分流）的已知误判无法靠扩充词表解决：「继续调研AI」既像续流又像新任务，任何关键词规则都会在其中一侧判错。而停止后的下一步是两种**截然不同**的归宿 —— 在原有研究上补条件，还是换主题重开 —— 让用户明确表态比让代码猜更可靠。
+
+显式入口不替代关键词分流，两者互补：随手打字走 A，想明确表态就点按钮。
+
+### 两个入口的语义
+
+| 入口 | 前端动作 | 后端行为 |
+| --- | --- | --- |
+| **补充条件继续研究** | `POST /resume { mode: "modify", resume_value: <输入文本> }` | 把文本追加进 `chat_messages` 并重置 `query`，从 `intent` 重跑；**累加型字段（findings / evidence）保留**，正是「在原研究上补条件」的语义 |
+| **换个主题重新研究** | 开**新 thread** → `POST /stream` | 全新一轮，与旧会话完全隔离 |
+
+### 关键设计点
+
+1. **换主题必须开新 thread**。复用当前 thread 会让上一次研究的证据与结论混进新主题，报告里出现与主题无关的引用。旧 thread 与其 checkpoint 保持不动，用户仍可切回续研。
+2. **checkpoint 不可续时退回新研究**。两个显式入口都会先查 `resumable`；不可续时走 `/run`，**不静默丢弃用户输入** —— 这是比「保持语义纯粹」更重要的底线。
+3. **空输入时两个入口禁用**。两个入口都要拿输入框内容当参数，空输入无从下手。
+4. **研究进行中不显示入口**。正在跑就谈不上「已停止」。
+
+### 修改文件
+
+| 文件 | 变更 |
+| --- | --- |
+| `agent_front/src/composables/useEventStream.ts` | 抽出 `canResumeFromCheckpoint` / `continueFromCheckpoint` / `resumeWithModify` 三个共用函数；新增导出 `resumeWithCondition` 与 `startNewTopic`；`runOrResume` 复用同一批函数（原先 mode=continue / mode=modify 的逻辑内联其中） |
+| `agent_front/src/components/chat/Composer.vue` | 新增 `stopped` prop；停止态在输入框上方渲染两个动作入口；新增 `continue-with-condition` / `restart-topic` 两个事件 |
+| `agent_front/src/views/ChatView.vue` | 新增 `isStopped` 计算属性；接线两个入口的处理函数 |
+| `agent_front/vitest.config.ts` | 挂载 `@vitejs/plugin-vue`（该插件已在 devDependencies，此前测试只覆盖 store / composable 故未启用） |
+| `agent_front/test/test_stop_resume_entry.test.ts` | 新增 15 例：两个入口的请求形状、checkpoint 不可续的退回、旧 thread 隔离、方案 A 关键词分流回归、Composer 停止态渲染与禁用 |
+
+### 验证
+
+| 项 | 结果 |
+| --- | --- |
+| `npx vitest run`（前端全量 5 个文件） | **63 passed** |
+| `npx vue-tsc --noEmit` | 通过 |
+| 后端改动 | **无**（`mode=modify` 与 `resume_value` 语义早已就绪） |
+
+顺带修掉 `test_p7.test.ts` 的两处既有失败：断言 `expect(blob).toBeInstanceOf(Blob)` 跨 realm 必然失败（jsdom 的 `Blob` 与 Node `Response.blob()` 不是同一个构造函数），改为断言 blob 的 `size` 与 `text()` 特征。
+
+### 未覆盖
+
+- 未做真机端到端（需后端 + 浏览器联调）：两个入口在真实研究流程中的表现、`mode=modify` 重跑后报告是否合理复用旧证据。
+- `userStopped` 仍是 Pinia 非持久化状态，刷新页面后丢失 —— 这是 v2 已记录的既有取舍，本次未改变。
