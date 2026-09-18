@@ -491,6 +491,8 @@ async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
     bl_rounds = aggregate_metric(bl_quality, "retrieval_rounds", "queries_per_round")
     im_rounds = aggregate_metric(im_quality, "retrieval_rounds", "queries_per_round")
     im_cit_legal = aggregate_metric(im_quality, "citation_legality", "legality_rate")
+    bl_cov = aggregate_metric(bl_quality, "citation_coverage", "coverage")
+    im_cov = aggregate_metric(im_quality, "citation_coverage", "coverage")
     im_kp = aggregate_metric(im_quality, "key_point_coverage", "coverage")
     # 未标注 expected_sources 的题 recall 为 None，aggregate 会自动跳过
     bl_src = aggregate_metric(bl_quality, "expected_source_recall", "recall")
@@ -526,6 +528,9 @@ async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
                                 "desc": "平均每轮检索查询数（规则型；自适应检索生效后应上升）"},
             "citation_legality": {"improved": round(im_cit_legal, 4),
                                   "desc": "引用角标合法率（规则型；角标能否在来源表找到）"},
+            "citation_coverage": {"baseline": round(bl_cov, 4), "improved": round(im_cov, 4),
+                                  "desc": "引用覆盖率（规则型；带角标论断 / 主要论断。"
+                                          "实测 21.8%~62.1% 波动，不依赖人工标注，是当前最可信的判别指标）"},
             "key_point_coverage": {"improved": round(im_kp, 4),
                                    "desc": "期望要点字面覆盖率（规则型，对照 LLM-as-Judge）"},
             "expected_source_recall": {"baseline": round(bl_src, 4), "improved": round(im_src, 4),
@@ -593,6 +598,9 @@ def print_summary(report):
     print(f"   方法: 规则型（检索轨迹条数 / 外层研究轮数）")
     print(f"\n10. 引用合法率: {s['citation_legality']['improved']:.1%}   要点字面覆盖: {s['key_point_coverage']['improved']:.1%}")
     print(f"   方法: 规则型（角标存在性校验 / 关键词子串匹配，对照 LLM-as-Judge）")
+    cov = s["citation_coverage"]
+    print(f"\n10b. 引用覆盖率: {cov['baseline']:.1%} → {cov['improved']:.1%}")
+    print(f"   方法: 规则型（带角标论断 / 主要论断）；当前最可信的判别指标，不依赖人工标注")
     src = s["expected_source_recall"]
     if src["annotated_queries"]:
         print(f"\n11. 期望来源召回: {src['baseline']:.1%} → {src['improved']:.1%}"

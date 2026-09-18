@@ -13,10 +13,13 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from mult_agents.citations import (
+    CITATION_ID_PATTERN as _CITATION_PATTERN,
+    extract_citation_ids as _extract_citations,
+)
+
 Severity = Literal["error", "warning"]
 
-# 与 nodes/_fallbacks.py 的引用格式保持一致
-_CITATION_PATTERN = re.compile(r"\[([A-Z]+\d+_\d+-\d+)\]")
 _REFERENCE_HEADINGS = ("## 参考资料", "## 引用列表", "## 来源清单")
 _HEADING_PATTERN = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)
 
@@ -67,10 +70,6 @@ def _split_body_and_references(content: str) -> tuple[str, str | None]:
         if index != -1:
             return content[:index], content[index:]
     return content, None
-
-
-def _extract_citations(text: str) -> list[str]:
-    return list(dict.fromkeys(_CITATION_PATTERN.findall(text)))
 
 
 def _body_char_count(body: str) -> int:

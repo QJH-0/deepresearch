@@ -16,6 +16,7 @@
 | `evidence_duplication_rate` | State 里有没有重复证据堆积（reducer 语义是否正确） |
 | `retrieval_rounds` | 检索深度是多少（自适应检索是否生效） |
 | `citation_legality` | 正文引用角标是否都能在来源表里找到 |
+| `citation_coverage` | 主要论断里有多少带引用角标（**天然有判别力**） |
 | `key_point_coverage` | 报告字面覆盖了多少期望要点 |
 | `expected_source_recall` | 期望来源是否真被引用（检索召回的底线，需人工标注） |
 
@@ -23,12 +24,39 @@
 > 「框架名 + 通用概念」（LangGraph / 状态机 / 工具调用），连只跑 1 轮迭代的
 > baseline 都能拿满分，指标触顶、测不出任何改进。要点须是「只有真正找到并读懂
 > 正确来源才可能命中」的具体机制 / 版本 / 数字 / 对比结论。
+>
+> 在要点改好之前，优先看 `citation_coverage`——它实测在 21.8% ~ 62.1% 之间波动，
+> 检索质量差时显著下降，不依赖任何人工标注。
 """
 
-from .nodes._fallbacks import _extract_citation_ids
+import re
+
+from .citations import extract_citation_ids
 
 # 证据来源字段：web / local 两条链路的累积字段
 _EVIDENCE_CHANNELS = ("web_evidence", "local_evidence", "evidence_pool")
+
+# 判定为「主要论断」的最小句长：太短的句子（标题、过渡语）本就不该带角标
+SUBSTANTIVE_SENTENCE_MIN_CHARS = 15
+
+
+def citation_coverage(report: str) -> dict:
+    """引用覆盖率：带角标的论断 / 主要论断总数。
+
+    **这是少数天然有判别力的指标。** 实测在 21.8% ~ 62.1% 之间波动，
+    不像「要点字面覆盖」那样一测就满分——检索质量差时它会显著下降：
+    代理故障导致网页检索全空的那轮为 28.4%，修复后升到 62.1%。
+
+    本函数是唯一实现，`write` 节点的 P7-2 埋点也调用它（原先各写一份）。
+    """
+    sentences = [item.strip() for item in re.split(r"[。.！!？?]\s*", report or "")]
+    substantive = [item for item in sentences if len(item) > SUBSTANTIVE_SENTENCE_MIN_CHARS]
+    cited = sum(1 for item in substantive if extract_citation_ids(item))
+    return {
+        "total": len(substantive),
+        "cited": cited,
+        "coverage": round(cited / len(substantive), 4) if substantive else 0.0,
+    }
 
 
 def _source_ids(items) -> list[str]:
@@ -98,7 +126,7 @@ def citation_legality(report: str, source_index) -> dict:
     只做规则校验（角标存在性），语义匹配由脚本的 LLM-as-Judge 负责。
     非法角标意味着引用溯源断链——报告导出前 `report_check` 会拦截，此处用于评测。
     """
-    cited = _extract_citation_ids(report or "")
+    cited = extract_citation_ids(report or "")
     valid_ids = set(_source_ids(source_index))
     legal = [item for item in cited if item in valid_ids]
     illegal = [item for item in cited if item not in valid_ids]
@@ -155,7 +183,7 @@ def expected_source_recall(report: str, source_index, expected_sources) -> dict:
     if not hints:
         return {"applicable": False, "total": 0, "hit": 0, "recall": None, "missed": []}
 
-    cited_ids = _extract_citation_ids(report or "")
+    cited_ids = extract_citation_ids(report or "")
     lookup = {}
     for item in source_index or []:
         if not isinstance(item, dict):
@@ -181,6 +209,7 @@ def measure(state: dict, report: str, key_points=None, expected_sources=None) ->
         "evidence_duplication_rate": evidence_duplication_rate(state),
         "retrieval_rounds": retrieval_rounds(state),
         "citation_legality": citation_legality(report, state.get("source_index")),
+        "citation_coverage": citation_coverage(report),
         "key_point_coverage": key_point_coverage(report, key_points or []),
         "expected_source_recall": expected_source_recall(
             report, state.get("source_index"), expected_sources

@@ -188,6 +188,47 @@ class TestAggregate:
         assert eval_metrics.aggregate(None, "x", "y") == 0.0
 
 
+class TestCitationCoverage:
+    """引用覆盖率：少数天然有判别力的指标，不依赖人工标注。"""
+
+    def test_counts_only_substantive_sentences(self):
+        """短句（标题、过渡语、孤立角标）不计入分母——它们本就不该被要求带角标。"""
+        report = "短句。[WEB1_1-1]。这是一句足够长的主要论断，但它没有带任何引用角标。"
+
+        result = eval_metrics.citation_coverage(report)
+
+        assert result["total"] == 1, "过短的句子与孤立角标都不应计入主要论断"
+        assert result["cited"] == 0
+        assert result["coverage"] == 0.0
+
+    def test_coverage_is_cited_over_total(self):
+        report = (
+            "第一句足够长的主要论断，带角标 [WEB1_1-1]。"
+            "第二句同样足够长，也带角标 [LOC2_1-1]。"
+            "第三句同样足够长，但完全没有角标支撑。"
+            "第四句同样足够长，同样没有任何角标。"
+        )
+
+        result = eval_metrics.citation_coverage(report)
+
+        assert result["total"] == 4
+        assert result["cited"] == 2
+        assert result["coverage"] == 0.5
+
+    def test_empty_report(self):
+        result = eval_metrics.citation_coverage("")
+
+        assert result["total"] == 0
+        assert result["coverage"] == 0.0
+
+    def test_matches_write_node_embedding(self):
+        """与 write 节点 P7-2 埋点同源：节点调用本函数，不再各写一份。"""
+        from mult_agents.eval_metrics import citation_coverage as metric
+        from mult_agents.nodes import write as write_module
+
+        assert write_module.citation_coverage is metric
+
+
 class TestExpectedSourceRecall:
     """期望来源召回：需人工标注，未标注的题必须跳过而不是算 0。"""
 
@@ -258,16 +299,18 @@ class TestMeasure:
             "local_rag_trace": [],
         }
 
-        result = eval_metrics.measure(state, "结论 [WEB1_1-1]。", ["结论"])
+        result = eval_metrics.measure(state, "结论：这是一句足够长的主要论断，带上了引用角标 [WEB1_1-1]。", ["结论"])
 
         assert set(result) == {
             "evidence_duplication_rate",
             "retrieval_rounds",
             "citation_legality",
+            "citation_coverage",
             "key_point_coverage",
             "expected_source_recall",
         }
         assert result["citation_legality"]["legality_rate"] == 1.0
+        assert result["citation_coverage"]["coverage"] == 1.0
         assert result["key_point_coverage"]["coverage"] == 1.0
         assert result["expected_source_recall"]["applicable"] is False
 

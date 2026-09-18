@@ -4,9 +4,9 @@
 """
 import json
 import logging
-import re
 
 from ..state import AgentState
+from ..citations import extract_citation_ids, validate_and_fix_citations
 from ._evidence import EvidenceScorer, _dedupe_sources, _score_evidence
 
 logger = logging.getLogger("mult_agents")
@@ -222,30 +222,10 @@ def _build_source_lookup(state: AgentState) -> dict[str, dict]:
 
 
 
-def _extract_citation_ids(content: str) -> list[str]:
-    """从正文中提取所有引用ID [XXX]"""
-    pattern = r'\[([A-Z]+\d+_\d+-\d+)\]'
-    matches = re.findall(pattern, content)
-    return list(dict.fromkeys(matches))  # 去重保序
-
-
-
-def _validate_and_fix_citations(content: str, valid_source_ids: set[str]) -> tuple[str, list[str]]:
-    """校验正文中的引用ID，移除非法引用，返回修正后的内容和实际使用的合法引用列表"""
-    pattern = r'\[([A-Z]+\d+_\d+-\d+)\]'
-    
-    def replace_citation(match):
-        citation_id = match.group(1)
-        if citation_id in valid_source_ids:
-            return f"[{citation_id}]"
-        else:
-            # 非法引用，直接移除
-            return ""
-    
-    fixed_content = re.sub(pattern, replace_citation, content)
-    # 提取修正后实际使用的合法引用
-    used_ids = [cid for cid in _extract_citation_ids(fixed_content) if cid in valid_source_ids]
-    return fixed_content, used_ids
+# 引用角标逻辑的唯一实现在 mult_agents/citations.py（顶层，供评测模块复用而不成环）。
+# 这里保留私有别名，既有的 `from ._fallbacks import _extract_citation_ids` 调用方不受影响。
+_extract_citation_ids = extract_citation_ids
+_validate_and_fix_citations = validate_and_fix_citations
 
 
 
