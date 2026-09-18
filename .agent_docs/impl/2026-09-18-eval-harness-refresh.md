@@ -212,6 +212,76 @@ load_dotenv 后 HTTP_PROXY = http://127.0.0.1:7897
 
 ---
 
+## 第五轮：Golden Set 判别力诊断与数据化
+
+### 诊断：当前题集测不出任何改进
+
+用已有两次评测的数据核对（同一道题，baseline vs improved）：
+
+| 阶段 | 完备性 | 要点字面覆盖 |
+| --- | --- | --- |
+| baseline（仅 1 轮迭代） | **1.0** | **1.0** |
+| improved（2 轮迭代） | 1.0 | 1.0 |
+
+**连只跑 1 轮的 baseline 都拿满分 → 指标触顶，零判别力。**
+
+根因（有数据支撑）：`key_points` 是**框架名 + 通用概念**
+（`LangGraph` / `AutoGen` / `CrewAI` / `状态机` / `工具调用`）。
+全部 30 道多智能体题共 163 个 key_point，**只有 2 个含数字或年份** ——
+其余都是「提到就得分」的软词，任何一篇像样的研报都会写到。
+
+所以问题不是「缺期望来源」，而是**要点本身没有判别力**。
+在修好这一点之前，跑再多题、做再多架构改动，指标都会是满分。
+
+### 改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/test/golden_set.json` | **新增**：题集从 Python 字面量抽成 JSON 数据文件（50 题），带 `_readme` 说明字段语义与判别力要求 |
+| `app/test/eval_metrics.py` | 新增 `load_golden_set()`；删掉 82 行内联题集；`measure_quality` 透传 `expected_sources`；新增 `--judge-rounds`（跑大样本时降裁判轮数省 2/3 成本）；摘要新增第 11 项指标 |
+| `app/mult_agents/eval_metrics.py` | 新增 `expected_source_recall`；`measure` 增加 `expected_sources` 参数 |
+| `app/test/test_eval_metrics_rules.py` | 新增 `TestExpectedSourceRecall`（5 用例） |
+
+### 设计要点
+
+**`expected_source_recall` 未标注时返回 `None` 而非 `0.0`。**
+`aggregate` 只对数值取均值，`None` 会被自动跳过 ——
+否则「这题没标注」会被误算成「一个来源都没召回」，把均值拖下来。
+该语义已用测试锁死（漂移验证：改成 `0.0` → 断言失败）。
+
+**题集是数据不是代码。** 标注期望要点与期望来源需要反复编辑与评审，
+放 JSON 比改 Python 字面量安全，也便于 diff 审阅。
+
+**判别力要求写进 JSON 的 `_readme`**，与数据同处一地（不另写文档，避免两处维护）：
+
+```
+✅ 「LangGraph 用 checkpointer 支持断点续研」   ← 需要读到具体机制
+✅ 「AutoGen v0.4 重构为异步 actor 模型」       ← 需要读到具体版本变更
+❌ 「LangGraph」                                ← 提到名字就得分
+❌ 「多智能体」                                  ← 任何一篇都写
+建议每题 4-6 条，其中至少一半是「具体机制 / 版本 / 数字 / 对比结论」
+```
+
+### 待用户完成的部分
+
+**30 道题的 `key_points` 需要按判别力要求重写，`expected_sources` 需要标注。**
+这两项都需要领域判断——尤其要点若写错（写了不存在的事实），
+整个评测会被污染，所以**不适合由 AI 单方面代笔**。
+框架、指标、成本旋钮都已就位，填完即可用。
+
+### 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 新增测试 | `TestExpectedSourceRecall` 5 用例，`test_eval_metrics_rules.py` 共 **29 passed** |
+| 后端全量 | **602 passed, 2 skipped** |
+| 回归专项 | **116 passed, 7 deselected**（与基线一致） |
+| 前端 | **6 文件 71 passed**（与基线一致） |
+| 题集加载 | `load_golden_set()` 读出 50 题（30 multiagent + 20 direct） |
+| **人为漂移验证** | `recall` 由 `None` 改成 `0.0` → `test_not_applicable_when_no_expectations` **FAILED**；还原后 29 passed |
+
+---
+
 ## 第一轮：离线审查发现的两处缺陷
 
 （编号按发现顺序；第二轮、第三轮的内容在本文档更靠前，因为它们是后续补记的。）
