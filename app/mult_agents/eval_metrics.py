@@ -17,6 +17,12 @@
 | `retrieval_rounds` | 检索深度是多少（自适应检索是否生效） |
 | `citation_legality` | 正文引用角标是否都能在来源表里找到 |
 | `key_point_coverage` | 报告字面覆盖了多少期望要点 |
+| `expected_source_recall` | 期望来源是否真被引用（检索召回的底线，需人工标注） |
+
+> ⚠️ `key_point_coverage` 只有要点本身有判别力时才有意义。实测教训：若要点写成
+> 「框架名 + 通用概念」（LangGraph / 状态机 / 工具调用），连只跑 1 轮迭代的
+> baseline 都能拿满分，指标触顶、测不出任何改进。要点须是「只有真正找到并读懂
+> 正确来源才可能命中」的具体机制 / 版本 / 数字 / 对比结论。
 """
 
 from .nodes._fallbacks import _extract_citation_ids
@@ -139,11 +145,44 @@ def aggregate(per_query: list[dict], key: str, field: str) -> float:
     return round(sum(values) / len(values), 4) if values else 0.0
 
 
-def measure(state: dict, report: str, key_points=None) -> dict:
+def expected_source_recall(report: str, source_index, expected_sources) -> dict:
+    """期望来源的召回率：报告引用的来源里，命中期望域名/URL 片段的比例。
+
+    `expected_sources` 留空时 `recall` 返回 **None**（而非 0.0）——聚合会跳过 None，
+    避免把「这题没标注期望来源」误算成「一个都没召回」。
+    """
+    hints = [str(hint).strip().lower() for hint in (expected_sources or []) if str(hint).strip()]
+    if not hints:
+        return {"applicable": False, "total": 0, "hit": 0, "recall": None, "missed": []}
+
+    cited_ids = _extract_citation_ids(report or "")
+    lookup = {}
+    for item in source_index or []:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source_id", "")).strip()
+        if source_id:
+            lookup[source_id] = f"{item.get('locator', '')} {item.get('label', '')}".lower()
+
+    cited_text = " ".join(lookup.get(source_id, "") for source_id in cited_ids)
+    hit = [hint for hint in hints if hint in cited_text]
+    return {
+        "applicable": True,
+        "total": len(hints),
+        "hit": len(hit),
+        "recall": round(len(hit) / len(hints), 4),
+        "missed": [hint for hint in hints if hint not in hit],
+    }
+
+
+def measure(state: dict, report: str, key_points=None, expected_sources=None) -> dict:
     """一次算齐全部规则型指标。"""
     return {
         "evidence_duplication_rate": evidence_duplication_rate(state),
         "retrieval_rounds": retrieval_rounds(state),
         "citation_legality": citation_legality(report, state.get("source_index")),
         "key_point_coverage": key_point_coverage(report, key_points or []),
+        "expected_source_recall": expected_source_recall(
+            report, state.get("source_index"), expected_sources
+        ),
     }

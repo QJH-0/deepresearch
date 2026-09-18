@@ -188,6 +188,64 @@ class TestAggregate:
         assert eval_metrics.aggregate(None, "x", "y") == 0.0
 
 
+class TestExpectedSourceRecall:
+    """期望来源召回：需人工标注，未标注的题必须跳过而不是算 0。"""
+
+    def test_not_applicable_when_no_expectations(self):
+        result = eval_metrics.expected_source_recall(
+            "正文 [WEB1_1-1]。", [{"source_id": "WEB1_1-1", "locator": "https://a.com"}], []
+        )
+
+        assert result["applicable"] is False
+        assert result["recall"] is None, (
+            "未标注必须返回 None，聚合才会跳过；返回 0.0 会把「没标注」误算成「没召回」"
+        )
+
+    def test_counts_hit_by_locator_fragment(self):
+        report = "结论 [WEB1_1-1] 与 [LOC2_1-1]。"
+        index = [
+            {"source_id": "WEB1_1-1", "locator": "https://arxiv.org/abs/2501.00001"},
+            {"source_id": "LOC2_1-1", "locator": "/kb/whitepaper.md"},
+        ]
+
+        result = eval_metrics.expected_source_recall(report, index, ["arxiv.org", "openai.com"])
+
+        assert result["applicable"] is True
+        assert result["hit"] == 1
+        assert result["recall"] == 0.5
+        assert result["missed"] == ["openai.com"]
+
+    def test_ignores_sources_that_were_not_cited(self):
+        """来源表里有 arxiv，但正文没引用它——不算召回。"""
+        report = "结论 [LOC2_1-1]。"
+        index = [
+            {"source_id": "WEB1_1-1", "locator": "https://arxiv.org/abs/2501.00001"},
+            {"source_id": "LOC2_1-1", "locator": "/kb/whitepaper.md"},
+        ]
+
+        result = eval_metrics.expected_source_recall(report, index, ["arxiv.org"])
+
+        assert result["hit"] == 0, "只统计被正文实际引用的来源"
+
+    def test_matching_is_case_insensitive(self):
+        result = eval_metrics.expected_source_recall(
+            "结论 [WEB1_1-1]。",
+            [{"source_id": "WEB1_1-1", "locator": "https://ARXIV.org/abs/1"}],
+            ["arXiv.org"],
+        )
+
+        assert result["hit"] == 1
+
+    def test_aggregate_skips_not_applicable_entries(self):
+        per_query = [
+            {"expected_source_recall": {"recall": None}},
+            {"expected_source_recall": {"recall": 0.5}},
+            {"expected_source_recall": {"recall": 1.0}},
+        ]
+
+        assert eval_metrics.aggregate(per_query, "expected_source_recall", "recall") == 0.75
+
+
 class TestMeasure:
     def test_returns_all_metric_groups(self):
         state = {
@@ -207,9 +265,11 @@ class TestMeasure:
             "retrieval_rounds",
             "citation_legality",
             "key_point_coverage",
+            "expected_source_recall",
         }
         assert result["citation_legality"]["legality_rate"] == 1.0
         assert result["key_point_coverage"]["coverage"] == 1.0
+        assert result["expected_source_recall"]["applicable"] is False
 
 
 class TestTokenAccumulator:

@@ -52,88 +52,23 @@ logger = logging.getLogger("eval")
 # 测试集
 # ======================================================================
 
-EVAL_QUERIES = [
-    {"query": "2024年AI Agent框架发展趋势调研", "type": "multiagent",
-     "key_points": ["LangGraph", "AutoGen", "CrewAI", "多智能体", "状态机", "工具调用"]},
-    {"query": "RAG与Fine-tuning技术路线对比分析", "type": "multiagent",
-     "key_points": ["RAG原理", "Fine-tuning成本", "适用场景", "混合方案", "知识更新"]},
-    {"query": "大模型推理优化技术盘点", "type": "multiagent",
-     "key_points": ["KV Cache", "量化", "蒸馏", "投机解码", "批处理", "vLLM"]},
-    {"query": "向量数据库选型调研：Milvus vs Pinecone vs Weaviate", "type": "multiagent",
-     "key_points": ["Milvus", "Pinecone", "Weaviate", "性能对比", "索引类型", "部署方式"]},
-    {"query": "2024年开源大模型发展趋势", "type": "multiagent",
-     "key_points": ["Llama", "Qwen", "Mistral", "开源生态", "许可证", "性能"]},
-    {"query": "LangChain与LangGraph框架对比分析", "type": "multiagent",
-     "key_points": ["LangChain", "LangGraph", "Chain", "Graph", "状态管理", "Agent"]},
-    {"query": "Agent记忆系统设计调研", "type": "multiagent",
-     "key_points": ["短期记忆", "长期记忆", "向量存储", "摘要压缩", "用户画像", "跨会话"]},
-    {"query": "Prompt Engineering最佳实践调研", "type": "multiagent",
-     "key_points": ["Few-shot", "CoT", "ReAct", "模板化", "系统提示", "角色设定"]},
-    {"query": "多模态大模型技术进展调研", "type": "multiagent",
-     "key_points": ["视觉语言模型", "CLIP", "图文理解", "跨模态对齐", "应用场景"]},
-    {"query": "AI代码生成工具对比调研", "type": "multiagent",
-     "key_points": ["Copilot", "Cursor", "Codeium", "代码补全", "准确性", "集成"]},
-    {"query": "知识图谱构建技术调研", "type": "multiagent",
-     "key_points": ["实体抽取", "关系抽取", "Neo4j", "图数据库", "本体设计"]},
-    {"query": "LLM安全与对齐技术调研", "type": "multiagent",
-     "key_points": ["RLHF", "DPO", "安全护栏", "红队测试", "越狱防御", "对齐"]},
-    {"query": "Serverless GPU平台调研", "type": "multiagent",
-     "key_points": ["按需GPU", "无服务器", "成本优化", "冷启动", "弹性扩缩"]},
-    {"query": "向量检索算法调研：HNSW vs IVF", "type": "multiagent",
-     "key_points": ["HNSW", "IVF", "ANN", "召回率", "查询延迟", "内存占用"]},
-    {"query": "大模型评测基准调研", "type": "multiagent",
-     "key_points": ["MMLU", "HumanEval", "C-Eval", "评测方法", "基准偏差"]},
-    {"query": "AI Agent工具调用框架对比", "type": "multiagent",
-     "key_points": ["Function Calling", "Tool Use", "ReAct", "工具注册", "错误处理"]},
-    {"query": "企业知识库RAG系统架构调研", "type": "multiagent",
-     "key_points": ["文档分块", "Embedding", "向量检索", "重排序", "引用溯源"]},
-    {"query": "2024年AI编程助手发展趋势", "type": "multiagent",
-     "key_points": ["代码生成", "代码审查", "Bug修复", "IDE集成", "上下文理解"]},
-    {"query": "LLM长上下文处理技术调研", "type": "multiagent",
-     "key_points": ["长窗口", "RoPE", "上下文压缩", "RAG替代", "注意力机制"]},
-    {"query": "AI Agent工作流编排引擎对比", "type": "multiagent",
-     "key_points": ["LangGraph", "Temporal", "Airflow", "状态机", "DAG", "重试"]},
-    {"query": "大模型微调技术路线调研", "type": "multiagent",
-     "key_points": ["LoRA", "QLoRA", "全量微调", "数据准备", "显存需求"]},
-    {"query": "向量embedding模型调研", "type": "multiagent",
-     "key_points": ["text-embedding", "BGE", "E5", "维度", "多语言", "评测"]},
-    {"query": "AI搜索技术架构调研", "type": "multiagent",
-     "key_points": ["搜索增强", "引用溯源", "实时检索", "摘要生成", "多源融合"]},
-    {"query": "GraphRAG技术调研", "type": "multiagent",
-     "key_points": ["知识图谱", "图检索", "实体关系", "社区检测", "层次摘要"]},
-    {"query": "大模型部署推理框架对比", "type": "multiagent",
-     "key_points": ["vLLM", "TGI", "TensorRT-LLM", "吞吐量", "延迟", "量化"]},
-    {"query": "AI Agent反思机制调研", "type": "multiagent",
-     "key_points": ["自我评估", "补搜", "迭代优化", "错误纠正", "质量提升"]},
-    {"query": "企业级LLM应用架构调研", "type": "multiagent",
-     "key_points": ["API网关", "负载均衡", "缓存", "降级", "监控", "多租户"]},
-    {"query": "RAG重排序技术调研", "type": "multiagent",
-     "key_points": ["Cross-Encoder", "Cohere Rerank", "BGE Reranker", "召回率提升"]},
-    {"query": "AI Agent多轮对话管理调研", "type": "multiagent",
-     "key_points": ["对话状态", "上下文窗口", "摘要压缩", "记忆持久化", "会话管理"]},
-    {"query": "大模型幻觉缓解技术调研", "type": "multiagent",
-     "key_points": ["引用溯源", "交叉验证", "证据裁判", "知识grounded", "检测方法"]},
-    {"query": "1+1等于几", "type": "direct", "key_points": ["2"]},
-    {"query": "Python的list怎么排序", "type": "direct", "key_points": ["sort", "sorted"]},
-    {"query": "什么是REST API", "type": "direct", "key_points": ["REST", "HTTP", "资源"]},
-    {"query": "JSON是什么格式", "type": "direct", "key_points": ["键值对", "文本", "数据交换"]},
-    {"query": "Git怎么回退上一个提交", "type": "direct", "key_points": ["git revert", "git reset"]},
-    {"query": "Python中len函数怎么用", "type": "direct", "key_points": ["长度", "len"]},
-    {"query": "什么是Docker", "type": "direct", "key_points": ["容器", "镜像", "隔离"]},
-    {"query": "HTTP状态码404是什么意思", "type": "direct", "key_points": ["Not Found", "资源不存在"]},
-    {"query": "Python的字典怎么遍历", "type": "direct", "key_points": ["items", "keys", "values"]},
-    {"query": "什么是CSV文件", "type": "direct", "key_points": ["逗号分隔", "表格", "文本"]},
-    {"query": "SQL中WHERE和HAVING的区别", "type": "direct", "key_points": ["WHERE", "HAVING", "聚合"]},
-    {"query": "Python中map函数的作用", "type": "direct", "key_points": ["映射", "函数", "迭代"]},
-    {"query": "什么是API网关", "type": "direct", "key_points": ["入口", "路由", "限流"]},
-    {"query": "Linux中chmod命令怎么用", "type": "direct", "key_points": ["权限", "读写执行"]},
-    {"query": "Python中*args和**kwargs的区别", "type": "direct", "key_points": ["位置参数", "关键字参数"]},
-    {"query": "什么是CI/CD", "type": "direct", "key_points": ["持续集成", "持续部署", "自动化"]},
-    {"query": "HTTP的GET和POST区别", "type": "direct", "key_points": ["GET", "POST", "参数位置"]},
-    {"query": "Python中虚拟环境的作用", "type": "direct", "key_points": ["隔离", "依赖", "venv"]},
-    {"query": "什么是正则表达式", "type": "direct", "key_points": ["模式匹配", "文本", "规则"]},
-    {"query": "SQL中JOIN的类型有哪些", "type": "direct", "key_points": ["INNER", "LEFT", "RIGHT", "FULL"]},
-]
+GOLDEN_SET_PATH = Path(__file__).resolve().parent / "golden_set.json"
+
+
+def load_golden_set(path: Path | None = None) -> list[dict]:
+    """从 golden_set.json 读评测题集。
+
+    题集是**数据**不是代码：标注「期望要点」「期望来源」需要反复编辑与评审，
+    放在 JSON 里比改 Python 字面量安全得多，也便于多人协作与 diff 审阅。
+    要点判别力的要求写在该文件的 _readme 字段里，改题前先读。
+    """
+    target = path or GOLDEN_SET_PATH
+    with open(target, encoding="utf-8") as handle:
+        document = json.load(handle)
+    queries = document.get("queries") or []
+    if not queries:
+        raise ValueError(f"评测题集为空或格式不对: {target}")
+    return queries
 
 
 # ======================================================================
@@ -425,7 +360,7 @@ async def run_single_query(app, config, query, token_acc, memory_manager=None):
     return final, dict(result), elapsed, token_acc.total_tokens
 
 
-async def run_eval(output_path, max_queries=0, judge_model=""):
+async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     config = AppConfig.from_file()
     agents = build_agents(config.model, config.api_key, config)
@@ -442,9 +377,12 @@ async def run_eval(output_path, max_queries=0, judge_model=""):
 
     token_acc = TokenAccumulator()
 
-    queries = EVAL_QUERIES
-    if max_queries > 0:
-        queries = queries[:max_queries]
+    def judge(judge_func, *args):
+        """按配置轮数取中位数。轮数是成本旋钮：3 轮最稳，跑大样本时降到 1 轮。"""
+        return judge_with_consensus(judge_func, judge_llm, *args, rounds=judge_rounds)
+
+    all_queries = load_golden_set()
+    queries = all_queries[:max_queries] if max_queries > 0 else all_queries
     ma_queries = [q for q in queries if q["type"] == "multiagent"]
     dir_queries = [q for q in queries if q["type"] == "direct"]
 
@@ -462,10 +400,10 @@ async def run_eval(output_path, max_queries=0, judge_model=""):
         try:
             final, state, elapsed, tokens = await run_single_query(app, bl_config, q["query"], token_acc)
             stats = extract_retrieval_stats(state)
-            quality = measure_quality(state, final, q["key_points"])
-            comp = judge_with_consensus(judge_completeness, judge_llm, q["query"], q["key_points"], final)
-            halluc = judge_with_consensus(judge_hallucination, judge_llm, final, state.get("evidence_pool", []))
-            cit = judge_with_consensus(judge_citation_accuracy, judge_llm, final, state.get("source_index", []))
+            quality = measure_quality(state, final, q["key_points"], q.get("expected_sources"))
+            comp = judge(judge_completeness, q["query"], q["key_points"], final)
+            halluc = judge(judge_hallucination, final, state.get("evidence_pool", []))
+            cit = judge(judge_citation_accuracy, final, state.get("source_index", []))
             results_bl.append(EvalResult(q["query"], "multiagent", elapsed, final, tokens, stats,
                                         comp, halluc, cit, quality))
             logger.info("  完备=%.2f 幻觉=%.2f 引用=%.2f Token=%d 耗时=%.1fs | 重复=%.1f%% 检索轮次=%.1f",
@@ -486,10 +424,10 @@ async def run_eval(output_path, max_queries=0, judge_model=""):
         try:
             final, state, elapsed, tokens = await run_single_query(app, im_config, q["query"], token_acc)
             stats = extract_retrieval_stats(state)
-            quality = measure_quality(state, final, q["key_points"])
-            comp = judge_with_consensus(judge_completeness, judge_llm, q["query"], q["key_points"], final)
-            halluc = judge_with_consensus(judge_hallucination, judge_llm, final, state.get("evidence_pool", []))
-            cit = judge_with_consensus(judge_citation_accuracy, judge_llm, final, state.get("source_index", []))
+            quality = measure_quality(state, final, q["key_points"], q.get("expected_sources"))
+            comp = judge(judge_completeness, q["query"], q["key_points"], final)
+            halluc = judge(judge_hallucination, final, state.get("evidence_pool", []))
+            cit = judge(judge_citation_accuracy, final, state.get("source_index", []))
             results_im.append(EvalResult(q["query"], "multiagent", elapsed, final, tokens, stats,
                                         comp, halluc, cit, quality))
             logger.info("  完备=%.2f 幻觉=%.2f 引用=%.2f Token=%d 耗时=%.1fs | 重复=%.1f%% 检索轮次=%.1f",
@@ -554,6 +492,12 @@ async def run_eval(output_path, max_queries=0, judge_model=""):
     im_rounds = aggregate_metric(im_quality, "retrieval_rounds", "queries_per_round")
     im_cit_legal = aggregate_metric(im_quality, "citation_legality", "legality_rate")
     im_kp = aggregate_metric(im_quality, "key_point_coverage", "coverage")
+    # 未标注 expected_sources 的题 recall 为 None，aggregate 会自动跳过
+    bl_src = aggregate_metric(bl_quality, "expected_source_recall", "recall")
+    im_src = aggregate_metric(im_quality, "expected_source_recall", "recall")
+    src_annotated = sum(
+        1 for entry in im_quality if entry.get("expected_source_recall", {}).get("applicable")
+    )
 
     report = {
         "summary": {
@@ -584,6 +528,10 @@ async def run_eval(output_path, max_queries=0, judge_model=""):
                                   "desc": "引用角标合法率（规则型；角标能否在来源表找到）"},
             "key_point_coverage": {"improved": round(im_kp, 4),
                                    "desc": "期望要点字面覆盖率（规则型，对照 LLM-as-Judge）"},
+            "expected_source_recall": {"baseline": round(bl_src, 4), "improved": round(im_src, 4),
+                                       "annotated_queries": src_annotated,
+                                       "desc": "期望来源召回率（规则型；仅统计已标注 expected_sources 的题，"
+                                               "未标注时聚合自动跳过）"},
         },
         "details": {
             "baseline": [_result_to_dict(r) for r in results_bl],
@@ -591,11 +539,11 @@ async def run_eval(output_path, max_queries=0, judge_model=""):
             "direct": [_result_to_dict(r) for r in results_dir],
         },
         "meta": {
-            "total_queries": len(EVAL_QUERIES),
+            "total_queries": len(all_queries),
             "multiagent_queries": len(ma_queries),
             "direct_queries": len(dir_queries),
             "judge_model": judge_model or config.model,
-            "judge_rounds": 3,
+            "judge_rounds": judge_rounds,
             "gen_model": config.model,
         },
     }
@@ -645,6 +593,14 @@ def print_summary(report):
     print(f"   方法: 规则型（检索轨迹条数 / 外层研究轮数）")
     print(f"\n10. 引用合法率: {s['citation_legality']['improved']:.1%}   要点字面覆盖: {s['key_point_coverage']['improved']:.1%}")
     print(f"   方法: 规则型（角标存在性校验 / 关键词子串匹配，对照 LLM-as-Judge）")
+    src = s["expected_source_recall"]
+    if src["annotated_queries"]:
+        print(f"\n11. 期望来源召回: {src['baseline']:.1%} → {src['improved']:.1%}"
+              f"（已标注 {src['annotated_queries']} 题）")
+    else:
+        print(f"\n11. 期望来源召回: 未评测 —— 题集里还没有题标注 expected_sources")
+        print(f"   要判「检索有没有找对来源」必须先在 app/test/golden_set.json 里标注")
+    print(f"   方法: 规则型（正文引用来源与期望域名/URL 片段比对）")
     print("\n" + "=" * 60)
 
 
@@ -654,6 +610,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-queries", type=int, default=0, help="最大评测题数 (0=全部)")
     parser.add_argument("--judge-model", type=str, default="",
                         help="裁判模型（留空取 config.json 的 model）")
+    parser.add_argument("--judge-rounds", type=int, default=3,
+                        help="每项指标取中位数的裁判轮数；跑大样本时降到 1 可省 2/3 裁判成本")
     args = parser.parse_args()
 
-    asyncio.run(run_eval(args.output, args.max_queries, args.judge_model))
+    asyncio.run(run_eval(args.output, args.max_queries, args.judge_model, args.judge_rounds))

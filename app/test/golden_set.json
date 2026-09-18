@@ -1,0 +1,590 @@
+{
+  "_readme": [
+    "DeepResearch 评测题集（Golden Set）。改这个文件即可增删题，不必动 Python。",
+    "",
+    "字段说明：",
+    "  query            必填。调研问题原文。",
+    "  type             必填。multiagent（走完整研报链路）| direct（直答快路径）。",
+    "  key_points       必填。期望报告覆盖的要点。**这是本文件的核心，见下方判别力要求**。",
+    "  expected_sources 可选。期望被引用的来源（域名或 URL 片段，如 'arxiv.org'）。",
+    "                   留空则该题不计入「来源召回」指标。",
+    "",
+    "⚠️ key_points 的判别力要求（实测教训）：",
+    "  旧题集的要点是「框架名 + 通用概念」（如 LangGraph / 状态机 / 工具调用），",
+    "  结果连只跑 1 轮迭代的 baseline 都拿满分 —— 指标触顶，测不出任何改进。",
+    "  好要点必须**只有真正找到并读懂正确来源才可能命中**，例如：",
+    "    ✅ 「LangGraph 用 checkpointer 支持断点续研」   ← 需要读到具体机制",
+    "    ✅ 「AutoGen v0.4 重构为异步 actor 模型」       ← 需要读到具体版本变更",
+    "    ❌ 「LangGraph」                                ← 提到名字就得分",
+    "    ❌ 「多智能体」                                  ← 任何一篇都写",
+    "  建议每题 4-6 条，其中至少一半是「具体机制 / 版本 / 数字 / 对比结论」。"
+  ],
+  "queries": [
+    {
+      "query": "2024年AI Agent框架发展趋势调研",
+      "type": "multiagent",
+      "key_points": [
+        "LangGraph",
+        "AutoGen",
+        "CrewAI",
+        "多智能体",
+        "状态机",
+        "工具调用"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "RAG与Fine-tuning技术路线对比分析",
+      "type": "multiagent",
+      "key_points": [
+        "RAG原理",
+        "Fine-tuning成本",
+        "适用场景",
+        "混合方案",
+        "知识更新"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "大模型推理优化技术盘点",
+      "type": "multiagent",
+      "key_points": [
+        "KV Cache",
+        "量化",
+        "蒸馏",
+        "投机解码",
+        "批处理",
+        "vLLM"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "向量数据库选型调研：Milvus vs Pinecone vs Weaviate",
+      "type": "multiagent",
+      "key_points": [
+        "Milvus",
+        "Pinecone",
+        "Weaviate",
+        "性能对比",
+        "索引类型",
+        "部署方式"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "2024年开源大模型发展趋势",
+      "type": "multiagent",
+      "key_points": [
+        "Llama",
+        "Qwen",
+        "Mistral",
+        "开源生态",
+        "许可证",
+        "性能"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "LangChain与LangGraph框架对比分析",
+      "type": "multiagent",
+      "key_points": [
+        "LangChain",
+        "LangGraph",
+        "Chain",
+        "Graph",
+        "状态管理",
+        "Agent"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Agent记忆系统设计调研",
+      "type": "multiagent",
+      "key_points": [
+        "短期记忆",
+        "长期记忆",
+        "向量存储",
+        "摘要压缩",
+        "用户画像",
+        "跨会话"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Prompt Engineering最佳实践调研",
+      "type": "multiagent",
+      "key_points": [
+        "Few-shot",
+        "CoT",
+        "ReAct",
+        "模板化",
+        "系统提示",
+        "角色设定"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "多模态大模型技术进展调研",
+      "type": "multiagent",
+      "key_points": [
+        "视觉语言模型",
+        "CLIP",
+        "图文理解",
+        "跨模态对齐",
+        "应用场景"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "AI代码生成工具对比调研",
+      "type": "multiagent",
+      "key_points": [
+        "Copilot",
+        "Cursor",
+        "Codeium",
+        "代码补全",
+        "准确性",
+        "集成"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "知识图谱构建技术调研",
+      "type": "multiagent",
+      "key_points": [
+        "实体抽取",
+        "关系抽取",
+        "Neo4j",
+        "图数据库",
+        "本体设计"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "LLM安全与对齐技术调研",
+      "type": "multiagent",
+      "key_points": [
+        "RLHF",
+        "DPO",
+        "安全护栏",
+        "红队测试",
+        "越狱防御",
+        "对齐"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Serverless GPU平台调研",
+      "type": "multiagent",
+      "key_points": [
+        "按需GPU",
+        "无服务器",
+        "成本优化",
+        "冷启动",
+        "弹性扩缩"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "向量检索算法调研：HNSW vs IVF",
+      "type": "multiagent",
+      "key_points": [
+        "HNSW",
+        "IVF",
+        "ANN",
+        "召回率",
+        "查询延迟",
+        "内存占用"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "大模型评测基准调研",
+      "type": "multiagent",
+      "key_points": [
+        "MMLU",
+        "HumanEval",
+        "C-Eval",
+        "评测方法",
+        "基准偏差"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "AI Agent工具调用框架对比",
+      "type": "multiagent",
+      "key_points": [
+        "Function Calling",
+        "Tool Use",
+        "ReAct",
+        "工具注册",
+        "错误处理"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "企业知识库RAG系统架构调研",
+      "type": "multiagent",
+      "key_points": [
+        "文档分块",
+        "Embedding",
+        "向量检索",
+        "重排序",
+        "引用溯源"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "2024年AI编程助手发展趋势",
+      "type": "multiagent",
+      "key_points": [
+        "代码生成",
+        "代码审查",
+        "Bug修复",
+        "IDE集成",
+        "上下文理解"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "LLM长上下文处理技术调研",
+      "type": "multiagent",
+      "key_points": [
+        "长窗口",
+        "RoPE",
+        "上下文压缩",
+        "RAG替代",
+        "注意力机制"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "AI Agent工作流编排引擎对比",
+      "type": "multiagent",
+      "key_points": [
+        "LangGraph",
+        "Temporal",
+        "Airflow",
+        "状态机",
+        "DAG",
+        "重试"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "大模型微调技术路线调研",
+      "type": "multiagent",
+      "key_points": [
+        "LoRA",
+        "QLoRA",
+        "全量微调",
+        "数据准备",
+        "显存需求"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "向量embedding模型调研",
+      "type": "multiagent",
+      "key_points": [
+        "text-embedding",
+        "BGE",
+        "E5",
+        "维度",
+        "多语言",
+        "评测"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "AI搜索技术架构调研",
+      "type": "multiagent",
+      "key_points": [
+        "搜索增强",
+        "引用溯源",
+        "实时检索",
+        "摘要生成",
+        "多源融合"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "GraphRAG技术调研",
+      "type": "multiagent",
+      "key_points": [
+        "知识图谱",
+        "图检索",
+        "实体关系",
+        "社区检测",
+        "层次摘要"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "大模型部署推理框架对比",
+      "type": "multiagent",
+      "key_points": [
+        "vLLM",
+        "TGI",
+        "TensorRT-LLM",
+        "吞吐量",
+        "延迟",
+        "量化"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "AI Agent反思机制调研",
+      "type": "multiagent",
+      "key_points": [
+        "自我评估",
+        "补搜",
+        "迭代优化",
+        "错误纠正",
+        "质量提升"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "企业级LLM应用架构调研",
+      "type": "multiagent",
+      "key_points": [
+        "API网关",
+        "负载均衡",
+        "缓存",
+        "降级",
+        "监控",
+        "多租户"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "RAG重排序技术调研",
+      "type": "multiagent",
+      "key_points": [
+        "Cross-Encoder",
+        "Cohere Rerank",
+        "BGE Reranker",
+        "召回率提升"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "AI Agent多轮对话管理调研",
+      "type": "multiagent",
+      "key_points": [
+        "对话状态",
+        "上下文窗口",
+        "摘要压缩",
+        "记忆持久化",
+        "会话管理"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "大模型幻觉缓解技术调研",
+      "type": "multiagent",
+      "key_points": [
+        "引用溯源",
+        "交叉验证",
+        "证据裁判",
+        "知识grounded",
+        "检测方法"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "1+1等于几",
+      "type": "direct",
+      "key_points": [
+        "2"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Python的list怎么排序",
+      "type": "direct",
+      "key_points": [
+        "sort",
+        "sorted"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "什么是REST API",
+      "type": "direct",
+      "key_points": [
+        "REST",
+        "HTTP",
+        "资源"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "JSON是什么格式",
+      "type": "direct",
+      "key_points": [
+        "键值对",
+        "文本",
+        "数据交换"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Git怎么回退上一个提交",
+      "type": "direct",
+      "key_points": [
+        "git revert",
+        "git reset"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Python中len函数怎么用",
+      "type": "direct",
+      "key_points": [
+        "长度",
+        "len"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "什么是Docker",
+      "type": "direct",
+      "key_points": [
+        "容器",
+        "镜像",
+        "隔离"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "HTTP状态码404是什么意思",
+      "type": "direct",
+      "key_points": [
+        "Not Found",
+        "资源不存在"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Python的字典怎么遍历",
+      "type": "direct",
+      "key_points": [
+        "items",
+        "keys",
+        "values"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "什么是CSV文件",
+      "type": "direct",
+      "key_points": [
+        "逗号分隔",
+        "表格",
+        "文本"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "SQL中WHERE和HAVING的区别",
+      "type": "direct",
+      "key_points": [
+        "WHERE",
+        "HAVING",
+        "聚合"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Python中map函数的作用",
+      "type": "direct",
+      "key_points": [
+        "映射",
+        "函数",
+        "迭代"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "什么是API网关",
+      "type": "direct",
+      "key_points": [
+        "入口",
+        "路由",
+        "限流"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Linux中chmod命令怎么用",
+      "type": "direct",
+      "key_points": [
+        "权限",
+        "读写执行"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Python中*args和**kwargs的区别",
+      "type": "direct",
+      "key_points": [
+        "位置参数",
+        "关键字参数"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "什么是CI/CD",
+      "type": "direct",
+      "key_points": [
+        "持续集成",
+        "持续部署",
+        "自动化"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "HTTP的GET和POST区别",
+      "type": "direct",
+      "key_points": [
+        "GET",
+        "POST",
+        "参数位置"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "Python中虚拟环境的作用",
+      "type": "direct",
+      "key_points": [
+        "隔离",
+        "依赖",
+        "venv"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "什么是正则表达式",
+      "type": "direct",
+      "key_points": [
+        "模式匹配",
+        "文本",
+        "规则"
+      ],
+      "expected_sources": []
+    },
+    {
+      "query": "SQL中JOIN的类型有哪些",
+      "type": "direct",
+      "key_points": [
+        "INNER",
+        "LEFT",
+        "RIGHT",
+        "FULL"
+      ],
+      "expected_sources": []
+    }
+  ]
+}
