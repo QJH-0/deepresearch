@@ -79,7 +79,7 @@ class AppConfig:
     enable_rerank_model: bool = True
     evidence_llm_fusion: bool = True
     evidence_prior_weight: float = 0.4
-    # ── 节点 prompt 的证据预算（防病态膨胀，非正常路径裁剪）──
+    # ── 节点 prompt 的证据预算（实测会裁剪：常态召回 64 条 > 默认 40）──
     context_evidence_limit: int = 40
     context_evidence_budget_chars: int = 60000
     # ── 按节点分档的模型映射 ──
