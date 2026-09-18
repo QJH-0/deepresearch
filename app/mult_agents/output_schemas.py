@@ -95,3 +95,87 @@ class ReflectionDraft(BaseModel):
 
     reflection_summary: str = Field(description="补搜思路概述")
     supplementary_queries: list[SupplementaryQuery] = Field(default_factory=list)
+
+
+# ── 检索节点：证据整理的结构化产出 ──
+#
+# 这几个 schema 只约束「结构必需字段」（source_id 必须存在且非空），
+# 其余一律给默认值 —— 证据正文由模型自由生成，字段缺失不该让整轮检索失败。
+
+
+class WebEvidenceItem(BaseModel):
+    """网页证据条目。"""
+
+    source_id: str = Field(description="来源 ID，必须取自输入，不得编造")
+    title: str = ""
+    url: str = ""
+    snippet: str = ""
+    domain: str = ""
+    source_type: str = "web"
+    reliability_hint: str = Field(default="unknown", description="official / media / community / unknown")
+    supports_questions: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class WebSearchDraft(BaseModel):
+    """WebScout 的相关性过滤结果。"""
+
+    summary: str = ""
+    evidence: list[WebEvidenceItem] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    rejected_source_ids: list[str] = Field(default_factory=list)
+    reject_reason: str = ""
+
+
+class LocalEvidenceItem(BaseModel):
+    """本地知识库证据条目。"""
+
+    source_id: str = Field(description="来源 ID，必须取自输入，不得编造")
+    doc_id: str = ""
+    title: str = ""
+    snippet: str = ""
+    source_type: str = "local"
+    reliability_hint: str = "internal"
+    supports_questions: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class LocalRagDraft(BaseModel):
+    """LocalRAGScout 的相关性过滤结果。"""
+
+    summary: str = ""
+    evidence: list[LocalEvidenceItem] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    rejected_source_ids: list[str] = Field(default_factory=list)
+    reject_reason: str = ""
+
+
+class EvidencePoolItem(BaseModel):
+    """证据裁判后的证据条目。"""
+
+    source_id: str = Field(description="来源 ID，必须取自输入，不得编造")
+    source_type: str = ""
+    title: str = ""
+    url: str = ""
+    doc_id: str = ""
+    snippet: str = ""
+    supports_questions: list[str] = Field(default_factory=list)
+    reliability_score: float = 0.5
+    reliability_reason: str = ""
+    source_label: str = ""
+
+
+class AuditFlag(BaseModel):
+    """证据审计标记。"""
+
+    type: str = Field(default="missing_evidence", description="low_confidence / conflict / missing_evidence")
+    target: str = ""
+    reason: str = ""
+
+
+class DeepDiveDraft(BaseModel):
+    """EvidenceJudge 的证据裁判结果。"""
+
+    summary: str = ""
+    evidence_pool: list[EvidencePoolItem] = Field(default_factory=list)
+    audit_flags: list[AuditFlag] = Field(default_factory=list)

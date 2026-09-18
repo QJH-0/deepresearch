@@ -11,8 +11,8 @@ from langgraph.types import StreamWriter
 
 from ..state import AgentState
 from ..tools import search_knowledge_base_records
-from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs
-from ._parsing import _invoke_json_agent
+from ._shared import colorize, log_inputs
+from ._parsing import StructuredOutputError, _invoke_structured_agent
 from ._evidence import (
     _build_queries, _assign_source_ids, _dedupe_sources, _minimal_record_filter,
     _summarize_records, _format_raw_records, _fallback_local_evidence,
@@ -82,18 +82,23 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
             "local_rag_trace": query_traces,
         }
     fallback = _fallback_local_evidence(raw_records)
-    payload, content, messages = await _invoke_json_agent(
-        state,
-        "请基于以下知识库证据整理结构化 JSON。\n"
+    prompt = (
+        "请基于以下知识库证据整理结构化结果。\n"
         f"原问题：{state['query']}\n"
         f"子问题：{json.dumps(state.get('sub_questions', []), ensure_ascii=False)}\n"
-        f"原始知识库证据：\n{_format_raw_records(raw_records, 'local')}",
-        agent,
-        agent_name,
-        "local_rag",
-        fallback,
-        writer=writer,
+        f"原始知识库证据：\n{_format_raw_records(raw_records, 'local')}"
     )
+    try:
+        draft, messages = await _invoke_structured_agent(
+            state, prompt, agent, agent_name, "local_rag", writer=writer
+        )
+        payload = draft.model_dump()
+    except StructuredOutputError as exc:
+        # 降级用原始记录直接构造证据，保证检索结果不因整理失败而丢失；但必须留痕
+        logger.warning("[local_rag_node] 结构化整理失败，降级用原始记录构造证据 | %s", exc)
+        if writer:
+            writer({"node": "local_rag", "message": "证据整理失败，改用原始记录构造"})
+        payload, messages = fallback, []
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else fallback["evidence"]
     allowed_source_ids = {str(item.get("source_id")) for item in raw_records if item.get("source_id")}
     evidence = _prune_evidence_to_allowed_sources(evidence, allowed_source_ids)
@@ -131,7 +136,7 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
         if new_sources:
             writer({"type": "sources", "sources": new_sources})
     return {
-        "local_rag": payload.get("summary", content),
+        "local_rag": payload.get("summary", ""),
         "local_evidence": existing_evidence + evidence,
         "local_retrieval_stats": local_retrieval_stats,
         "local_rag_trace": query_traces,

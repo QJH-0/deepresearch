@@ -55,97 +55,70 @@ class TestEventProtocolUnchanged:
 
 
 class TestThinkingNodesConfig:
-    """build_agent 的 enable_thinking 参数按 thinking_nodes 配置注入。"""
+    """build_agent / build_structured_agent 的 enable_thinking 按 thinking_nodes 注入。
 
-    def test_thinking_nodes_empty_disables_all(self):
-        from mult_agents.models import build_agent
+    结构化节点同样受该配置约束：deep_dive 与 analyze 都走结构化执行体。
+    """
 
-        with patch("mult_agents.models.build_agent", wraps=build_agent) as mock_build:
-            from mult_agents.models import build_agents
-            from mult_agents.config import AppConfig
-
-            config = AppConfig(
-                api_key="test",
-                model="qwen-plus",
-                thread_id="t",
-                user_id="u",
-                tenant_id="t",
-                max_iterations=3,
-                enable_memory=False,
-                memory_embedding_model="",
-                memory_hot_path_top_k=5,
-                memory_background_enabled=False,
-                memory_extract_model="qwen-turbo",
-                save_conversation_task=False,
-                checkpointer_backend="memory",
-                enable_milvus=False,
-                redis_url="",
-                postgres_dsn="",
-                milvus_host="",
-                milvus_port=19530,
-                milvus_collection="",
-                thinking_nodes=[],
-            )
-            try:
-                build_agents("qwen-plus", "test", config)
-            except Exception:
-                pass
-
-            for call in mock_build.call_args_list:
-                assert not call.kwargs.get("enable_thinking", False), \
-                    "thinking_nodes=[] 时所有 agent 的 enable_thinking 应为 False"
-
-    def test_thinking_nodes_includes_write(self):
+    @staticmethod
+    def _app_config(thinking_nodes):
         from mult_agents.config import AppConfig
 
+        return AppConfig(
+            api_key="test",
+            model="qwen3.8-max",
+            thread_id="t",
+            user_id="u",
+            tenant_id="t",
+            max_iterations=3,
+            enable_memory=False,
+            memory_embedding_model="",
+            memory_hot_path_top_k=5,
+            memory_background_enabled=False,
+            memory_extract_model="qwen-turbo",
+            save_conversation_task=False,
+            checkpointer_backend="memory",
+            enable_milvus=False,
+            redis_url="",
+            postgres_dsn="",
+            milvus_host="",
+            milvus_port=19530,
+            milvus_collection="",
+            thinking_nodes=thinking_nodes,
+        )
+
+    @classmethod
+    def _build_and_log(cls, thinking_nodes):
+        """构造全部 agent，记录每个节点的 prompt_key 与 enable_thinking。"""
+        from mult_agents import models
+
         call_log = []
-        structured_log = []
 
-        def _fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False, **kwargs):
-            call_log.append({"prompt_key": prompt_key, "enable_thinking": enable_thinking})
+        def _record(model, api_key, prompt_key, temperature, *args, **kwargs):
+            call_log.append({
+                "prompt_key": prompt_key,
+                "enable_thinking": kwargs.get("enable_thinking", False),
+            })
             return MagicMock()
 
-        def _fake_build_structured(model, api_key, prompt_key, temperature, **kwargs):
-            structured_log.append({"prompt_key": prompt_key, "response_format": kwargs.get("response_format")})
-            return MagicMock()
-
-        with patch("mult_agents.models.build_agent", side_effect=_fake_build_agent), \
-             patch("mult_agents.models.build_structured_agent", side_effect=_fake_build_structured), \
+        with patch("mult_agents.models.build_agent", side_effect=_record), \
+             patch("mult_agents.models.build_structured_agent", side_effect=_record), \
              patch("mult_agents.models.init_rag_system"):
-            from mult_agents.models import build_agents
+            models.build_agents("qwen3.8-max", "test", cls._app_config(thinking_nodes))
+        return call_log
 
-            config = AppConfig(
-                api_key="test",
-                model="qwen-plus",
-                thread_id="t",
-                user_id="u",
-                tenant_id="t",
-                max_iterations=3,
-                enable_memory=False,
-                memory_embedding_model="",
-                memory_hot_path_top_k=5,
-                memory_background_enabled=False,
-                memory_extract_model="qwen-turbo",
-                save_conversation_task=False,
-                checkpointer_backend="memory",
-                enable_milvus=False,
-                redis_url="",
-                postgres_dsn="",
-                milvus_host="",
-                milvus_port=19530,
-                milvus_collection="",
-                thinking_nodes=["write", "deep_dive", "analyze"],
-            )
-            build_agents("qwen-plus", "test", config)
+    def test_thinking_nodes_empty_disables_all(self):
+        call_log = self._build_and_log([])
 
-        write_calls = [c for c in call_log if c["prompt_key"] == "write"]
-        assert len(write_calls) == 1
-        assert write_calls[0]["enable_thinking"] is True
+        assert call_log, "未捕获到任何 agent 构建调用"
+        assert all(not c["enable_thinking"] for c in call_log), \
+            "thinking_nodes=[] 时所有 agent 的 enable_thinking 应为 False"
 
-        # 决策节点走结构化执行体，不参与 thinking_nodes 配置
-        assert [c["prompt_key"] for c in structured_log] == [
-            "intent_router", "plan", "reflect", "analyze",
-        ]
+    def test_thinking_nodes_includes_write(self):
+        call_log = self._build_and_log(["write", "deep_dive", "analyze"])
+
+        thinking_on = {c["prompt_key"] for c in call_log if c["enable_thinking"]}
+        assert thinking_on == {"write", "deep_dive", "analyze"}
 
 
 # ──────────────────────────────────────────────

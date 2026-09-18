@@ -100,8 +100,13 @@ class TestRelevanceFilterWiring:
         assert out[0]["relevance_score"] == 0.75
 
     async def test_web_search_node_drops_irrelevant_and_scores_kept(self, monkeypatch):
-        """接线回归：无关记录必须被剔除，保留记录必须带 relevance_score。"""
+        """接线回归：无关记录必须被剔除，保留记录必须带 relevance_score。
+
+        结构化整理失败时节点降级用原始记录构造证据，本用例正是走该分支，
+        以便在不调用模型的前提下验证过滤接线。
+        """
         from mult_agents.nodes import web_search
+        from mult_agents.nodes._parsing import StructuredOutputError
 
         records = [
             {"title": "LangGraph 教程", "url": "https://a.com/1",
@@ -113,11 +118,11 @@ class TestRelevanceFilterWiring:
         def fake_search(query, count=4):
             return [dict(r) for r in records]
 
-        async def fake_invoke(state, prompt, agent, agent_name, node, fallback, writer=None):
-            return fallback, "", []
+        async def fake_structured(state, prompt, agent, agent_name, node, writer=None):
+            raise StructuredOutputError("用例走降级分支，不调用模型")
 
         monkeypatch.setattr(web_search, "web_search_records", fake_search)
-        monkeypatch.setattr(web_search, "_invoke_json_agent", fake_invoke)
+        monkeypatch.setattr(web_search, "_invoke_structured_agent", fake_structured)
 
         out = await web_search.web_search_node(_web_search_state(), None, "scout_web")
 
@@ -1858,42 +1863,3 @@ class TestEnableMilvusActuallyGatesRagInit:
 
     def test_enabled_calls_rag_init_once(self, monkeypatch):
         assert len(self._rag_init_calls(monkeypatch, True)) == 1
-
-
-# ──────────────────────────────────────────────────────────────
-# 断链修复：流式无内容不得再补一次调用
-# ──────────────────────────────────────────────────────────────
-
-
-class _EmptyStreamAgent:
-    """astream 不产出任何块；ainvoke 一旦被调用即为回归。"""
-
-    def __init__(self):
-        self.astream_calls = 0
-        self.ainvoke_calls = 0
-
-    async def astream(self, *_args, **_kwargs):
-        self.astream_calls += 1
-        return
-        yield  # pragma: no cover - 仅为让本函数成为异步生成器
-
-    async def ainvoke(self, *_args, **_kwargs):
-        self.ainvoke_calls += 1
-        raise AssertionError("流式无内容时不应再补一次 ainvoke")
-
-
-class TestJsonAgentDoesNotCallTwice:
-    """回归：曾对同一请求先 astream 再 ainvoke，等于为一次输入付费两次。"""
-
-    async def test_empty_stream_skips_second_call(self):
-        from mult_agents.nodes._parsing import _invoke_json_agent
-
-        agent = _EmptyStreamAgent()
-        payload, content, _messages = await _invoke_json_agent(
-            {}, "提示词", agent, "test_agent", "write", {"fallback": True}
-        )
-
-        assert agent.astream_calls == 1
-        assert agent.ainvoke_calls == 0
-        assert payload == {"fallback": True}, "无内容时返回调用方给的 fallback，降级与否由调用方决定"
-        assert content == ""

@@ -9,8 +9,8 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import interrupt, StreamWriter
 
 from ..state import AgentState
-from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs
-from ._parsing import _invoke_json_agent
+from ._shared import colorize
+from ._parsing import StructuredOutputError, _invoke_structured_agent
 from ._evidence import _score_evidence, _dedupe_sources
 from ._fallbacks import _fallback_audit
 
@@ -25,19 +25,24 @@ async def deep_dive_node(state: AgentState, agent, agent_name: str, writer: Stre
         logger.info("%s 等待检索结果", colorize("[deep_dive]", "yellow"))
         return {}
     fallback = _fallback_audit(state)
-    payload, content, messages = await _invoke_json_agent(
-        state,
-        "请对 web 与 local 证据进行评分、去重、冲突审计，并只输出 JSON。\n"
+    prompt = (
+        "请对 web 与 local 证据进行评分、去重、冲突审计。\n"
         f"问题：{state['query']}\n"
         f"子问题：{json.dumps(state.get('sub_questions', []), ensure_ascii=False)}\n"
         f"web_evidence：{json.dumps(state.get('web_evidence', []), ensure_ascii=False)}\n"
-        f"local_evidence：{json.dumps(state.get('local_evidence', []), ensure_ascii=False)}",
-        agent,
-        agent_name,
-        "deep_dive",
-        fallback,
-        writer=writer,
+        f"local_evidence：{json.dumps(state.get('local_evidence', []), ensure_ascii=False)}"
     )
+    try:
+        draft, messages = await _invoke_structured_agent(
+            state, prompt, agent, agent_name, "deep_dive", writer=writer
+        )
+        payload = draft.model_dump()
+    except StructuredOutputError as exc:
+        # 降级用原始证据直接构造裁判结果，保证已检索到的证据不被丢弃；但必须留痕
+        logger.warning("[deep_dive_node] 结构化裁判失败，降级用原始证据构造 | %s", exc)
+        if writer:
+            writer({"node": "deep_dive", "message": "证据裁判失败，改用原始证据构造"})
+        payload, messages = fallback, []
     payload_pool = payload.get("evidence_pool") if isinstance(payload.get("evidence_pool"), list) else []
     raw_evidence = state.get("web_evidence", []) + state.get("local_evidence", [])
     allowed_source_ids = {str(item.get("source_id", "")).strip() for item in raw_evidence if item.get("source_id")}
@@ -91,8 +96,8 @@ async def deep_dive_node(state: AgentState, agent, agent_name: str, writer: Stre
     if writer:
         writer({"node": "deep_dive", "message": f"证据审计完成：保留 {len(evidence_pool)} 条有效证据"})
     return {
-        "deep_dive": payload.get("summary", content),
-        "audit": payload.get("summary", content),
+        "deep_dive": payload.get("summary", ""),
+        "audit": payload.get("summary", ""),
         "evidence_pool": evidence_pool,
         "audit_flags": audit_flags,
         "source_index": source_index,

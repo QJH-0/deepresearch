@@ -173,11 +173,19 @@ class TestBuildStructuredAgent:
         assert supports_json_schema("qwen3.8-max-0902")
         assert not supports_json_schema("qwen-plus")
 
-    def test_build_agents_wires_decision_nodes_to_structured_agents(self):
-        """四个决策节点走结构化执行体，其余节点仍走 create_agent。"""
+    def test_build_agents_wires_schema_bound_nodes(self):
+        """结构化节点各自绑定 schema，其余节点仍走 create_agent。"""
         from mult_agents import models
         from mult_agents.models import StructuredAgent
-        from mult_agents.output_schemas import AnalysisDraft, IntentDecision, PlanDraft, ReflectionDraft
+        from mult_agents.output_schemas import (
+            AnalysisDraft,
+            DeepDiveDraft,
+            IntentDecision,
+            LocalRagDraft,
+            PlanDraft,
+            ReflectionDraft,
+            WebSearchDraft,
+        )
 
         config = MagicMock()
         config.milvus_host = ""
@@ -198,11 +206,14 @@ class TestBuildStructuredAgent:
             "intent_router": IntentDecision,
             "plan": PlanDraft,
             "reflect": ReflectionDraft,
+            "web_search": WebSearchDraft,
+            "local_rag": LocalRagDraft,
+            "deep_dive": DeepDiveDraft,
             "analyze": AnalysisDraft,
         }
-        # 证据类节点仍是自由文本产出，未结构化
+        # 面向用户的正文产出仍走自由文本，不结构化
         assert {call.args[2] for call in m_agent.call_args_list} == {
-            "web_search", "local_rag", "deep_dive", "direct_answer", "write", "clarify",
+            "direct_answer", "write", "clarify",
         }
 
 

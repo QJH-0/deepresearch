@@ -11,8 +11,8 @@ from langgraph.types import StreamWriter
 
 from ..state import AgentState
 from ..tools import web_search_records
-from ._shared import colorize, emit, collect_tool_calls, with_memory_context, log_inputs
-from ._parsing import _invoke_json_agent
+from ._shared import colorize, log_inputs
+from ._parsing import StructuredOutputError, _invoke_structured_agent
 from ._evidence import (
     _build_queries, _assign_source_ids, _dedupe_sources, _minimal_record_filter,
     _summarize_records, _format_raw_records, _fallback_web_evidence,
@@ -97,18 +97,23 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
     if writer:
         writer({"node": "web_search", "message": f"检索完成，共 {len(raw_records)} 条原始记录，正在用 LLM 整理证据..."})
     fallback = _fallback_web_evidence(raw_records)
-    payload, content, messages = await _invoke_json_agent(
-        state,
-        "请基于以下网页证据整理结构化 JSON。\n"
+    prompt = (
+        "请基于以下网页证据整理结构化结果。\n"
         f"原问题：{state['query']}\n"
         f"子问题：{json.dumps(state.get('sub_questions', []), ensure_ascii=False)}\n"
-        f"原始网页证据：\n{_format_raw_records(raw_records, 'web')}",
-        agent,
-        agent_name,
-        "web_search",
-        fallback,
-        writer=writer,
+        f"原始网页证据：\n{_format_raw_records(raw_records, 'web')}"
     )
+    try:
+        draft, messages = await _invoke_structured_agent(
+            state, prompt, agent, agent_name, "web_search", writer=writer
+        )
+        payload = draft.model_dump()
+    except StructuredOutputError as exc:
+        # 降级用原始记录直接构造证据，保证检索结果不因整理失败而丢失；但必须留痕
+        logger.warning("[web_search_node] 结构化整理失败，降级用原始记录构造证据 | %s", exc)
+        if writer:
+            writer({"node": "web_search", "message": "证据整理失败，改用原始记录构造"})
+        payload, messages = fallback, []
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else fallback["evidence"]
     logger.info("[web_search_node] LLM 返回证据 | evidence数量=%s", len(evidence))
     allowed_source_ids = {str(item.get("source_id")) for item in raw_records if item.get("source_id")}
@@ -151,7 +156,7 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
         if new_sources:
             writer({"type": "sources", "sources": new_sources})
     return {
-        "web_search": payload.get("summary", content),
+        "web_search": payload.get("summary", ""),
         "web_evidence": existing_evidence + evidence,
         "web_retrieval_stats": web_retrieval_stats,
         "web_search_trace": query_traces,

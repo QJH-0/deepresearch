@@ -43,24 +43,6 @@ def emit(node: str, content: str):
 
 
 
-def collect_tool_calls(messages) -> tuple[list, list]:
-    tools = []
-    tool_outputs = []
-    for msg in messages:
-        tool_calls = getattr(msg, "tool_calls", None)
-        if tool_calls:
-            for call in tool_calls:
-                name = call.get("name") if isinstance(call, dict) else None
-                if name:
-                    tools.append(name)
-        name = getattr(msg, "name", None)
-        msg_type = getattr(msg, "type", None)
-        if msg_type == "tool" and name:
-            tools.append(name)
-            output = getattr(msg, "content", "")
-            if output:
-                tool_outputs.append(f"{name}: {output}")
-    return tools, tool_outputs
 
 
 
