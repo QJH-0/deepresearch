@@ -31,7 +31,8 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
         writer({"node": "web_search", "message": f"Web Scout 开始检索，共 {len(queries)} 个查询"})
     
     raw_records = []
-    query_traces = state.get("web_search_trace", [])
+    # 只收集本轮轨迹：web_search_trace 是累积型字段，拼接由 reducer 负责
+    query_traces = []
     
     iteration = state.get("iteration", 0)
     prefix = f"WEB{iteration+1}"
@@ -87,9 +88,8 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
     if not raw_records:
         logger.warning("[web_search_node] 无可用网页证据，跳过网页上下文注入 | 查询数=%s", len(queries))
         logger.info("%s 无可用网页证据，跳过网页上下文注入", colorize("[web_search]", "yellow"))
+        # 不返回 web_evidence：无新证据时回写旧值，reducer 会执行「旧值 + 旧值」把证据翻倍
         return {
-            "web_search": "未检索到可用网页证据，已跳过网页上下文注入。",
-            "web_evidence": state.get("web_evidence", []),
             "web_retrieval_stats": web_retrieval_stats,
             "web_search_trace": query_traces,
         }
@@ -137,10 +137,10 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
         str(payload.get("reject_reason", "")).strip(),
     )
     
-    existing_evidence = state.get("web_evidence", [])
-    logger.info("[web_search_node] 节点完成 | 新增证据=%s | 累计证据=%s", len(evidence), len(existing_evidence) + len(evidence))
+    existing_count = len(state.get("web_evidence", []))
+    logger.info("[web_search_node] 节点完成 | 新增证据=%s | 累计证据=%s", len(evidence), existing_count + len(evidence))
     if writer:
-        writer({"node": "web_search", "message": f"Web检索完成：新增 {len(evidence)} 条证据，累计 {len(existing_evidence) + len(evidence)} 条"})
+        writer({"node": "web_search", "message": f"Web检索完成：新增 {len(evidence)} 条证据，累计 {existing_count + len(evidence)} 条"})
         # P7-1: 发送 sources.found 事件（本轮新增来源）
         new_sources = [
             {
@@ -156,8 +156,8 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
         if new_sources:
             writer({"type": "sources", "sources": new_sources})
     return {
-        "web_search": payload.get("summary", ""),
-        "web_evidence": existing_evidence + evidence,
+        # 只返回本轮新增：web_evidence 是累积型字段，与历史证据的拼接由 reducer 负责
+        "web_evidence": evidence,
         "web_retrieval_stats": web_retrieval_stats,
         "web_search_trace": query_traces,
         "agent_messages": messages,

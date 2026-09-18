@@ -43,6 +43,8 @@
   "enable_rerank_model": true,
   "evidence_llm_fusion": true,
   "evidence_prior_weight": 0.4,
+  "context_evidence_limit": 40,
+  "context_evidence_budget_chars": 60000,
   "sse_heartbeat_seconds": 15,
   "thinking_nodes": [],
   "llm_timeout_seconds": 60,

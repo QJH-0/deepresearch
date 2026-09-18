@@ -11,6 +11,7 @@ from ..state import AgentState
 from ._shared import colorize, log_inputs, raise_interrupt
 from ._parsing import _invoke_structured_agent, StructuredOutputError
 from ._fallbacks import _fallback_analysis
+from ._context import build_research_note, evidence_for_prompt, render_research_notes
 
 logger = logging.getLogger("mult_agents")
 
@@ -23,7 +24,7 @@ async def analyze_node(state: AgentState, agent, agent_name: str, writer: Stream
         "请基于证据池输出结论映射，并评估证据完备性：\n"
         f"原问题：{state['query']}\n"
         f"子问题：{json.dumps(state.get('sub_questions', []), ensure_ascii=False)}\n"
-        f"证据池：{json.dumps(state.get('evidence_pool', []), ensure_ascii=False)}\n"
+        f"证据池：{json.dumps(evidence_for_prompt(state), ensure_ascii=False)}\n"
         f"审计标记：{json.dumps(state.get('audit_flags', []), ensure_ascii=False)}"
     )
     try:
@@ -74,12 +75,15 @@ async def analyze_node(state: AgentState, agent, agent_name: str, writer: Stream
             needs_more_research = False
             missing_gaps = []
 
+    # 研究笔记：只返回本轮这一条，累积由 reducer 负责
+    note = build_research_note(state, findings, missing_gaps, state.get("audit_flags", []))
     return {
         "analysis": analysis_summary,
         "findings": findings,
         "claim_map": claim_map,
         "needs_more_research": needs_more_research,
         "missing_gaps": missing_gaps,
+        "research_notes": [note],
         "agent_messages": messages,
         "user_feedback": user_feedback,
     }
@@ -94,12 +98,14 @@ async def reflect_node(state: AgentState, agent, agent_name: str, writer: Stream
     missing_gaps = state.get("missing_gaps", [])
     log_inputs("reflect", agent_name, {"missing_gaps": str(missing_gaps)})
 
+    notes = render_research_notes(state.get("research_notes", []))
     prompt = (
         f"分析师指出当前证据不足以完全回答问题，存在以下信息缺口：\n{json.dumps(missing_gaps, ensure_ascii=False)}\n\n"
         f"原问题：{state['query']}\n"
         f"子问题：{json.dumps(state.get('sub_questions', []), ensure_ascii=False)}\n"
         f"已执行过的搜索计划：\n{json.dumps(state.get('search_plan', []), ensure_ascii=False)}\n"
         f"已执行过的补搜计划：\n{json.dumps(state.get('supplementary_queries', []), ensure_ascii=False)}\n\n"
+        f"历史轮次研究笔记（已确认结论无需重查；低可信来源勿再作为主要依据）：\n{notes or '（无）'}\n\n"
         "请生成新的补搜计划以填补缺口。"
     )
 

@@ -9,12 +9,12 @@
     python -m pytest app/test/test_state.py -v
 """
 
-import inspect
 import operator
 import sys
 from pathlib import Path
 
 import pytest
+from langgraph.graph.message import add_messages
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _APP_PATH = _PROJECT_ROOT / "app"
@@ -29,17 +29,35 @@ from mult_agents.state import AgentState, create_initial_state  # noqa: E402
 
 
 class TestStateReducers:
-    """State 中累加字段使用 operator.add reducer。"""
+    """State 字段的 reducer 声明（结构级）。
 
-    def test_sources_reducer_uses_operator_add(self):
-        """sources/findings/plan 用 operator.add reducer。"""
-        src = inspect.getsource(sys.modules["mult_agents.state"])
-        assert "operator.add" in src, "State 中应使用 operator.add reducer"
+    语义级回归（累积/覆盖的真实行为）见 `test_state_semantics.py`——
+    仅检查源码里出现过 `operator.add` 无法发现「字段语义与 reducer 不匹配」，
+    那正是 web_evidence 重复累加的成因。
+    """
+
+    ACCUMULATING = ("web_evidence", "local_evidence", "web_search_trace",
+                    "local_rag_trace", "clarifications", "research_notes")
+
+    def test_accumulating_channels_declare_operator_add(self):
+        """累积型字段必须声明 operator.add reducer。"""
+        from mult_agents import state as state_module
+
+        for channel in self.ACCUMULATING:
+            annotation = state_module.AgentState.__annotations__[channel]
+            assert getattr(annotation, "__metadata__", ()) == (operator.add,), (
+                f"{channel} 为累积型字段，必须声明 operator.add reducer"
+            )
 
     def test_messages_uses_add_messages(self):
-        """messages 用 add_messages reducer。"""
-        src = inspect.getsource(sys.modules["mult_agents.state"])
-        assert "add_messages" in src, "messages 应使用 add_messages reducer"
+        """对话双轨字段用 add_messages reducer。"""
+        from mult_agents import state as state_module
+
+        for channel in ("chat_messages", "agent_messages"):
+            annotation = state_module.AgentState.__annotations__[channel]
+            assert getattr(annotation, "__metadata__", ()) == (add_messages,), (
+                f"{channel} 必须声明 add_messages reducer"
+            )
 
     def test_state_groups_exist(self):
         """State 分组类存在。"""
@@ -76,16 +94,29 @@ class TestCreateInitialState:
         "query", "user_id", "tenant_id", "memory_context", "intent",
         "plan", "outline", "sub_questions", "research_questions",
         "search_plan", "budget", "supplementary_queries",
-        "web_search", "local_rag", "web_evidence", "local_evidence",
-        "evidence_pool", "deep_dive", "audit", "audit_flags", "analysis",
+        "web_evidence", "local_evidence",
+        "evidence_pool", "audit_flags", "analysis",
         "findings", "claim_map", "source_index", "needs_more_research",
-        "missing_gaps", "code", "draft", "final",
+        "missing_gaps", "research_notes", "draft", "final",
         "web_retrieval_stats", "local_retrieval_stats",
         "web_search_trace", "local_rag_trace",
         "hitl_enabled", "hitl_config", "user_feedback", "plan_revision_count",
         # ProgressState
         "phase", "iteration", "max_iterations",
     }
+
+    # 只写不读的死字段：节点产出无人消费，却让 State 体积与调试噪音持续增长。
+    # 与节点名同名的字段（web_search / local_rag / deep_dive）尤其容易误导——
+    # 读到的多是 graph 节点名，而非 State 字段。
+    REMOVED_FIELDS = {"code", "web_search", "local_rag", "deep_dive", "audit"}
+
+    def test_removed_dead_fields_absent(self):
+        """只写不读的死字段不得回归。"""
+        state = create_initial_state(
+            query="test", max_iterations=3, user_id="u", tenant_id="t"
+        )
+        present = self.REMOVED_FIELDS & set(state)
+        assert not present, f"以下死字段已删除，不得回归: {sorted(present)}"
 
     def test_all_fields_present(self):
         """返回所有必需字段。"""

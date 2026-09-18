@@ -318,11 +318,11 @@ def _make_initial_state(hitl_enabled=True, plan_review=True, write_review=False,
         "intent": "multiagent", "chat_messages": [], "agent_messages": [], "clarifications": [],
         "plan": "", "outline": [], "sub_questions": ["子问题1", "子问题2"],
         "research_questions": [], "search_plan": [], "budget": {},
-        "supplementary_queries": [], "web_search": "", "local_rag": "",
+        "supplementary_queries": [],
         "web_evidence": [], "local_evidence": [], "evidence_pool": [],
-        "deep_dive": "", "audit": "", "audit_flags": [], "analysis": "",
+        "audit_flags": [], "analysis": "",
         "findings": [], "claim_map": [], "source_index": [],
-        "needs_more_research": False, "missing_gaps": [], "code": "",
+        "needs_more_research": False, "missing_gaps": [], "research_notes": [],
         "draft": "", "final": "", "web_retrieval_stats": {},
         "local_retrieval_stats": {}, "web_search_trace": [], "local_rag_trace": [],
         "hitl_enabled": hitl_enabled,
@@ -507,6 +507,76 @@ class TestReportReview:
 
         assert isinstance(result, dict)
         assert "final" in result
+
+
+# ──────────────────────────────────────────────
+# T4-6b write → plan 回环的用户意图传递
+# ──────────────────────────────────────────────
+
+
+@pytest.mark.skipif(not HAS_WRITE_NODE, reason="write_node 依赖加载失败")
+class TestWriteToPlanIntentHandoff:
+    """deepen / reject 回 plan 时，用户意图必须落在 plan_node 真正读取的通道上。
+
+    plan_node 只从 `user_feedback["feedback"]` 读取修改意见（plan.py:33），
+    且会用自己重新生成的子问题覆盖 `sub_questions`。因此把意图写进
+    `sub_questions`、或把 `user_feedback` 写成字符串，都会让用户要求被静默
+    丢弃——plan 照常规划，无人知道意图没进去。
+    """
+
+    @staticmethod
+    def _write_with_decision(state, decision):
+        mock_agent = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            yield (MagicMock(content="报告"), {})
+
+        mock_agent.astream = mock_astream
+
+        async def run():
+            with patch(_INTERRUPT_TARGET) as mock_intr:
+                mock_intr.return_value = decision
+                with patch("mult_agents.nodes.write._check_evidence_sufficiency", return_value=(True, "")):
+                    with patch("mult_agents.nodes.write._validate_and_fix_citations", return_value=("报告", [])):
+                        with patch("mult_agents.nodes.write._ensure_reference_section", return_value="报告"):
+                            return await write_node(state, mock_agent, "test_agent")
+
+        return run()
+
+    @pytest.mark.asyncio
+    async def test_deepen_direction_reaches_plan_readable_channel(self):
+        state = _make_initial_state(hitl_enabled=True, write_review=True, iteration=1, max_iterations=3)
+
+        result = await self._write_with_decision(
+            state, {"action": "deepen", "extra_sub_questions": ["深入分析X方向"]}
+        )
+
+        assert hasattr(result, "goto") and "plan" in result.goto
+        feedback = result.update.get("user_feedback")
+        assert isinstance(feedback, dict), (
+            f"user_feedback 必须是 dict（plan_node 按 dict 读取），实际 {type(feedback).__name__}"
+        )
+        assert "深入分析X方向" in str(feedback.get("feedback", "")), (
+            "deepen 的深入方向必须出现在 user_feedback['feedback'] 中，"
+            "否则 plan_node 读不到，用户要求被静默丢弃"
+        )
+
+    @pytest.mark.asyncio
+    async def test_reject_feedback_reaches_plan_readable_channel(self):
+        state = _make_initial_state(hitl_enabled=True, write_review=True, iteration=1, max_iterations=3)
+
+        result = await self._write_with_decision(
+            state, {"action": "reject", "feedback": "结论不可信，需重新调研"}
+        )
+
+        assert hasattr(result, "goto") and "plan" in result.goto
+        feedback = result.update.get("user_feedback")
+        assert isinstance(feedback, dict), (
+            f"user_feedback 必须是 dict（plan_node 按 dict 读取），实际 {type(feedback).__name__}"
+        )
+        assert "结论不可信，需重新调研" in str(feedback.get("feedback", "")), (
+            "reject 的理由必须出现在 user_feedback['feedback'] 中，否则被静默丢弃"
+        )
 
 
 # ──────────────────────────────────────────────

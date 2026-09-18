@@ -342,6 +342,23 @@ def _render_execution_appendix(state: AgentState) -> str:
         f"- 实际执行本地检索问题数: {local_stats.get('query_count', 0)} | 原始命中: {local_stats.get('raw_count', 0)} | 保留证据: {local_stats.get('kept_count', 0)} | 丢弃: {local_stats.get('dropped_count', 0)}"
     )
     lines.append("")
+    lines.append("### 研究过程")
+    notes = state.get("research_notes", [])
+    if notes:
+        for note in notes:
+            if not isinstance(note, dict):
+                continue
+            lines.append(f"- 第 {int(note.get('iteration', 0)) + 1} 轮")
+            for claim in note.get("confirmed") or []:
+                lines.append(f"  - 已确认: {claim}")
+            for gap in note.get("open_questions") or []:
+                lines.append(f"  - 待解决: {gap}")
+            low_confidence = note.get("low_confidence_sources") or []
+            if low_confidence:
+                lines.append(f"  - 低可信来源: {'、'.join(str(item) for item in low_confidence)}")
+    else:
+        lines.append("- 无")
+    lines.append("")
     lines.append("### 问题拆解明细")
     for sq in state.get("sub_questions", []):
         lines.append(f"- {sq}")

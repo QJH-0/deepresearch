@@ -54,7 +54,7 @@ class TestReportReviewRejectBranch:
 
     @pytest.mark.asyncio
     async def test_reject_returns_command_goto_plan(self):
-        """reject 分支应返回 Command(goto='plan') 并注入 user_feedback。"""
+        """reject 分支应返回 Command(goto='plan') 并以 dict 形式注入 user_feedback。"""
         from langgraph.types import Command
         from mult_agents.nodes.write import write_node
 
@@ -86,7 +86,12 @@ class TestReportReviewRejectBranch:
 
         assert isinstance(result, Command)
         assert result.goto == "plan"
-        assert result.update.get("user_feedback") == "报告质量不足"
+        # plan_node 按 dict 读取 user_feedback["feedback"]（plan.py），
+        # 传裸字符串会被 isinstance 守卫拦掉，否决理由静默丢弃
+        assert result.update.get("user_feedback") == {
+            "approved": False,
+            "feedback": "报告质量不足",
+        }
         assert result.update.get("iteration") == 1
 
     @pytest.mark.asyncio

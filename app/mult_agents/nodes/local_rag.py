@@ -29,7 +29,8 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
     if writer:
         writer({"node": "local_rag", "message": f"本地知识库检索开始，共 {len(queries)} 个查询"})
     raw_records = []
-    query_traces = state.get("local_rag_trace", [])
+    # 只收集本轮轨迹：local_rag_trace 是累积型字段，拼接由 reducer 负责
+    query_traces = []
     
     iteration = state.get("iteration", 0)
     prefix = f"LOC{iteration+1}"
@@ -75,9 +76,8 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
         writer({"node": "local_rag", "message": f"本地检索完成：召回 {len(raw_records)} 条原始记录"})
     if not raw_records:
         logger.info("%s 无可用本地证据，跳过本地上下文注入", colorize("[local_rag]", "yellow"))
+        # 不返回 local_evidence：无新证据时回写旧值，reducer 会执行「旧值 + 旧值」把证据翻倍
         return {
-            "local_rag": "未检索到可用本地知识库证据，已跳过本地上下文注入。",
-            "local_evidence": state.get("local_evidence", []),
             "local_retrieval_stats": local_retrieval_stats,
             "local_rag_trace": query_traces,
         }
@@ -119,7 +119,6 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
         str(payload.get("reject_reason", "")).strip(),
     )
     
-    existing_evidence = state.get("local_evidence", [])
     if writer:
         # P7-1: 发送 sources.found 事件（本轮新增来源）
         new_sources = [
@@ -136,8 +135,8 @@ async def local_rag_node(state: AgentState, agent, agent_name: str, writer: Stre
         if new_sources:
             writer({"type": "sources", "sources": new_sources})
     return {
-        "local_rag": payload.get("summary", ""),
-        "local_evidence": existing_evidence + evidence,
+        # 只返回本轮新增：local_evidence 是累积型字段，与历史证据的拼接由 reducer 负责
+        "local_evidence": evidence,
         "local_retrieval_stats": local_retrieval_stats,
         "local_rag_trace": query_traces,
         "agent_messages": messages,

@@ -13,6 +13,7 @@ from ._shared import colorize
 from ._parsing import StructuredOutputError, _invoke_structured_agent
 from ._evidence import _score_evidence, _dedupe_sources
 from ._fallbacks import _fallback_audit
+from ._context import raw_evidence_for_prompt
 
 logger = logging.getLogger("mult_agents")
 
@@ -29,8 +30,8 @@ async def deep_dive_node(state: AgentState, agent, agent_name: str, writer: Stre
         "请对 web 与 local 证据进行评分、去重、冲突审计。\n"
         f"问题：{state['query']}\n"
         f"子问题：{json.dumps(state.get('sub_questions', []), ensure_ascii=False)}\n"
-        f"web_evidence：{json.dumps(state.get('web_evidence', []), ensure_ascii=False)}\n"
-        f"local_evidence：{json.dumps(state.get('local_evidence', []), ensure_ascii=False)}"
+        f"web_evidence：{json.dumps(raw_evidence_for_prompt(state, 'web_evidence'), ensure_ascii=False)}\n"
+        f"local_evidence：{json.dumps(raw_evidence_for_prompt(state, 'local_evidence'), ensure_ascii=False)}"
     )
     try:
         draft, messages = await _invoke_structured_agent(
@@ -96,8 +97,6 @@ async def deep_dive_node(state: AgentState, agent, agent_name: str, writer: Stre
     if writer:
         writer({"node": "deep_dive", "message": f"证据审计完成：保留 {len(evidence_pool)} 条有效证据"})
     return {
-        "deep_dive": payload.get("summary", ""),
-        "audit": payload.get("summary", ""),
         "evidence_pool": evidence_pool,
         "audit_flags": audit_flags,
         "source_index": source_index,

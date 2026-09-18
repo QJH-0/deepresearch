@@ -70,7 +70,8 @@ class AppConfig:
     summary_keep_recent: int = 6
     summary_model: str = "qwen-turbo"
     # ── 深度思考节点 ──
-    thinking_nodes: list = field(default_factory=lambda: ["write", "deep_dive", "analyze"])
+    # 默认关闭：兼容通道不透出 reasoning_content，开启只付延迟与成本（实测 write 77.3s→42.9s）
+    thinking_nodes: list = field(default_factory=list)
     # ── 其他业务配置 ──
     sse_heartbeat_seconds: int = 15
     search_providers: list = field(default_factory=lambda: ["ddgs", "searxng"])
@@ -78,6 +79,9 @@ class AppConfig:
     enable_rerank_model: bool = True
     evidence_llm_fusion: bool = True
     evidence_prior_weight: float = 0.4
+    # ── 节点 prompt 的证据预算（防病态膨胀，非正常路径裁剪）──
+    context_evidence_limit: int = 40
+    context_evidence_budget_chars: int = 60000
     # ── 按节点分档的模型映射 ──
     # 结构化节点（intent_router / plan / reflect / analyze）只能配支持
     # response_format=json_schema 的型号，否则启动即报错
@@ -171,13 +175,15 @@ class AppConfig:
             summary_threshold=_env_int("SUMMARY_THRESHOLD", biz.summary_threshold),
             summary_keep_recent=_env_int("SUMMARY_KEEP_RECENT", biz.summary_keep_recent),
             summary_model=_env_str("SUMMARY_MODEL", biz.summary_model),
-            thinking_nodes=getattr(biz, "thinking_nodes", ["write", "deep_dive", "analyze"]),
+            thinking_nodes=getattr(biz, "thinking_nodes", []),
             sse_heartbeat_seconds=getattr(biz, "sse_heartbeat_seconds", 15),
             search_providers=getattr(biz, "search_providers", ["ddgs", "searxng"]),
             rerank_model_name=getattr(biz, "rerank_model_name", "gte-rerank-v2"),
             enable_rerank_model=getattr(biz, "enable_rerank_model", True),
             evidence_llm_fusion=getattr(biz, "evidence_llm_fusion", True),
             evidence_prior_weight=getattr(biz, "evidence_prior_weight", 0.4),
+            context_evidence_limit=getattr(biz, "context_evidence_limit", 40),
+            context_evidence_budget_chars=getattr(biz, "context_evidence_budget_chars", 60000),
             node_models=getattr(biz, "node_models", {}) or {},
             llm_timeout_seconds=_env_float("LLM_TIMEOUT_SECONDS", getattr(biz, "llm_timeout_seconds", 60.0)),
             llm_max_retries=_env_int("LLM_MAX_RETRIES", getattr(biz, "llm_max_retries", 2)),

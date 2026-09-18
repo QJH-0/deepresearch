@@ -385,6 +385,6 @@ class TestThinkingConfig:
             milvus_port=19530,
             milvus_collection="",
         )
-        assert "write" in config.thinking_nodes
-        assert "deep_dive" in config.thinking_nodes
-        assert "analyze" in config.thinking_nodes
+        # 默认关闭：兼容通道不透出 reasoning_content，开启只付延迟与成本
+        # （实测关闭后 write 77.3s→42.9s、analyze 45.9s→16.3s，质量无可见下降）
+        assert config.thinking_nodes == []

@@ -166,7 +166,9 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
                 pass  # 使用当前 final_content
 
             case "deepen":
-                # “再深入方向 X” → 回检索追加子问题
+                # “再深入方向 X” → 带方向回 plan 重新规划。
+                # 方向必须走 user_feedback：plan_node 只读该通道，且会用自己生成的
+                # 子问题覆盖 sub_questions，写进 sub_questions 会被静默丢弃。
                 extra_sub_questions = decision.get("extra_sub_questions", [])
                 iteration = state.get("iteration", 0)
                 max_iter = state.get("max_iterations", 3)
@@ -176,14 +178,21 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
                     if writer:
                         writer({"node": "write", "message": "已达迭代上限，报告自动采纳"})
                 else:
-                    logger.info("[write] 用户要求再深入 | 方向=%s | iteration=%d", extra_sub_questions, iteration + 1)
+                    direction = "；".join(
+                        str(item).strip() for item in extra_sub_questions if str(item).strip()
+                    )
+                    logger.info("[write] 用户要求再深入 | 方向=%s | iteration=%d", direction, iteration + 1)
                     return Command(goto="plan", update={
-                        "sub_questions": extra_sub_questions,
+                        "user_feedback": {
+                            "approved": False,
+                            "feedback": f"需要就以下方向继续深入：{direction}" if direction else "需要继续深入",
+                        },
                         "iteration": iteration + 1,
                     })
 
             case "reject":
-                # 否决报告 → 带理由重走规划
+                # 否决报告 → 带理由重走规划。
+                # user_feedback 必须是 dict：plan_node 按 dict 取 feedback，传裸字符串会被丢弃。
                 feedback = decision.get("feedback", "")
                 iteration = state.get("iteration", 0)
                 max_iter = state.get("max_iterations", 3)
@@ -194,7 +203,7 @@ async def write_node(state: AgentState, agent, agent_name: str, writer: StreamWr
                 else:
                     logger.info("[write] 用户否决报告 | feedback=%s | iteration=%d", feedback, iteration + 1)
                     return Command(goto="plan", update={
-                        "user_feedback": feedback,
+                        "user_feedback": {"approved": False, "feedback": str(feedback)},
                         "iteration": iteration + 1,
                     })
 

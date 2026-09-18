@@ -1,10 +1,16 @@
 """状态定义模块：多智能体工作流共享的 AgentState 分组结构。
 
-P1 重写：从 41 字段扁平 TypedDict 重构为分组+reducer+校验结构。
-- chat_messages / agent_messages 用 add_messages reducer（双轨制）
-- sources/findings/plan 用 operator.add reducer（累加去重在节点内实现）
-- clarifications 占位（P4 HITL 启用）
-- 旧字段按语义归组保留，无引用价值的字段删除
+**reducer 的选用规则（唯一判据）**：看字段语义是「历史累积」还是「当前值」。
+
+- **历史累积** → 用 `operator.add`，且**节点只能返回本轮增量**。
+  节点若返回全量（`existing + new`），reducer 会再拼一次，导致每轮近似翻倍
+  （递推 `e(n+1) = 2·e(n) + new`）。适用于：证据库、检索轨迹、澄清问答。
+- **当前值** → 不加 reducer，节点返回全量，后写覆盖前写。
+  适用于：计划（outline/sub_questions/search_plan）、每轮重建的派生数据
+  （evidence_pool/source_index/audit_flags）、每轮重新分析得出的结论
+  （findings/claim_map/missing_gaps）。
+
+语义回归由 `app/test/test_state_semantics.py` 锁定，改动 reducer 前先看该文件。
 """
 
 import operator
@@ -31,33 +37,34 @@ class ResearchState(TypedDict):
     memory_context: str
     intent: str  # direct | multiagent
 
-    # 计划
+    # 计划（当前值：plan 节点每轮重新生成，覆盖旧计划）
     plan: str  # plan_node 生成的研究计划文本
-    outline: Annotated[list[dict], operator.add]
-    sub_questions: Annotated[list[str], operator.add]
-    research_questions: Annotated[list[str], operator.add]
-    search_plan: Annotated[list[dict], operator.add]
+    outline: list[dict]
+    sub_questions: list[str]
+    research_questions: list[str]
+    search_plan: list[dict]
     budget: dict
-    supplementary_queries: Annotated[list[dict], operator.add]
+    supplementary_queries: list[dict]
 
     # 证据（F4 溯源基础）
-    web_search: str
-    local_rag: str
+    # web_evidence / local_evidence 是跨轮累积的证据库：由 reducer 负责拼接，
+    # 检索节点只能返回本轮增量
     web_evidence: Annotated[list[dict], operator.add]
     local_evidence: Annotated[list[dict], operator.add]
-    evidence_pool: Annotated[list[dict], operator.add]
-    deep_dive: str
-    audit: str
-    audit_flags: Annotated[list[dict], operator.add]
+    # evidence_pool / audit_flags 由 deep_dive 每轮从全量证据重建，属当前值
+    evidence_pool: list[dict]
+    audit_flags: list[dict]
     analysis: str
 
-    # 报告
-    findings: Annotated[list[dict], operator.add]
-    claim_map: Annotated[list[dict], operator.add]
-    source_index: Annotated[list[dict], operator.add]
+    # 报告（当前值：analyze 每轮重新分析得出，覆盖旧结论）
+    findings: list[dict]
+    claim_map: list[dict]
+    source_index: list[dict]
     needs_more_research: bool
-    missing_gaps: Annotated[list[str], operator.add]
-    code: str
+    missing_gaps: list[str]
+    # 研究笔记（累积：每轮一条，由 analyze 从 findings/gaps/审计标记汇编）
+    # 作用：让后续轮次与报告附录读「结论演进」，而不必重读全部证据
+    research_notes: Annotated[list[dict], operator.add]
     draft: str
     final: str
 
@@ -122,13 +129,9 @@ def create_initial_state(
         "search_plan": [],
         "budget": {},
         "supplementary_queries": [],
-        "web_search": "",
-        "local_rag": "",
         "web_evidence": [],
         "local_evidence": [],
         "evidence_pool": [],
-        "deep_dive": "",
-        "audit": "",
         "audit_flags": [],
         "analysis": "",
         "findings": [],
@@ -136,7 +139,7 @@ def create_initial_state(
         "source_index": [],
         "needs_more_research": False,
         "missing_gaps": [],
-        "code": "",
+        "research_notes": [],
         "draft": "",
         "final": "",
         "web_retrieval_stats": {},

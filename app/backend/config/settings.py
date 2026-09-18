@@ -99,10 +99,14 @@ class BusinessSettings(BaseSettings):
     # ── 证据评分 LLM 融合 ──
     evidence_llm_fusion: bool = True
     evidence_prior_weight: float = 0.4
+    # ── 节点 prompt 的证据预算（防病态膨胀，非正常路径裁剪；收紧前需先有评估集）──
+    context_evidence_limit: int = 40
+    context_evidence_budget_chars: int = 60000
     # ── SSE 心跳保活 ──
     sse_heartbeat_seconds: int = 15
     # ── 深度思考节点配置 ──
-    thinking_nodes: list = ["write", "deep_dive", "analyze"]
+    # 默认关闭：兼容通道不透出 reasoning_content，开启只付延迟与成本（实测 write 77.3s→42.9s）
+    thinking_nodes: list = []
     # ── chunk 消费重试上限（超限进 DLQ）──
     chunk_retry_limit: int = 3
     # ── LLM 调用韧性 ──
