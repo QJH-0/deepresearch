@@ -18,23 +18,24 @@ DeepResearch 多智能体深度研报助手 — 自动化评测脚本
 import argparse
 import json
 import logging
-import os
 import re
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+from langchain_core.callbacks import BaseCallbackHandler
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
 from mult_agents.runtime import build_checkpointer
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
+from mult_agents.eval_metrics import measure as measure_quality, aggregate as aggregate_metric
 
 logger = logging.getLogger("eval")
 
@@ -131,51 +132,65 @@ EVAL_QUERIES = [
 # Token 计数 Hook
 # ======================================================================
 
-class TokenAccumulator:
-    """Hook ChatTongyi 调用，累计 Token 消耗"""
+class TokenAccumulator(BaseCallbackHandler):
+    """按 LangChain 回调累计 token 用量。
+
+    旧实现把钩子挂在 agent 对象上（`agent._generate`），但结构化节点是
+    `StructuredAgent`（内含 create_agent 编译出的图），**没有 `_generate`**，
+    于是 `hasattr(agent, "_generate")` 恒为假、一次都没挂上，
+    token 统计恒为 0 且不报错——报告里的「Token 消耗降低比例」实际是假数据。
+
+    改为回调后由 invoke 的 `config["callbacks"]` 注入，能覆盖图内所有嵌套 LLM 调用。
+    解析不到 usage 时计数并告警，避免再次静默归零。
+    """
 
     def __init__(self):
+        super().__init__()
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.call_count = 0
-        self._original_generate = None
-        self._active = False
-        self._hooked_llms: list = []
+        self.unparsed_calls = 0
 
-    def attach(self, llm):
-        if self._active:
+    @staticmethod
+    def _usage_from(response) -> dict | None:
+        """从 LLMResult 提取 usage，兼容 llm_output 与 usage_metadata 两种落点。"""
+        llm_output = getattr(response, "llm_output", None) or {}
+        usage = llm_output.get("token_usage") or llm_output.get("usage")
+        if isinstance(usage, dict) and usage:
+            return usage
+
+        for generations in getattr(response, "generations", None) or []:
+            for generation in generations:
+                metadata = getattr(getattr(generation, "message", None), "usage_metadata", None)
+                if isinstance(metadata, dict) and metadata:
+                    return {
+                        "prompt_tokens": metadata.get("input_tokens", 0),
+                        "completion_tokens": metadata.get("output_tokens", 0),
+                    }
+        return None
+
+    def on_llm_end(self, response, **kwargs):
+        usage = self._usage_from(response)
+        if usage is None:
+            self.unparsed_calls += 1
             return
-        self._original_generate = llm._generate
-        llm._generate = self._wrapped_generate
-        self._hooked_llms.append(llm)
-        self._active = True
-
-    def detach(self):
-        for llm in self._hooked_llms:
-            try:
-                llm._generate = self._original_generate
-            except Exception:
-                pass
-        self._hooked_llms.clear()
-        self._active = False
-
-    def _wrapped_generate(self, *args, **kwargs):
-        result = self._original_generate(*args, **kwargs)
-        try:
-            for generation in result.generations:
-                if hasattr(generation, "generation_info") and generation.generation_info:
-                    usage = generation.generation_info.get("usage", {})
-                    self.total_prompt_tokens += usage.get("prompt_tokens", 0)
-                    self.total_completion_tokens += usage.get("completion_tokens", 0)
-                    self.call_count += 1
-        except Exception:
-            pass
-        return result
+        self.total_prompt_tokens += int(usage.get("prompt_tokens", 0) or 0)
+        self.total_completion_tokens += int(usage.get("completion_tokens", 0) or 0)
+        self.call_count += 1
 
     def reset(self):
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.call_count = 0
+        self.unparsed_calls = 0
+
+    def warn_if_unparsed(self):
+        """解析不到 usage 时必须留痕，否则又变成「静默归零」。"""
+        if self.unparsed_calls and not self.call_count:
+            logger.warning(
+                "token 统计未取到任何 usage（%d 次调用无法解析）——本次报告中的 token 指标不可信",
+                self.unparsed_calls,
+            )
 
     @property
     def total_tokens(self):
@@ -359,6 +374,7 @@ class EvalResult:
     completeness: dict = field(default_factory=dict)
     hallucination: dict = field(default_factory=dict)
     citation_accuracy: dict = field(default_factory=dict)
+    quality: dict = field(default_factory=dict)
     intent: str = ""
     error: str = ""
 
@@ -368,7 +384,8 @@ def _result_to_dict(r: EvalResult) -> dict:
         "query": r.query, "type": r.query_type, "elapsed_time": round(r.elapsed_time, 2),
         "token_count": r.token_count, "retrieval_stats": r.retrieval_stats,
         "completeness": r.completeness, "hallucination": r.hallucination,
-        "citation_accuracy": r.citation_accuracy, "intent": r.intent,
+        "citation_accuracy": r.citation_accuracy, "quality": r.quality,
+        "intent": r.intent,
         "error": r.error, "final_preview": r.final_output[:500],
     }
 
@@ -381,7 +398,11 @@ def run_single_query(app, config, query, token_acc, memory_manager=None):
         user_id=config.user_id, tenant_id=config.tenant_id, memory_context=memory_context)
     token_acc.reset()
     start = time.time()
-    cfg = {"configurable": {"thread_id": f"{config.thread_id}_eval_{int(start)}"}}
+    # callbacks 走 invoke 的 config 注入，能覆盖图内所有嵌套 LLM 调用
+    cfg = {
+        "configurable": {"thread_id": f"{config.thread_id}_eval_{int(start)}"},
+        "callbacks": [token_acc],
+    }
     result = app.invoke(state, cfg)
     elapsed = time.time() - start
     final = result.get("final", "")
@@ -397,10 +418,6 @@ def run_eval(output_path, max_queries=0):
     judge_llm = build_judge_llm(config.api_key)
 
     token_acc = TokenAccumulator()
-    for agent_attr in ["planner", "scout_web", "scout_local", "evidence_judge", "analyst", "writer", "direct_responder", "intent_router"]:
-        a = getattr(agents, agent_attr, None)
-        if a and hasattr(a, "_generate"):
-            token_acc.attach(a)
 
     queries = EVAL_QUERIES
     if max_queries > 0:
@@ -420,12 +437,16 @@ def run_eval(output_path, max_queries=0):
         try:
             final, state, elapsed, tokens = run_single_query(app, bl_config, q["query"], token_acc)
             stats = extract_retrieval_stats(state)
+            quality = measure_quality(state, final, q["key_points"])
             comp = judge_with_consensus(judge_completeness, judge_llm, q["query"], q["key_points"], final)
             halluc = judge_with_consensus(judge_hallucination, judge_llm, final, state.get("evidence_pool", []))
             cit = judge_with_consensus(judge_citation_accuracy, judge_llm, final, state.get("source_index", []))
-            results_bl.append(EvalResult(q["query"], "multiagent", elapsed, final, tokens, stats, comp, halluc, cit))
-            logger.info("  完备=%.2f 幻觉=%.2f 引用=%.2f Token=%d 耗时=%.1fs",
-                        comp.get("score", 0), halluc.get("hallucination_rate", 0), cit.get("accuracy_rate", 0), tokens, elapsed)
+            results_bl.append(EvalResult(q["query"], "multiagent", elapsed, final, tokens, stats,
+                                        comp, halluc, cit, quality))
+            logger.info("  完备=%.2f 幻觉=%.2f 引用=%.2f Token=%d 耗时=%.1fs | 重复=%.1f%% 检索轮次=%.1f",
+                        comp.get("score", 0), halluc.get("hallucination_rate", 0), cit.get("accuracy_rate", 0),
+                        tokens, elapsed, quality["evidence_duplication_rate"]["overall"] * 100,
+                        quality["retrieval_rounds"]["queries_per_round"])
         except Exception as e:
             logger.error("  失败: %s", e)
             results_bl.append(EvalResult(q["query"], "multiagent", 0, "", 0, {}, error=str(e)))
@@ -440,12 +461,16 @@ def run_eval(output_path, max_queries=0):
         try:
             final, state, elapsed, tokens = run_single_query(app, im_config, q["query"], token_acc)
             stats = extract_retrieval_stats(state)
+            quality = measure_quality(state, final, q["key_points"])
             comp = judge_with_consensus(judge_completeness, judge_llm, q["query"], q["key_points"], final)
             halluc = judge_with_consensus(judge_hallucination, judge_llm, final, state.get("evidence_pool", []))
             cit = judge_with_consensus(judge_citation_accuracy, judge_llm, final, state.get("source_index", []))
-            results_im.append(EvalResult(q["query"], "multiagent", elapsed, final, tokens, stats, comp, halluc, cit))
-            logger.info("  完备=%.2f 幻觉=%.2f 引用=%.2f Token=%d 耗时=%.1fs",
-                        comp.get("score", 0), halluc.get("hallucination_rate", 0), cit.get("accuracy_rate", 0), tokens, elapsed)
+            results_im.append(EvalResult(q["query"], "multiagent", elapsed, final, tokens, stats,
+                                        comp, halluc, cit, quality))
+            logger.info("  完备=%.2f 幻觉=%.2f 引用=%.2f Token=%d 耗时=%.1fs | 重复=%.1f%% 检索轮次=%.1f",
+                        comp.get("score", 0), halluc.get("hallucination_rate", 0), cit.get("accuracy_rate", 0),
+                        tokens, elapsed, quality["evidence_duplication_rate"]["overall"] * 100,
+                        quality["retrieval_rounds"]["queries_per_round"])
         except Exception as e:
             logger.error("  失败: %s", e)
             results_im.append(EvalResult(q["query"], "multiagent", 0, "", 0, {}, error=str(e)))
@@ -495,6 +520,16 @@ def run_eval(output_path, max_queries=0):
     dir_avg = sum(dir_times) / len(dir_times) if dir_times else 0
     dir_max = max(dir_times) if dir_times else 0
 
+    # 规则型指标：零外部依赖，改代码后可立刻对比是否引入退化
+    bl_quality = [r.quality for r in results_bl if r.quality]
+    im_quality = [r.quality for r in results_im if r.quality]
+    bl_dup = aggregate_metric(bl_quality, "evidence_duplication_rate", "overall")
+    im_dup = aggregate_metric(im_quality, "evidence_duplication_rate", "overall")
+    bl_rounds = aggregate_metric(bl_quality, "retrieval_rounds", "queries_per_round")
+    im_rounds = aggregate_metric(im_quality, "retrieval_rounds", "queries_per_round")
+    im_cit_legal = aggregate_metric(im_quality, "citation_legality", "legality_rate")
+    im_kp = aggregate_metric(im_quality, "key_point_coverage", "coverage")
+
     report = {
         "summary": {
             "completeness": {"baseline": round(bl_comp, 4), "improved": round(im_comp, 4),
@@ -515,6 +550,15 @@ def run_eval(output_path, max_queries=0):
             "direct_response": {"avg_s": round(dir_avg, 2), "max_s": round(dir_max, 2),
                                 "under_2s": dir_max < 2.0,
                                 "desc": "简单问答响应时间（系统埋点计时）"},
+            "evidence_duplication": {"baseline": round(bl_dup, 4), "improved": round(im_dup, 4),
+                                     "desc": "证据重复率（同一 source_id 重复出现的比例；规则型，reducer 语义哨兵）"},
+            "retrieval_depth": {"baseline_queries_per_round": round(bl_rounds, 2),
+                                "improved_queries_per_round": round(im_rounds, 2),
+                                "desc": "平均每轮检索查询数（规则型；自适应检索生效后应上升）"},
+            "citation_legality": {"improved": round(im_cit_legal, 4),
+                                  "desc": "引用角标合法率（规则型；角标能否在来源表找到）"},
+            "key_point_coverage": {"improved": round(im_kp, 4),
+                                   "desc": "期望要点字面覆盖率（规则型，对照 LLM-as-Judge）"},
         },
         "details": {
             "baseline": [_result_to_dict(r) for r in results_bl],
@@ -538,7 +582,7 @@ def run_eval(output_path, max_queries=0):
     logger.info("评测报告已保存: %s", output_path)
     logger.info("=" * 60)
     print_summary(report)
-    token_acc.detach()
+    token_acc.warn_if_unparsed()
 
 
 def print_summary(report):
@@ -560,6 +604,12 @@ def print_summary(report):
     print(f"   方法: DashScope API usage hook 累计")
     print(f"\n7. 简单问答响应: 平均 {s['direct_response']['avg_s']:.2f}s, 最大 {s['direct_response']['max_s']:.2f}s, < 2s: {s['direct_response']['under_2s']}")
     print(f"   方法: 系统埋点 time.time 计时")
+    print(f"\n8. 证据重复率: {s['evidence_duplication']['baseline']:.1%} → {s['evidence_duplication']['improved']:.1%}")
+    print(f"   方法: 规则型（同一 source_id 重复出现的比例，reducer 语义哨兵）")
+    print(f"\n9. 检索深度: {s['retrieval_depth']['baseline_queries_per_round']:.1f} → {s['retrieval_depth']['improved_queries_per_round']:.1f} 查询/轮")
+    print(f"   方法: 规则型（检索轨迹条数 / 外层研究轮数）")
+    print(f"\n10. 引用合法率: {s['citation_legality']['improved']:.1%}   要点字面覆盖: {s['key_point_coverage']['improved']:.1%}")
+    print(f"   方法: 规则型（角标存在性校验 / 关键词子串匹配，对照 LLM-as-Judge）")
     print("\n" + "=" * 60)
 
 
