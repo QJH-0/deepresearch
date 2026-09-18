@@ -282,6 +282,81 @@ load_dotenv 后 HTTP_PROXY = http://127.0.0.1:7897
 
 ---
 
+## 第六轮：找到不依赖人工标注的判别指标 + 抽出引用角标模块
+
+### 关键发现：判别指标已经存在，只是没被采集
+
+`write` 节点一直有 P7-2 的引用覆盖率埋点，但只写进日志、没进评测报告。
+把两次运行的日志拉出来对比：
+
+| 运行 | baseline（1 轮） | improved（2 轮） |
+| --- | --- | --- |
+| 代理故障（web 全空） | 28.4%（27/95） | 21.8%（24/110） |
+| 代理修复后 | **62.1%**（36/58） | 35.6%（31/87） |
+
+**在 21.8% ~ 62.1% 之间波动 —— 有判别力，且不依赖任何人工标注。**
+代理修复后 baseline 直接从 28.4% 跳到 62.1%，对检索质量高度敏感。
+
+**含义**：B 阶段不必等 Golden Set 改好才能度量，`citation_coverage` 就能给出信号。
+（仍建议同时补 Golden Set 的要点判别力，两者互补：一个测「论断有没有来源支撑」，
+一个测「有没有覆盖到该覆盖的事实」。）
+
+顺带发现：**迭代越多，引用覆盖率反而下降**（62.1% → 35.6%；21.8% vs 28.4%）。
+原因是报告变长（58→87 句、95→110 句），分母涨得比带角标的句子快。
+这本身是个值得跟进的信号：多跑一轮是否在稀释论断的引用密度。
+
+### 抽出 `mult_agents/citations.py`
+
+把 `citation_coverage` 接进 `write` 时踩到**循环导入**：
+
+```
+eval_metrics → nodes._fallbacks → nodes/__init__ → write → eval_metrics（未初始化完）
+ImportError: cannot import name 'citation_coverage' from partially initialized module
+```
+
+根因是引用角标逻辑放在了 `nodes/` 下，而评测模块要用它。
+且该正则当时**散落三处**（`nodes/_fallbacks.py`、`backend/service/report_check.py`、
+`nodes/write.py` 各一份）。
+
+**修法**：新建顶层 `app/mult_agents/citations.py` 作为唯一实现
+（`CITATION_ID_PATTERN` / `extract_citation_ids` / `validate_and_fix_citations`）：
+
+- `_fallbacks.py` 改为导入并保留私有别名 → 既有调用方与测试的 patch 目标不变
+- `eval_metrics.py` 从 `citations` 导入 → **不再依赖 `nodes`，环解开**
+- `report_check.py` 删掉自己的正则与 `_extract_citations`，改用共享实现
+  （原注释「与 nodes/_fallbacks.py 的引用格式保持一致」正是重复的信号）
+
+### 改动清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/mult_agents/citations.py` | **新增**：引用角标唯一实现 |
+| `app/mult_agents/eval_metrics.py` | 新增 `citation_coverage`；改从 `citations` 导入；`measure` 纳入新指标 |
+| `app/mult_agents/nodes/write.py` | P7-2 埋点改调用共享实现（删掉内联的正则与句长阈值） |
+| `app/mult_agents/nodes/_fallbacks.py` | 两个引用函数改为导入别名；清理因此不再使用的 `re` |
+| `app/backend/service/report_check.py` | 删掉重复的正则与 `_extract_citations`，改用共享实现 |
+| `app/test/test_eval_metrics_rules.py` | 新增 `TestCitationCoverage`（4 用例）；`TestMeasure` 补新指标 |
+| `app/test/eval_metrics.py` | 摘要新增「10b. 引用覆盖率」 |
+
+### 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 后端全量 | **606 passed, 2 skipped** |
+| 回归专项 | **116 passed, 7 deselected**（与基线一致） |
+| 前端 | **6 文件 71 passed**（与基线一致） |
+| 循环导入 | 先导入 `eval_metrics` 再导入 `write` 均成功（此前必炸） |
+| 单一维护源 | 角标正则由 3 处收敛为 1 处；`test_matches_write_node_embedding` 锁住节点与评测同源 |
+| **人为漂移验证** | `SUBSTANTIVE_SENTENCE_MIN_CHARS` 由 15 改为 0 → `test_counts_only_substantive_sentences` **FAILED**；还原后 33 passed |
+
+### 一次自我纠错
+
+新写的两个测试一开始就失败，**是我的期望写错了**（把引用角标放在了被排除的短句里，
+以及 `measure` 的用例正文不足 15 字导致分母为 0）。已修正测试而非改实现——
+实现行为是对的。
+
+---
+
 ## 第一轮：离线审查发现的两处缺陷
 
 （编号按发现顺序；第二轮、第三轮的内容在本文档更靠前，因为它们是后续补记的。）
