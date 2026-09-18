@@ -1,9 +1,12 @@
 """结构化输出测试：决策节点的模型输出必须受 schema 约束。
 
-背景：DashScope 只接受 tool_choice 为 none/auto，因此 langchain 1.x 的
-create_agent(response_format=...) 不可用（实测报 InvalidParameter）。
-决策节点改为「绑定 schema → 模型以工具调用产出 → 按 schema 校验」，
-本文件覆盖该路径的成功与两类失败。
+实现走 create_agent + ProviderStrategy(strict=True)：provider 用 JSON Schema
+强制输出，框架校验后放进 state 的 structured_response。
+必须显式指定 ProviderStrategy —— 自动策略选择按型号名白名单判断，qwen 不在
+白名单内，传裸 schema 会退化成工具调用策略。
+
+本文件覆盖：取结构化结果的正常路径、缺结果、框架校验失败、非结构化异常上抛，
+以及构建期对 ProviderStrategy / strict 的约束。
 
 运行方式:
     cd D:\\Code\\LLMdev\\deepresearch
@@ -17,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents.structured_output import StructuredOutputError as LangChainStructuredOutputError
 from langchain_core.messages import AIMessageChunk
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,117 +29,128 @@ sys.path.insert(0, str(_PROJECT_ROOT / "app"))
 from mult_agents.output_schemas import IntentDecision  # noqa: E402
 
 
-def _json_chunk(text: str):
-    """JSON Schema 模式下正文即 JSON 片段。"""
-    return AIMessageChunk(content=text)
+def _agent_yielding(*, structured_response=None, reasoning="", raise_exc=None):
+    """构造结构化执行体替身：astream 以 (mode, chunk) 形式产出。
 
-
-def _agent_yielding(*chunks):
-    """构造结构化执行体替身：astream 逐块产出给定 chunk。"""
+    对齐 create_agent 的流式契约：messages 模式推消息增量，values 模式推完整 state。
+    """
 
     class _Runnable:
-        async def astream(self, messages):
-            for chunk in chunks:
-                yield chunk
+        async def astream(self, _input, stream_mode=None):
+            if raise_exc is not None:
+                raise raise_exc
+            if reasoning:
+                yield ("messages", (AIMessageChunk(content="", reasoning_content=reasoning), {}))
+            if structured_response is not None:
+                yield ("values", {"structured_response": structured_response})
 
-    return SimpleNamespace(
-        runnable=_Runnable(),
-        system_prompt="你是意图路由器",
-        schema=IntentDecision,
-    )
+    return SimpleNamespace(runnable=_Runnable(), schema=IntentDecision)
 
 
 class TestInvokeStructuredAgent:
     @pytest.mark.asyncio
-    async def test_returns_validated_model(self):
+    async def test_returns_structured_response(self):
         from mult_agents.nodes._parsing import _invoke_structured_agent
 
-        agent = _agent_yielding(_json_chunk('{"route": "direct", "reason": "问候"}'))
+        decision = IntentDecision(route="direct", reason="问候")
+        agent = _agent_yielding(structured_response=decision)
 
         result, messages = await _invoke_structured_agent(
             {"query": "你好"}, "用户问题：你好", agent, "intent_router", "intent"
         )
 
-        assert isinstance(result, IntentDecision)
-        assert result.route == "direct"
+        assert result is decision
         assert len(messages) == 2
 
     @pytest.mark.asyncio
-    async def test_merges_chunked_json(self):
-        """JSON 正文会分块到达，必须累加后再反序列化。"""
-        from mult_agents.nodes._parsing import _invoke_structured_agent
+    async def test_raises_when_structured_response_missing(self):
+        """state 里没有 structured_response 时必须显式失败，不返回兜底值。"""
+        from mult_agents.nodes._parsing import StructuredOutputError, _invoke_structured_agent
+
+        agent = _agent_yielding()
+
+        with pytest.raises(StructuredOutputError):
+            await _invoke_structured_agent(
+                {"query": "你好"}, "用户问题：你好", agent, "intent_router", "intent"
+            )
+
+    @pytest.mark.asyncio
+    async def test_converts_framework_validation_error(self):
+        """框架报的 schema 校验失败要转成节点认识的异常，供其决定是否降级。"""
+        from mult_agents.nodes._parsing import StructuredOutputError, _invoke_structured_agent
 
         agent = _agent_yielding(
-            _json_chunk('{"route": "multi'),
-            _json_chunk('agent", "reason": "需检索"}'),
+            raise_exc=LangChainStructuredOutputError("取值不在枚举内")
         )
 
-        result, _ = await _invoke_structured_agent(
-            {"query": "调研"}, "用户问题：调研", agent, "intent_router", "intent"
+        with pytest.raises(StructuredOutputError):
+            await _invoke_structured_agent(
+                {"query": "你好"}, "用户问题：你好", agent, "intent_router", "intent"
+            )
+
+    @pytest.mark.asyncio
+    async def test_non_structured_error_propagates(self):
+        """网络/超时类异常必须原样上抛 —— 它们不是「结构化失败」，不该被降级掩盖。"""
+        from mult_agents.nodes._parsing import StructuredOutputError, _invoke_structured_agent
+
+        agent = _agent_yielding(raise_exc=ConnectionError("连接中断"))
+
+        with pytest.raises(ConnectionError):
+            await _invoke_structured_agent(
+                {"query": "你好"}, "用户问题：你好", agent, "intent_router", "intent"
+            )
+
+    @pytest.mark.asyncio
+    async def test_pushes_reasoning_as_thinking_event(self):
+        """reasoning 增量仍要透出为 thinking 事件（通道支持时才有内容）。"""
+        from mult_agents.nodes._parsing import _invoke_structured_agent
+
+        events = []
+        agent = _agent_yielding(
+            reasoning="先看是否涉及检索", structured_response=IntentDecision(route="multiagent")
         )
 
-        assert result.route == "multiagent"
+        await _invoke_structured_agent(
+            {"query": "调研"}, "用户问题：调研", agent, "intent_router", "intent",
+            writer=events.append,
+        )
 
-    @pytest.mark.asyncio
-    async def test_raises_when_content_empty(self):
-        """模型没产出正文时必须显式失败，不返回兜底值。"""
-        from mult_agents.nodes._parsing import StructuredOutputError, _invoke_structured_agent
-
-        agent = _agent_yielding(AIMessageChunk(content=""))
-
-        with pytest.raises(StructuredOutputError):
-            await _invoke_structured_agent(
-                {"query": "你好"}, "用户问题：你好", agent, "intent_router", "intent"
-            )
-
-    @pytest.mark.asyncio
-    async def test_raises_when_content_is_not_json(self):
-        """正文不是 JSON 说明 provider 没遵守 schema，必须暴露而不是宽容解析。"""
-        from mult_agents.nodes._parsing import StructuredOutputError, _invoke_structured_agent
-
-        agent = _agent_yielding(_json_chunk("我觉得应该走 direct"))
-
-        with pytest.raises(StructuredOutputError):
-            await _invoke_structured_agent(
-                {"query": "你好"}, "用户问题：你好", agent, "intent_router", "intent"
-            )
-
-    @pytest.mark.asyncio
-    async def test_raises_when_value_violates_schema(self):
-        """取值不在枚举内必须被 schema 拦下。"""
-        from mult_agents.nodes._parsing import StructuredOutputError, _invoke_structured_agent
-
-        agent = _agent_yielding(_json_chunk('{"route": "unknown_route", "reason": "x"}'))
-
-        with pytest.raises(StructuredOutputError):
-            await _invoke_structured_agent(
-                {"query": "你好"}, "用户问题：你好", agent, "intent_router", "intent"
-            )
+        assert any(e.get("type") == "thinking" and e.get("text") == "先看是否涉及检索" for e in events)
 
 
 class TestBuildStructuredAgent:
-    def test_binds_json_schema_response_format(self):
-        """结构化节点走 provider 的 json_schema 模式，而不是工具调用变通方案。"""
+    def test_uses_provider_strategy_with_strict(self):
+        """必须显式用 ProviderStrategy + strict：裸 schema 会退化成工具调用策略。"""
+        from langchain.agents.structured_output import ProviderStrategy
+
         from mult_agents import models
 
-        bound = MagicMock()
-        fake_llm = MagicMock()
-        fake_llm.bind.return_value = bound
+        captured = {}
 
-        with patch.object(models, "_build_llm", return_value=fake_llm):
+        def fake_create_agent(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch.object(models, "_build_llm", return_value=MagicMock()), \
+             patch.object(models, "create_agent", fake_create_agent):
             agent = models.build_structured_agent(
                 "qwen3.8-max", "", "intent_router", 0.0,
                 timeout=60.0, max_retries=2, response_format=IntentDecision,
             )
 
-        response_format = fake_llm.bind.call_args.kwargs["response_format"]
-        assert response_format["type"] == "json_schema"
-        assert response_format["json_schema"]["strict"] is True
-        assert response_format["json_schema"]["name"] == "IntentDecision"
-        assert "route" in response_format["json_schema"]["schema"]["properties"]
-        assert agent.runnable is bound
+        response_format = captured["response_format"]
+        assert isinstance(response_format, ProviderStrategy)
+        assert response_format.schema is IntentDecision
+
+        payload = response_format.to_model_kwargs()["response_format"]
+        assert payload["type"] == "json_schema"
+        assert payload["json_schema"]["strict"] is True
+        assert payload["json_schema"]["name"] == "IntentDecision"
+        assert "route" in payload["json_schema"]["schema"]["properties"]
+
+        assert captured["tools"] == []
+        assert captured["system_prompt"], "system prompt 由 create_agent 注入，不在执行体上重复保存"
         assert agent.schema is IntentDecision
-        assert agent.system_prompt
 
     def test_rejects_model_without_json_schema_support(self):
         """不支持 json_schema 的型号必须启动即失败，而不是运行期才报 schema 错。"""

@@ -16,7 +16,9 @@ class IntentDecision(BaseModel):
     """意图路由决策。"""
 
     route: Literal["direct", "multiagent"] = Field(description="路由目标")
-    reason: str = Field(default="", max_length=200, description="判断理由")
+    # 上限放宽到 500：实测 qwen3.7-flash 常输出 200 字以上的理由，过严的上限
+    # 会让整次结构化调用因一个审计字段失败；description 负责引导简短。
+    reason: str = Field(default="", max_length=500, description="判断理由，简要说明，百字以内")
 
 
 class OutlineSection(BaseModel):

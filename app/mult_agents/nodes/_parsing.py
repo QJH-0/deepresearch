@@ -6,7 +6,8 @@ import json
 import logging
 import re
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain.agents.structured_output import StructuredOutputError as LangChainStructuredOutputError
+from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.types import StreamWriter
 
 from ..state import AgentState
@@ -29,10 +30,8 @@ async def _invoke_structured_agent(
 ):
     """调用决策节点的结构化执行体，返回 (校验后的模型对象, 审计消息列表)。
 
-    provider 已用 JSON Schema 模式（strict）约束输出，正文即 JSON 字符串，
-    因此这里只做累加与反序列化 —— 不做代码围栏剥离、不做正则截取，
-    否则会把「provider 没遵守 schema」这类问题掩盖成「解析器很宽容」。
-    reasoning 与正文一起流式累加，深度思考节点仍能推送 thinking 事件。
+    输出由 provider 用 JSON Schema（strict）约束，框架按 schema 校验后放进
+    state 的 structured_response，因此这里不做任何解析或兜底。
 
     失败一律抛 StructuredOutputError —— 不返回兜底值。是否降级由调用方决定，
     因为「能不能降级」是各节点自己的业务判断。
@@ -41,26 +40,28 @@ async def _invoke_structured_agent(
         writer({"node": node, "message": f"正在调用 {agent_name} 进行推理..."})
 
     human = HumanMessage(content=with_memory_context(state, prompt))
-    messages = [SystemMessage(content=agent.system_prompt), human]
-
-    content = ""
-    async for chunk in agent.runnable.astream(messages):
-        reasoning = _extract_reasoning_from_chunk(chunk)
-        if reasoning and writer:
-            writer({"type": "thinking", "node": node, "text": reasoning})
-        text = _extract_content_from_chunk(chunk)
-        if text:
-            content += text
-
-    if not content.strip():
-        raise StructuredOutputError(f"{agent_name} 未返回结构化结果")
-
+    last_values = None
     try:
-        result = agent.schema.model_validate_json(content)
-    except Exception as exc:
+        async for mode, chunk in agent.runnable.astream(
+            {"messages": [human]}, stream_mode=["messages", "values"]
+        ):
+            if mode == "values":
+                last_values = chunk
+                continue
+            msg_chunk = chunk[0] if isinstance(chunk, tuple) else chunk
+            reasoning = _extract_reasoning_from_chunk(msg_chunk)
+            if reasoning and writer:
+                writer({"type": "thinking", "node": node, "text": reasoning})
+    except LangChainStructuredOutputError as exc:
+        # 只转换「结构化语义失败」；网络、超时等异常原样上抛，不与之混为一谈
         raise StructuredOutputError(f"{agent_name} 输出不符合 schema: {exc}") from exc
 
-    emit(node, str(result))
+    result = (last_values or {}).get("structured_response")
+    if result is None:
+        raise StructuredOutputError(f"{agent_name} 未返回结构化结果")
+
+    content = result.model_dump_json()
+    emit(node, content)
     if writer:
         writer({"node": node, "message": f"推理完成: {result}"})
     return result, [human, AIMessage(content=content)]

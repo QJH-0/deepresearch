@@ -8,9 +8,9 @@
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ProviderStrategy
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
@@ -121,27 +121,16 @@ def build_aux_llm(
 class StructuredAgent:
     """决策节点的结构化执行体。
 
-    走 DashScope 的 JSON Schema 模式（response_format.type=json_schema + strict），
-    由 provider 保证输出结构，调用方只需按 schema 反序列化。
-    不走 create_agent：langchain 1.x 的 response_format 依赖强制 tool_choice，
-    而 DashScope 只接受 none/auto，实测报 InvalidParameter。
+    走 create_agent 的 ProviderStrategy：由 provider 用 JSON Schema（strict）
+    约束输出，结果落在 state 的 structured_response，已按 schema 校验。
+
+    必须显式传 ProviderStrategy 而不是裸 schema —— 自动策略选择用的是
+    型号名白名单（只认 grok / gpt-5 / gpt-4.1 / o3 等），qwen 不在其中，
+    裸 schema 会退化成工具调用策略，约束强度反而更低。
     """
 
     runnable: object
-    system_prompt: str
     schema: type[BaseModel]
-
-
-def _json_schema_response_format(schema: type[BaseModel]) -> dict:
-    """把 Pydantic 模型转成百炼 JSON Schema 模式的 response_format。"""
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": schema.__name__,
-            "strict": True,
-            "schema": schema.model_json_schema(),
-        },
-    }
 
 
 def build_structured_agent(
@@ -170,8 +159,12 @@ def build_structured_agent(
         enable_thinking=enable_thinking,
     )
     return StructuredAgent(
-        runnable=llm.bind(response_format=_json_schema_response_format(response_format)),
-        system_prompt=PROMPTS[prompt_key],
+        runnable=create_agent(
+            model=llm,
+            tools=[],
+            system_prompt=PROMPTS[prompt_key],
+            response_format=ProviderStrategy(response_format, strict=True),
+        ),
         schema=response_format,
     )
 
