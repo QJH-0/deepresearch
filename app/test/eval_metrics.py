@@ -11,11 +11,15 @@ DeepResearch 多智能体深度研报助手 — 自动化评测脚本
   7. 简单问答响应时间（系统埋点计时）
 
 运行方式:
-  cd deep_research
-  python -m app.test.eval_metrics --config config.json --output eval_report.json
+  cd D:\\Code\\LLMdev\\deepresearch
+  python app/test/eval_metrics.py --output output/eval_report.json [--max-queries N] [--judge-model M]
+
+前置：Postgres / Milvus / Redis / RabbitMQ 已启动，.env 有 DASHSCOPE_API_KEY。
+注意 `--config` 参数已废弃（配置统一由 AppConfig.from_file() 从 .env + config.json 读取）。
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import re
@@ -25,14 +29,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+_APP_PATH = _PROJECT_ROOT / "app"
+# 必须同时插入 app/：mult_agents 是 app/ 下的顶层包，只插项目根会
+# ModuleNotFoundError: No module named 'mult_agents'
+for _path in (_PROJECT_ROOT, _APP_PATH):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from langchain_core.callbacks import BaseCallbackHandler
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import build_checkpointer
+from mult_agents.runtime import init_checkpointer, close_checkpointer
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 from mult_agents.eval_metrics import measure as measure_quality, aggregate as aggregate_metric
@@ -201,9 +209,15 @@ class TokenAccumulator(BaseCallbackHandler):
 # LLM-as-Judge
 # ======================================================================
 
-def build_judge_llm(api_key: str, model: str = "qwen-max"):
-    from langchain_community.chat_models import ChatTongyi
-    return ChatTongyi(model=model, temperature=0.0, dashscope_api_key=api_key)
+def build_judge_llm(api_key: str, model: str, *, timeout: float = 60.0, max_retries: int = 2):
+    """评测用裁判模型。
+
+    与主链路共用 ChatOpenAI 兼容通道（`build_aux_llm`）：原生 SDK 通道不支持
+    Qwen3.7/3.8 系列，继续用它会把评测锁死在旧型号上，且与生产链路行为不一致。
+    """
+    from mult_agents.models import build_aux_llm
+
+    return build_aux_llm(model, api_key, timeout=timeout, max_retries=max_retries, temperature=0.0)
 
 
 def _extract_json(text: str) -> dict:
@@ -390,7 +404,7 @@ def _result_to_dict(r: EvalResult) -> dict:
     }
 
 
-def run_single_query(app, config, query, token_acc, memory_manager=None):
+async def run_single_query(app, config, query, token_acc, memory_manager=None):
     # P5: 旧记忆系统已删除，新记忆走 MemoryService (langmem + PostgresStore)
     memory_context = ""
     state = create_initial_state(
@@ -403,19 +417,28 @@ def run_single_query(app, config, query, token_acc, memory_manager=None):
         "configurable": {"thread_id": f"{config.thread_id}_eval_{int(start)}"},
         "callbacks": [token_acc],
     }
-    result = app.invoke(state, cfg)
+    # 节点全是 async 函数：同步 invoke 会抛
+    # TypeError: No synchronous function provided to "intent"
+    result = await app.ainvoke(state, cfg)
     elapsed = time.time() - start
     final = result.get("final", "")
     return final, dict(result), elapsed, token_acc.total_tokens
 
 
-def run_eval(output_path, max_queries=0):
+async def run_eval(output_path, max_queries=0, judge_model=""):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     config = AppConfig.from_file()
     agents = build_agents(config.model, config.api_key, config)
-    checkpointer = build_checkpointer(config)
+    # 必须用异步 checkpointer：sync PostgresSaver 没有 aget_tuple/aput，
+    # ainvoke 会落到基类 stub 抛 NotImplementedError
+    checkpointer = await init_checkpointer(config)
     app = build_workflow_app(agents, checkpointer)
-    judge_llm = build_judge_llm(config.api_key)
+    judge_llm = build_judge_llm(
+        config.api_key,
+        judge_model or config.model,
+        timeout=config.llm_timeout_seconds,
+        max_retries=config.llm_max_retries,
+    )
 
     token_acc = TokenAccumulator()
 
@@ -427,15 +450,17 @@ def run_eval(output_path, max_queries=0):
 
     results_bl, results_im, results_dir = [], [], []
 
+    # 三组配置统一关闭 HITL：config.json 默认开启，会让图在 plan/analyze/write 处
+    # interrupt 并返回，评测拿到的 final 是空的。评测跑的是无人值守路径。
     # Baseline
     logger.info("=" * 60)
     logger.info("Phase 1: Baseline (max_iterations=1)")
     logger.info("=" * 60)
-    bl_config = config.with_overrides(max_iterations=1, enable_memory=False)
+    bl_config = config.with_overrides(max_iterations=1, enable_memory=False, hitl_enabled=False)
     for i, q in enumerate(ma_queries):
         logger.info("[%d/%d] %s", i + 1, len(ma_queries), q["query"][:50])
         try:
-            final, state, elapsed, tokens = run_single_query(app, bl_config, q["query"], token_acc)
+            final, state, elapsed, tokens = await run_single_query(app, bl_config, q["query"], token_acc)
             stats = extract_retrieval_stats(state)
             quality = measure_quality(state, final, q["key_points"])
             comp = judge_with_consensus(judge_completeness, judge_llm, q["query"], q["key_points"], final)
@@ -455,11 +480,11 @@ def run_eval(output_path, max_queries=0):
     logger.info("=" * 60)
     logger.info("Phase 2: Improved (max_iterations=2)")
     logger.info("=" * 60)
-    im_config = config.with_overrides(max_iterations=2, enable_memory=False)
+    im_config = config.with_overrides(max_iterations=2, enable_memory=False, hitl_enabled=False)
     for i, q in enumerate(ma_queries):
         logger.info("[%d/%d] %s", i + 1, len(ma_queries), q["query"][:50])
         try:
-            final, state, elapsed, tokens = run_single_query(app, im_config, q["query"], token_acc)
+            final, state, elapsed, tokens = await run_single_query(app, im_config, q["query"], token_acc)
             stats = extract_retrieval_stats(state)
             quality = measure_quality(state, final, q["key_points"])
             comp = judge_with_consensus(judge_completeness, judge_llm, q["query"], q["key_points"], final)
@@ -479,11 +504,11 @@ def run_eval(output_path, max_queries=0):
     logger.info("=" * 60)
     logger.info("Phase 3: Direct (简单问答)")
     logger.info("=" * 60)
-    dir_config = config.with_overrides(max_iterations=1, enable_memory=False)
+    dir_config = config.with_overrides(max_iterations=1, enable_memory=False, hitl_enabled=False)
     for i, q in enumerate(dir_queries):
         logger.info("[%d/%d] %s", i + 1, len(dir_queries), q["query"][:50])
         try:
-            final, state, elapsed, tokens = run_single_query(app, dir_config, q["query"], token_acc)
+            final, state, elapsed, tokens = await run_single_query(app, dir_config, q["query"], token_acc)
             route = state.get("intent", "unknown")
             results_dir.append(EvalResult(q["query"], "direct", elapsed, final, tokens, {}, intent=route))
             logger.info("  路由=%s 耗时=%.2fs Token=%d", route, elapsed, tokens)
@@ -537,7 +562,7 @@ def run_eval(output_path, max_queries=0):
                              "desc": "研究完备性（LLM-as-Judge + key_points 覆盖率，3轮取中位数）"},
             "retrieval_time": {"baseline_avg_s": round(bl_time, 2), "improved_avg_s": round(im_time, 2),
                                "reduction": round((bl_time - im_time) / bl_time, 4) if bl_time > 0 else 0,
-                               "desc": "检索阶段耗时（系统埋点 time.time 计时）"},
+                               "desc": "端到端耗时（系统埋点 time.time 计时，整题而非检索子阶段）"},
             "low_quality_rate": {"baseline": round(bl_lq, 4), "improved": round(im_lq, 4),
                                  "desc": "低质信源占比（_score_evidence < 0.6 的证据比例）"},
             "hallucination_rate": {"baseline": round(bl_halluc, 4), "improved": round(im_halluc, 4),
@@ -569,7 +594,7 @@ def run_eval(output_path, max_queries=0):
             "total_queries": len(EVAL_QUERIES),
             "multiagent_queries": len(ma_queries),
             "direct_queries": len(dir_queries),
-            "judge_model": "qwen-max",
+            "judge_model": judge_model or config.model,
             "judge_rounds": 3,
             "gen_model": config.model,
         },
@@ -583,25 +608,35 @@ def run_eval(output_path, max_queries=0):
     logger.info("=" * 60)
     print_summary(report)
     token_acc.warn_if_unparsed()
+    await close_checkpointer()
+
+
+def _delta_text(reduction: float) -> str:
+    """把「降低比例」渲染成正负号明确的文案，避免负值被读成降低。"""
+    if reduction >= 0:
+        return f"降低 {reduction:.1%}"
+    return f"**增加 {-reduction:.1%}**"
 
 
 def print_summary(report):
     s = report["summary"]
+    meta = report.get("meta", {})
+    judge_model = meta.get("judge_model", "未知")
     print("\n" + "=" * 60)
     print("DeepResearch 自动化评测报告汇总")
     print("=" * 60)
     print(f"\n1. 研究完备性: {s['completeness']['baseline']:.1%} → {s['completeness']['improved']:.1%} (Δ={s['completeness']['delta']:+.1%})")
-    print(f"   方法: LLM-as-Judge (qwen-max) + key_points 覆盖率, 3轮取中位数")
-    print(f"\n2. 检索耗时: {s['retrieval_time']['baseline_avg_s']:.1f}s → {s['retrieval_time']['improved_avg_s']:.1f}s (降低 {s['retrieval_time']['reduction']:.1%})")
-    print(f"   方法: 系统埋点 time.time 计时")
+    print(f"   方法: LLM-as-Judge ({judge_model}) + key_points 覆盖率, {meta.get('judge_rounds', 3)}轮取中位数")
+    print(f"\n2. 端到端耗时: {s['retrieval_time']['baseline_avg_s']:.1f}s → {s['retrieval_time']['improved_avg_s']:.1f}s ({_delta_text(s['retrieval_time']['reduction'])})")
+    print(f"   方法: 系统埋点 time.time 计时（整题端到端，非检索子阶段）")
     print(f"\n3. 低质信源过滤率: {s['low_quality_rate']['baseline']:.1%} → {s['low_quality_rate']['improved']:.1%}")
     print(f"   方法: _score_evidence 函数自动打分, < 0.6 计为低质")
     print(f"\n4. 幻觉率: {s['hallucination_rate']['baseline']:.1%} → {s['hallucination_rate']['improved']:.1%}")
     print(f"   方法: LLM-as-Judge 事实核查 (3轮取中位数)")
     print(f"\n5. 引用准确率: {s['citation_accuracy']['improved']:.1%}")
     print(f"   方法: 规则校验合法性 + LLM-as-Judge 语义匹配")
-    print(f"\n6. Token 消耗: {s['token_reduction']['baseline_avg']} → {s['token_reduction']['improved_avg']} (降低 {s['token_reduction']['reduction']:.1%})")
-    print(f"   方法: DashScope API usage hook 累计")
+    print(f"\n6. Token 消耗: {s['token_reduction']['baseline_avg']} → {s['token_reduction']['improved_avg']} ({_delta_text(s['token_reduction']['reduction'])})")
+    print(f"   方法: LangChain 回调 on_llm_end 累计（llm_output 为空时回落 message.usage_metadata）")
     print(f"\n7. 简单问答响应: 平均 {s['direct_response']['avg_s']:.2f}s, 最大 {s['direct_response']['max_s']:.2f}s, < 2s: {s['direct_response']['under_2s']}")
     print(f"   方法: 系统埋点 time.time 计时")
     print(f"\n8. 证据重复率: {s['evidence_duplication']['baseline']:.1%} → {s['evidence_duplication']['improved']:.1%}")
@@ -617,6 +652,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepResearch 自动化评测")
     parser.add_argument("--output", type=str, default="eval_report.json", help="输出报告路径")
     parser.add_argument("--max-queries", type=int, default=0, help="最大评测题数 (0=全部)")
+    parser.add_argument("--judge-model", type=str, default="",
+                        help="裁判模型（留空取 config.json 的 model）")
     args = parser.parse_args()
 
-    run_eval(args.output, args.max_queries)
+    asyncio.run(run_eval(args.output, args.max_queries, args.judge_model))

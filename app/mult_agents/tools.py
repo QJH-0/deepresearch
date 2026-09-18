@@ -69,6 +69,9 @@ class DuckDuckGoProvider:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
+        # 不传 timeout：ddgs 的 timeout 是**单次 HTTP 请求**上限，
+        # 而 search_timeout_seconds 是**整条 Provider 链**的上限，两者作用域不同。
+        # 把后者透传进来会拉长每次请求的等待，与「源不可达时快速失败」的初衷相反。
         return DDGS()
 
     async def search(self, query: str, max_results: int = 6) -> list[dict]:

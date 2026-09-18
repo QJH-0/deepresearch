@@ -565,3 +565,62 @@ class TestSearXNGProviderAsync:
         provider = SearXNGProvider(base_url="")
         assert provider.available is False
         assert asyncio.run(provider.search("q")) == []
+
+
+# ──────────────────────────────────────────────
+# 检索超时的取值与回落
+# ──────────────────────────────────────────────
+
+
+class TestSearchTimeout:
+    """`_search_timeout_seconds` 是「整条 Provider 链」的上限。
+
+    注意它**不是** ddgs 的 `timeout` 参数——后者是单次 HTTP 请求上限，作用域不同，
+    不能互相透传（透传会把每次请求的等待拉长，与「源不可达时快速失败」相反）。
+    网页检索在本机代理下不可用是代理拦 CONNECT 导致的环境问题，与本取值无关。
+    """
+
+    def test_timeout_reads_from_business_settings(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from mult_agents import tools
+
+        monkeypatch.setattr(
+            "backend.config.settings.get_business_settings",
+            lambda: SimpleNamespace(search_timeout_seconds=33.0),
+        )
+
+        assert tools._search_timeout_seconds() == 33.0
+
+    def test_timeout_falls_back_when_settings_unavailable(self, monkeypatch):
+        """配置不可用时回落 15s，不得抛异常打断检索。"""
+        from mult_agents import tools
+
+        def boom():
+            raise RuntimeError("配置不可用")
+
+        monkeypatch.setattr("backend.config.settings.get_business_settings", boom)
+
+        assert tools._search_timeout_seconds() == 15.0
+
+    def test_ddgs_is_not_given_chain_level_timeout(self, monkeypatch):
+        """DDGS 不得被塞入链路级超时——两者作用域不同。"""
+        import types as _types
+
+        from mult_agents import tools
+
+        captured = {}
+
+        class FakeDDGS:
+            def __init__(self, *args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+
+        monkeypatch.setitem(sys.modules, "ddgs", _types.SimpleNamespace(DDGS=FakeDDGS))
+        monkeypatch.setattr(tools, "_search_timeout_seconds", lambda: 42.0)
+
+        tools.DuckDuckGoProvider()._ddgs()
+
+        assert "timeout" not in captured["kwargs"], (
+            "ddgs 的 timeout 是单次 HTTP 请求上限，链路级取值不能透传进来"
+        )

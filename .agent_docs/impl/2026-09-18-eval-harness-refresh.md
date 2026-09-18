@@ -15,6 +15,154 @@
 结论：**Golden Set 已存在，缺的不是题而是「能判定 A/B 改动是否有效」的指标与可信的统计**。
 两个脚本都需要真实中间件，本环境无法端到端运行，因此本次只做**可离线验证**的部分。
 
+## 第二轮：端到端验证暴露的三处缺陷（中间件启动后实测）
+
+用户启动中间件后做真实运行，脚本**根本跑不起来**，逐个修掉：
+
+### 缺陷 3：入口路径设置错误，文档里的运行命令无效
+
+```
+$ python -m app.test.eval_metrics --help
+ModuleNotFoundError: No module named 'mult_agents'
+```
+
+脚本只把 `_PROJECT_ROOT` 插入 `sys.path`，但 `mult_agents` 是 `app/` 下的顶层包，
+必须同时插入 `app/`。且 `app/` 与 `app/test/` 都没有 `__init__.py`，
+文档里的 `python -m app.test.eval_metrics` 形式也不成立。
+
+**修法**：同时插入两个路径；文档改为 `python app/test/eval_metrics.py`；
+废弃不存在的 `--config` 参数说明。
+
+### 缺陷 4：用同步 `invoke` 跑异步节点
+
+```
+TypeError: No synchronous function provided to "intent".
+Either initialize with a synchronous function or invoke via the async API
+```
+
+所有节点都是 `async def`，脚本却用 `app.invoke(...)`。
+
+**修法**：`run_single_query` 与 `run_eval` 改 async，用 `await app.ainvoke(...)`；
+`__main__` 用 `asyncio.run(...)`。
+
+### 缺陷 5：用同步 checkpointer 配异步执行
+
+`build_checkpointer` 返回 sync `PostgresSaver`，而 `runtime.py` 已注明：
+sync 版没有 `aget_tuple`/`aput`，`ainvoke` 会落到基类 stub 抛 `NotImplementedError`。
+
+**修法**：改用 `await init_checkpointer(config)` / `await close_checkpointer()`。
+
+### 缺陷 6：HITL 未关闭，评测拿到空报告
+
+`config.json` 的 `hitl_enabled=true`，图会在 `plan` 处 `interrupt` 并返回，
+`final` 为空——评测全部作废且不报错。
+
+**修法**：三组评测配置统一 `with_overrides(..., hitl_enabled=False)`。
+（`clarify.py:315-318` 已有「无人可答则直通 plan」的处理，与此一致。）
+
+## 端到端验证：token 统计确认生效
+
+直答路径实跑（`什么是REST API`）：
+
+| 项 | 结果 |
+| --- | --- |
+| intent 路由 | `direct` ✓ |
+| 耗时 | 6.7s |
+| final | 828 字，内容正常 |
+| **token（真实 TokenAccumulator）** | **293（prompt 168 + completion 125），解析成功 2 次调用，未解析 0** |
+
+**关键发现：usage 不在 `llm_output` 里。** 实测 `llm_output` 恒为 `null`，
+usage 实际落在 `response.generations[0][0].message.usage_metadata`
+（`{"input_tokens":..., "output_tokens":..., "total_tokens":...}`）。
+若只读 `llm_output`（旧实现的思路）会再次得到 0——回调的双落点回退是必要的。
+
+## 第三轮：首次真实评测结果 + 代理误配置定位
+
+### 评测实跑（1 道多智能体题，24 分 12 秒）
+
+| 指标 | baseline（max_iter=1） | improved（max_iter=2） |
+| --- | --- | --- |
+| 研究完备性 | 1.0000 | 0.9167（5 covered + 1 partial / 6） |
+| 端到端耗时 | 491.7s | 678.6s |
+| Token | 42732 | 65568 |
+| 幻觉率 | 40% | 10% |
+| 引用准确率 | — | 100%（5/5） |
+| **证据重复率** | **0.0%** | **0.0%**（28 项 / 28 唯一） |
+| 检索深度 | 9.5 查询/轮 | 8.67 查询/轮 |
+| 引用合法率 | — | 100% |
+| 要点字面覆盖 | — | 100%（6/6） |
+
+**本轮验证到的两件事**：
+
+1. **A1 在真实链路上成立**：`web_evidence` / `local_evidence` / `evidence_pool`
+   三个字段的重复率均为 0，28 项全唯一。重复累加确已消除。
+2. **token 统计真实生效**：42732 / 65568，回调捕获成功。
+
+**不能据此下结论的地方**（必须写清）：
+
+- **n=1，无统计意义**。完备性 baseline > improved（1.0 vs 0.9167）是单样本噪声，
+  不能读成「多迭代变差」。
+- **网页检索全程返回 0 条**：18 个 web 查询 raw_count 全为 0，
+  这轮只跑通了本地 RAG 路径（14 条证据全部来自同一份《AI_Agent_白皮书.md》）。
+  「引用准确率 100%」实际只覆盖 5 个引用、单一来源。
+- **baseline/improved 是 `max_iterations=1 vs 2`**，度量的是「多跑一轮的代价」，
+  不是任何架构优化的收益。
+
+### 报告标签修正
+
+`print_summary` 里三处过时文案已修：`qwen-max` → 取 `meta.judge_model`；
+「检索耗时」→「端到端耗时」（原标签名不符实，用的其实是整题 `elapsed_time`）；
+「DashScope API usage hook」→「LangChain 回调」。并新增 `_delta_text`，
+负的「降低比例」显式渲染成「增加 X%」，避免 -38% 被读成降低。
+
+### 代理误配置定位（本轮最有价值的发现）
+
+现象：评测中 18 个 web 查询全部返回 0 条，日志只有一条 warning。
+
+排查链：
+
+1. `tavily` / `searxng` **未配置**（缺 `TAVILY_API_KEY` / `SEARX_URL`）→ 被跳过，只剩 ddgs
+2. 进程环境里 `HTTP_PROXY=http://127.0.0.1:2254`，实测该代理返回 **502 Bad Gateway**
+3. 用户提供的 VPN 端口 `7897` 实测 **HTTP 202 / 1.0s / 14KB** ✓
+4. `.env` 里**已有 `# 网络代理` 段，但只填了 `NO_PROXY`，代理地址一直是空的**
+   → 于是外部注入的坏代理 2254 生效
+
+**修法**：在 `.env` 的既有 `# 网络代理` 段补上 `HTTP_PROXY` / `HTTPS_PROXY` = `127.0.0.1:7897`。
+
+验证（清掉外部注入的变量后）：
+
+```
+load_dotenv 前 HTTP_PROXY = （未设置）
+load_dotenv 后 HTTP_PROXY = http://127.0.0.1:7897
+网页检索: 耗时 2.4s，返回 4 条   ← 真实结果
+```
+
+> `.env` 已 gitignore，不随仓库分发；换机器需各自配置。
+> `load_dotenv` 默认**不覆盖**已存在的环境变量，故若 shell 里已注入 `HTTP_PROXY`，
+> 需先 `unset` 才能让 `.env` 生效。
+
+### 一次被推翻的假设（记录以免重犯）
+
+排查过程中我一度判定「`DDGS()` 未透传 timeout 导致 `search_timeout_seconds` 不可达」，
+并改了 `tools.py` 与 `config.json`。
+
+**对照实验推翻了它**：三个变体（有/无 `with`、中/英文）全部失败，错误是
+`proxy CONNECT`，与 timeout 无关。且两者**作用域不同**——
+`search_timeout_seconds` 是「整条 Provider 链」上限，ddgs 的 `timeout` 是「单次 HTTP 请求」
+上限；透传只会把每次请求的等待拉长（15s→30s），与「源不可达时快速失败」的初衷相反。
+
+**已全部回退**（`tools.py` 恢复 `DDGS()`、`config.json` 恢复 15s），
+并把这次结论固化成 `test_search_provider.py::TestSearchTimeout`
+（含一条断言「DDGS 不得被塞入链路级 timeout」），防止以后又有人这么改。
+
+**教训**：报错信息可能与真实原因无关。先做对照实验分离变量，再改代码。
+
+---
+
+## 第一轮：离线审查发现的两处缺陷
+
+（编号按发现顺序；第二轮、第三轮的内容在本文档更靠前，因为它们是后续补记的。）
+
 ## 缺陷 1：token 统计恒为 0（静默失败）
 
 **实测证据**：
@@ -67,25 +215,34 @@ runnable type : CompiledStateGraph
 | --- | --- |
 | `app/mult_agents/eval_metrics.py` | **新增**：规则型指标层 |
 | `app/test/test_eval_metrics_rules.py` | **新增**：24 用例（18 指标 + 6 token 统计） |
-| `app/test/eval_metrics.py` | `TokenAccumulator` 改为回调；`run_single_query` 经 config 注入 callbacks；接入 `measure_quality`；报告与终端摘要新增 4 项指标；清理未使用导入 `os`/`Any` |
+| `app/test/eval_metrics.py` | `TokenAccumulator` 改为 LangChain 回调；判官模型换 ChatOpenAI 兼容通道（`build_judge_llm` 委托 `build_aux_llm`）；`run_eval`/`run_single_query` 改 async + `ainvoke` + `init_checkpointer`；修 `sys.path` 入口；三组配置关 HITL；接入 `measure_quality`；报告与摘要新增 4 项指标；修 3 处过时文案；清理未使用导入 |
+| `app/test/test_search_provider.py` | 新增 `TestSearchTimeout`（3 用例），锁定超时取值与「DDGS 不得被塞入链路级 timeout」 |
+| `.env` | 补 `HTTP_PROXY`/`HTTPS_PROXY` = `127.0.0.1:7897`（**已 gitignore，不入库**） |
 
 ## 验证证据
 
 | 项 | 结果 |
 | --- | --- |
-| 新增测试 | `test_eval_metrics_rules.py` **24 passed** |
-| 后端全量（排除回归文件） | **594 passed, 2 skipped**（A 阶段结束态 570 → +24） |
+| 新增测试 | `test_eval_metrics_rules.py` 24 + `test_search_provider.py` 3 |
+| 后端全量（排除回归文件） | **597 passed, 2 skipped** |
 | 回归专项（deselect 3 个需 MQ 的类） | **116 passed, 7 deselected**（与基线一致） |
 | 前端 | **6 文件 71 passed**（与基线一致） |
-| **人为漂移验证** | 让 `_usage_from` 直接 `return None` → 3 个 token 断言 **FAILED**；还原后 24 passed |
+| **人为漂移验证** | `_usage_from` 返回 `None` → 3 个 token 断言 **FAILED**；还原后 24 passed |
+| **端到端评测实跑** | 1 道多智能体题，24 分 12 秒完成，产出完整报告（见「第三轮」） |
+| **token 统计端到端** | 直答 293 tokens / 2 次调用 / 0 未解析；评测 42732 → 65568 |
+| **A1 端到端验证** | 证据重复率 **0.0%**（28 项全唯一） |
+| **代理修复验证** | 清掉外部注入变量后 `.env` 生效，网页检索 **2.4s 返回 4 条真实结果** |
 | 编译检查 | `compileall` 通过；AST 扫描确认无未使用导入 |
 
-## 未验证 / 待实机回归
+## 未验证 / 待办
 
-- **端到端评测未运行**：`app/test/eval_metrics.py` 与 `scripts/run_rag_eval.py` 都需要
-  真实模型 API + Milvus + 可访问的搜索引擎，本环境不具备。本次只验证了可离线部分。
-- **`ChatTongyi` judge 未换通道**：`build_judge_llm` 仍用 `langchain_community.ChatTongyi`。
-  实测**可导入**，但项目主链路已迁到 `ChatOpenAI` 兼容通道，两者行为是否一致未验证。
-  换通道需要真实 API 调用才能确认，故未动——**这是下一个待办**。
-- **Golden Set 仍缺「期望引用的来源」**：现有 `key_points` 是主题词列表，
-  只能测「有没有讲到」，测不了「引用对不对」。补这一列需要领域判断，建议由用户主导。
+1. **网页检索路径尚未在评测中跑过**：上一轮评测（18 个 web 查询全 0 条）是在代理修好之前跑的。
+   修好代理后需要**重跑一次评测**，才能得到真正覆盖「web + local 双路检索」的基线。
+2. **Golden Set 仍缺「期望引用的来源」**：现有 `key_points` 是主题词列表，
+   只能测「有没有讲到」，测不了「引用对不对」。补这一列需要领域判断，建议由用户主导。
+3. **`tavily` / `searxng` 未配置**：当前只有 ddgs 一个可用检索源。
+   配一个 `TAVILY_API_KEY` 可显著提升检索稳定性（不依赖代理）。
+4. **样本量**：Golden Set 有 50 题，目前只跑了 1 题。全量跑一轮预计数小时。
+5. **`rag/core.py` 重复定义了兼容通道 base URL**（`os.getenv("BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")`
+   与 `models._DASHSCOPE_COMPAT_BASE_URL` 重复）。**未改**：`models.py` 已 import `rag.core`，
+   反向 import 会成环，需要先抽到中立模块。按「不顺手扩大范围」只记录。
