@@ -384,6 +384,38 @@ def save_report(phase: str, index: int, query: str, report: str) -> None:
         logger.warning("报告落盘失败 | %s", exc)
 
 
+def _web_yield(results: list) -> dict:
+    """web 检索产出率：保留证据数 / 检索次数。
+
+    为什么要单列：实测本网络下搜索引擎大面积超时（DuckDuckGo 38 次超时、
+    startpage 连接被拒），某一阶段可能**一条 web 证据都拿不到**。
+    那种情况下的阶段对照是**无效的** —— 指标差异不能归因于代码改动，
+    却很容易被误读成「改动有害」。
+    """
+    queries = sum(int((item.retrieval_stats or {}).get("web_query_count", 0) or 0) for item in results)
+    kept = sum(int((item.retrieval_stats or {}).get("web_kept_count", 0) or 0) for item in results)
+    return {
+        "web_queries": queries,
+        "web_kept": kept,
+        "yield_rate": round(kept / queries, 4) if queries else None,
+        "degraded": bool(queries) and kept == 0,
+    }
+
+
+def _retrieval_health(results_bl: list, results_im: list) -> dict:
+    baseline = _web_yield(results_bl)
+    improved = _web_yield(results_im)
+    degraded = [name for name, stat in (("baseline", baseline), ("improved", improved))
+                if stat["degraded"]]
+    return {
+        "baseline": baseline,
+        "improved": improved,
+        "degraded_phases": degraded,
+        "desc": "web 检索健康度（保留证据 / 检索次数）。degraded_phases 非空说明该阶段"
+                "一条 web 证据都没拿到，本轮阶段对照无效，指标差异不可归因于代码改动",
+    }
+
+
 async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     config = AppConfig.from_file()
@@ -552,11 +584,14 @@ async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
             "retrieval_depth": {"baseline_queries_per_round": round(bl_rounds, 2),
                                 "improved_queries_per_round": round(im_rounds, 2),
                                 "desc": "平均每轮检索查询数（规则型；自适应检索生效后应上升）"},
+            "retrieval_health": _retrieval_health(results_bl, results_im),
             "citation_legality": {"improved": round(im_cit_legal, 4),
                                   "desc": "引用角标合法率（规则型；角标能否在来源表找到）"},
             "citation_coverage": {"baseline": round(bl_cov, 4), "improved": round(im_cov, 4),
                                   "desc": "引用覆盖率（规则型；带角标论断 / 主要论断。"
-                                          "实测 21.8%~62.1% 波动，不依赖人工标注，是当前最可信的判别指标）"},
+                                          "⚠️ 护栏指标，非判别指标：未带角标的句子约 80% 是分析推演与"
+                                          "结构标记，本就不该带角标，~50% 已是结构性天花板。"
+                                          "详见 .agent_docs/impl/2026-09-19-citation-coverage-ceiling.md）"},
             "key_point_coverage": {"improved": round(im_kp, 4),
                                    "desc": "期望要点字面覆盖率（规则型，对照 LLM-as-Judge）"},
             "expected_source_recall": {"baseline": round(bl_src, 4), "improved": round(im_src, 4),
@@ -635,6 +670,15 @@ def print_summary(report):
         print(f"\n11. 期望来源召回: 未评测 —— 题集里还没有题标注 expected_sources")
         print(f"   要判「检索有没有找对来源」必须先在 app/test/golden_set.json 里标注")
     print(f"   方法: 规则型（正文引用来源与期望域名/URL 片段比对）")
+    health = s.get("retrieval_health") or {}
+    if health.get("degraded_phases"):
+        print(f"\n⚠️ 本轮对照无效：{'、'.join(health['degraded_phases'])} 阶段一条 web 证据都没拿到")
+        print(f"   原因通常是搜索引擎超时/被拒（见日志的 'Error in engine'），"
+              f"指标差异不可归因于代码改动")
+    else:
+        bl_y = (health.get("baseline") or {}).get("yield_rate")
+        im_y = (health.get("improved") or {}).get("yield_rate")
+        print(f"\n12. web 检索产出率: baseline={bl_y} improved={im_y}")
     print("\n" + "=" * 60)
 
 

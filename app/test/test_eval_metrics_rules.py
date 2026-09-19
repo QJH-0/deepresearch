@@ -405,3 +405,58 @@ class TestTokenAccumulator:
         from langchain_core.callbacks import BaseCallbackHandler
 
         assert isinstance(self._script().TokenAccumulator(), BaseCallbackHandler)
+
+
+class TestRetrievalHealth:
+    """web 检索健康度：某阶段一条 web 证据都没拿到时，阶段对照无效。
+
+    实测教训：本轮评测 baseline 的 20 次 web 检索全部超时（DuckDuckGo 38 次超时、
+    startpage 连接被拒），拿到 0 条 web 证据；而 improved 拿到 18 条。
+    这种污染如果不显式标出来，指标差异极易被误读成「代码改动有害」。
+    """
+
+    @staticmethod
+    def _script():
+        import importlib.util
+
+        script_path = Path(__file__).resolve().parent / "eval_metrics.py"
+        spec = importlib.util.spec_from_file_location("eval_metrics_script_health", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def _results(query_count: int, kept_count: int):
+        class _R:
+            def __init__(self, stats):
+                self.retrieval_stats = stats
+
+        return [_R({"web_query_count": query_count, "web_kept_count": kept_count})]
+
+    def test_flags_phase_with_zero_web_evidence(self):
+        script = self._script()
+
+        health = script._retrieval_health(
+            self._results(20, 0), self._results(28, 18)
+        )
+
+        assert health["degraded_phases"] == ["baseline"], "零产出的阶段必须被点名"
+        assert health["baseline"]["degraded"] is True
+        assert health["improved"]["degraded"] is False
+        assert health["improved"]["yield_rate"] == round(18 / 28, 4)
+
+    def test_no_degradation_when_both_phases_yield(self):
+        script = self._script()
+
+        health = script._retrieval_health(self._results(10, 4), self._results(10, 6))
+
+        assert health["degraded_phases"] == []
+
+    def test_yield_rate_is_none_when_no_queries_ran(self):
+        """没检索过不等于检索失败 —— 不能报 degraded。"""
+        script = self._script()
+
+        health = script._retrieval_health(self._results(0, 0), self._results(0, 0))
+
+        assert health["baseline"]["yield_rate"] is None
+        assert health["degraded_phases"] == []
