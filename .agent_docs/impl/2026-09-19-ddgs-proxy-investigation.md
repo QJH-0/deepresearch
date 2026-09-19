@@ -285,3 +285,77 @@ MITM 拦截、或分流规则把部分域名直连而 TLS 会话对不上）。
 **未做 MCP 接入**，理由：它会破坏 FastAPI 依赖，且底层搜索路径相同、
 不会改变可达性。若用户仍要 MCP，需先解决 `mcp>=2.0` 与 `fastapi 0.123` 的共存问题
 （例如升级 FastAPI，或把 MCP server 放到独立环境里以子进程方式调用）。
+
+---
+
+# 最终结论：根因是 `primp 2.0.0` 的 TLS bug（2026-09-19 12:3x）
+
+**ddgs 一直是可用的。** 之前所有「不可用」的判定都源于一个补丁版本的差异。
+
+## 决定性对比实验
+
+同一 `ddgs 9.16.0`，仅 `primp` 版本不同，同一代理（7897）：
+
+| primp | 结果 |
+| --- | --- |
+| **2.0.0**（项目原状） | `DDGS(proxy=7897).text()` 连跑 6 次**全失败（0/6）**，报 `cannot decrypt peer's message` / `tls handshake eof` |
+| **2.0.1** | **3/3 成功**，每次 2.6–4.0s |
+
+端到端：`search_providers=["ddgs"]` 下 `web_search_records` 返回 **5 条真实结果，2.6s**。
+
+## 怎么发现的
+
+用 `uvx` 起 ddgs 的 MCP 服务器时，**uv 自动装了最新的 `primp 2.0.1`**，
+而项目环境停在 2.0.0 —— 由此定位到补丁版本差异。
+
+**这条路径值得记住**：`uvx` 的隔离环境等于一个「干净对照组」，
+用它能快速区分「代码/配置问题」与「依赖版本问题」。
+
+## 为什么之前一路误判
+
+失败信息是 **TLS 层**的（`cannot decrypt peer's message`），
+而被解读为「代理干扰 TLS」/「DDG 封锁指纹」/「ddgs 不读环境变量」等。
+实际上：
+
+- 代理正常（`curl` 与 `primp` 走它访问 bing 都是 200）
+- `primp 2.0.0` 自身的问题 —— 2.0.1 换掉就好了
+- 逐后端测试里 `auto` 那次「偶发成功」其实不是偶发，是命中了能用的引擎组合；
+  但 2.0.0 下整体成功率极低
+
+**教训：连续 0/N 失败时，先把依赖版本对齐到「已知可用」的对照组，再怀疑网络与配置。**
+
+## 交付物
+
+| 文件 | 内容 |
+| --- | --- |
+| `requirements.txt` | 补 `primp>=2.0.1`（原先只声明 `ddgs>=9.0`，primp 是传递依赖，版本漂移无人管） |
+| `mcp_servers.json` | 标准 `mcpServers` 配置，用 `uvx` 启动 ddgs 的 MCP 服务器 |
+| `app/mult_agents/mcp_search.py` | `DdgsMcpProvider`，注册为 `ddgs_mcp` 源 |
+| `config.json` | `search_providers` 默认 `["ddgs"]`（库路径，最简单） |
+
+## 关于 MCP 模式
+
+**已完整实现且可用**（实测返回 5 条真实结果），但默认**不用**它：
+
+| | 库路径 `ddgs` | MCP 路径 `ddgs_mcp` |
+| --- | --- | --- |
+| 耗时 | 2.6s | 5.7s |
+| 依赖 | 无额外 | 需要 `uvx` + 子进程 |
+| 配置 | 无 | `mcp_servers.json` |
+
+既然 `primp` 一升级库路径就通了，**默认选更简单的那条**。要切 MCP 只需把
+`config.json` 的 `search_providers` 改成 `["ddgs_mcp"]`。
+
+### MCP 实现里踩的坑
+
+MCP 把 `-> list[dict]` 的返回值序列化成**多个内容块**（每条结果一个 JSON 对象），
+**不是一个 JSON 数组**。最初按数组解析，日志里明明出现了
+`payload={'title': 'LangGraph State Machines...'}`，却被判为「无结果」。
+已改为逐块解析并加测试锁住。
+
+### 为什么不把 `mcp>=2.0` 装进项目环境
+
+会把 `starlette` 拉到 1.6.0，而 `fastapi 0.123` 要求 `starlette<0.51`，
+实测 `TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'`，
+**后端不可用**。用 `uvx` 让 MCP 服务器跑在隔离环境即可绕开。
+（这也解释了为什么 SpringAI 里能跑：那边 ddgs mcp 是独立子进程，依赖与 Java 项目隔离。）
