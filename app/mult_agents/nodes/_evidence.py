@@ -91,19 +91,35 @@ def _guess_primary_entity(query: str) -> str:
 # 返回结果极少；正确策略是「先宽后窄」—— 先用短而宽的查询摸清有什么，再逐步收窄。
 MAX_QUERY_CHARS = 40
 
-# 查询里的结构性噪声：方括号/圆括号标注、疑问尾巴。它们不描述主题，只会稀释检索。
+# 查询里的结构性噪声：方括号/圆括号标注、疑问尾巴、疑问前缀。
+# 它们不描述主题，只会稀释检索。
 _QUERY_ANNOTATION = re.compile(r"【[^】]*】|（[^）]*）|\([^)]*\)")
 _QUERY_TAIL = re.compile(r"(呈现出|有哪些|是什么样的|是什么|怎么样|如何|哪些|为什么|的哪些)[^，,。；;]*$")
+_QUERY_LEAD = re.compile(r"^(请|请问|想了解|了解一下|如何|怎么|怎样|为什么|为何|有哪些|哪些|什么是|是什么)")
+
+# 剥噪声后剩余不足此长度即认为该查询没有检索价值，返回空串让调用方跳过。
+# 例：「是什么」剥完是空的；「有哪些AI Agent框架」剥完是「AI Agent框架」，要留下。
+MIN_QUERY_CHARS = 4
 
 
 def _condense_query(text: str, max_chars: int = MAX_QUERY_CHARS) -> str:
     """把过长的查询压到可检索的长度。
 
-    只做确定性处理（去标注、去疑问尾巴、按子句边界截断），**不做语义提炼** ——
+    只做确定性处理（去标注、去疑问语气、按子句边界截断），**不做语义提炼** ——
     那需要额外一次 LLM 调用，成本与收益不成比例。真正的短词由 `plan` 节点产出。
+
+    ⚠️ 每步剥离都要求**剩余部分足够长**才采纳：疑问尾巴的正则是
+    `(疑问词)[^标点]*$`，若疑问词在句首（「有哪些AI Agent框架」），
+    它会匹配整句并把查询剥成空串 —— 那等于把一条合法查询直接丢掉。
     """
     cleaned = _QUERY_ANNOTATION.sub("", str(text or "")).strip()
-    cleaned = _QUERY_TAIL.sub("", cleaned).strip().rstrip("？?。.!！，,、；;")
+    for pattern in (_QUERY_TAIL, _QUERY_LEAD):
+        stripped = pattern.sub("", cleaned).strip()
+        if len(stripped) >= MIN_QUERY_CHARS:
+            cleaned = stripped
+    cleaned = cleaned.strip().rstrip("？?。.!！，,、；;")
+    if len(cleaned) < MIN_QUERY_CHARS:
+        return ""
     if len(cleaned) <= max_chars:
         return cleaned
     # 优先在子句边界截断，避免把词切一半

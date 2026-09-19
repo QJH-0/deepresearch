@@ -67,6 +67,36 @@ class TestSsrfProtection:
         assert called == [], "被拒绝的 URL 不得发起任何网络请求"
 
 
+class TestResolveHostTimeout:
+    """DNS 预检必须带超时。
+
+    `socket.getaddrinfo` 在解析器无响应时会长时间挂住，而这里原先没有任何超时保护 ——
+    挂住的不是一次请求，是整个 `deep_dive` 节点。
+    """
+
+    def test_returns_none_when_resolution_hangs(self, monkeypatch):
+        import time
+
+        monkeypatch.setattr(tools_module.socket, "getaddrinfo", lambda *a, **kw: time.sleep(30))
+
+        started = time.time()
+        result = tools_module._resolve_host("example.com", timeout=0.3)
+        elapsed = time.time() - started
+
+        assert result is None, "挂住时必须超时返回 None，不能无限等待"
+        assert elapsed < 5, f"应在超时后立即返回，实际 {elapsed:.1f}s"
+
+    def test_returns_none_when_resolution_fails(self, monkeypatch):
+        import socket as socket_module
+
+        def boom(*args, **kwargs):
+            raise socket_module.gaierror("nope")
+
+        monkeypatch.setattr(tools_module.socket, "getaddrinfo", boom)
+
+        assert tools_module._resolve_host("nonexistent.invalid", timeout=1.0) is None
+
+
 class TestHtmlExtraction:
     def test_drops_script_style_and_nav(self):
         html = (

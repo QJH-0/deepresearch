@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import socket
+import threading
 import urllib.parse
 import urllib.request
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -475,14 +476,40 @@ class _HtmlTextExtractor(HTMLParser):
         return re.sub(r"\n\s*\n\s*\n+", "\n\n", joined).strip()
 
 
+_DNS_TIMEOUT_SECONDS = 5.0
+
+
+def _resolve_host(host: str, timeout: float = _DNS_TIMEOUT_SECONDS):
+    """带超时的 DNS 解析；超时返回 None。
+
+    用**守护线程 + join(timeout)** 而非 ThreadPoolExecutor：后者的
+    `__exit__` 会 `shutdown(wait=True)`，等于把超时取消掉。
+    守护线程即使挂住也不会阻塞进程退出。
+    """
+    outcome: dict = {}
+
+    def worker() -> None:
+        try:
+            outcome["infos"] = socket.getaddrinfo(host, None)
+        except OSError as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return outcome.get("infos")
+
+
 def _is_public_host(host: str) -> bool:
     """SSRF 防护：解析到的所有地址都必须是公网，否则拒绝。
 
     只做「域名白名单」不够 —— 攻击者可以用指向 169.254.169.254 的域名绕过。
+
+    解析**必须带超时**：`socket.getaddrinfo` 在解析器无响应时会长时间挂住，
+    而这里没有任何超时保护 —— 挂住的不是一次请求，是整个 `deep_dive` 节点。
     """
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+    infos = _resolve_host(host)
+    if not infos:
         return False
     for info in infos:
         try:

@@ -192,3 +192,17 @@ class TestCondenseQuery:
             "LangGraph 状态机", "2024年AI Agent框架发展趋势调研 LangGraph 多智能体协同"
         )
         assert not _is_query_grounded("LangGraph 状态机", "2024年AI Agent框架发展趋势调研")
+
+    def test_keeps_query_that_starts_with_question_word(self):
+        """疑问尾巴正则是 `(疑问词)[^标点]*$`，疑问词在句首时会匹配整句并剥成空串。"""
+        from mult_agents.nodes._evidence import _condense_query
+
+        assert _condense_query("有哪些AI Agent框架") == "AI Agent框架"
+        assert _condense_query("如何评价LangGraph的状态机设计"), "合法查询不得被剥空"
+
+    def test_returns_empty_for_pure_question_word(self):
+        """纯疑问词没有检索价值，返回空串让调用方跳过（而不是留一条垃圾查询）。"""
+        from mult_agents.nodes._evidence import _condense_query
+
+        assert _condense_query("是什么") == ""
+        assert _condense_query("有哪些") == ""
