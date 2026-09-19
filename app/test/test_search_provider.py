@@ -627,12 +627,15 @@ class TestSearchTimeout:
 
 
 class TestDDGSProxyWiring:
-    """ddgs 必须**显式**拿到代理 —— 它不读 `HTTP_PROXY`。
+    """ddgs 的代理来源必须在代码里可见、且支持 `DDGS_PROXY`。
 
-    实测教训：线上 `.env` 配了 `HTTP_PROXY=http://127.0.0.1:7897`（代理本身可用，
-    走它访问 google/bing/wikipedia 都通），但 `return DDGS()` 等于代理完全没生效，
-    请求直连搜索引擎 —— 而直连 duckduckgo 在本网络必然超时（每次 16s），
-    把整条检索链拖慢。ddgs 源码 `ddgs/api.py` 只认 `DDGS_PROXY` 或构造参数 `proxy=`。
+    ⚠️ 这里曾写过一个**错误**的理由：「ddgs 不读 `HTTP_PROXY`，不显式传就等于没有代理」。
+    实测推翻了它 —— ddgs 底层的 `primp` **确实读** `HTTP_PROXY`/`HTTPS_PROXY`
+    （代理指向死端口时 `primp.Client()` 2.05s 快速 ConnectError；
+    设与不设代理时 ddgs 的异常类型与耗时都明显不同）。
+
+    显式传参的真实价值：① 支持 `DDGS_PROXY`（ddgs 官方变量，primp 不认）；
+    ② 代理来源在代码里可见，排查时不必猜底层客户端读到了什么。
     """
 
     def test_proxy_is_passed_to_ddgs(self, monkeypatch):

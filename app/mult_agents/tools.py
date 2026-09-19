@@ -80,10 +80,15 @@ class DuckDuckGoProvider:
     def _resolve_proxy() -> str | None:
         """解析 ddgs 该用的代理。
 
-        ⚠️ **ddgs 不读 `HTTP_PROXY`** —— 源码 `ddgs/api.py` 只认 `DDGS_PROXY`
-        或构造参数 `proxy=`。此前这里写的是 `return DDGS()`，等于代理完全没生效：
-        `.env` 里配了 `HTTP_PROXY` 也照样直连搜索引擎，而直连 duckduckgo
-        在本网络下必然超时（实测每次 16s），把整条链路拖慢。
+        背景（**此处曾有过一个错误结论，务必看完**）：
+        我曾以为「ddgs 不读 `HTTP_PROXY`」，据此把它当 bug 修。**这个判断是错的。**
+        ddgs 底层的 `primp` 客户端**确实会读 `HTTP_PROXY`/`HTTPS_PROXY`**
+        （实测：代理指向死端口时，`primp.Client()` 2.05s 快速 ConnectError；
+        设与不设代理时 ddgs 的异常类型与耗时都明显不同）。
+
+        显式传参的真实价值是另外两条：
+        1. 支持 `DDGS_PROXY` —— ddgs 官方文档里那个变量，`primp` 不认它；
+        2. 代理来源在代码里可见，排查时不用去猜底层客户端读到了什么。
 
         优先级：`DDGS_PROXY`（ddgs 自己的变量）> `HTTPS_PROXY` > `HTTP_PROXY`。
         不看 `NO_PROXY`：ddgs 只访问搜索引擎，没有「不该走代理」的目标。
