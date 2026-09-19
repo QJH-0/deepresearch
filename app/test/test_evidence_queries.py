@@ -7,7 +7,7 @@
 覆盖用例：
     R1-1 指令动词剥离 — _guess_primary_entity 跳过「请调研」返回真实实体
     R1-2 直接检索词 — _derive_direct_search_queries 不再产出「请调研是什么」
-    R1-3 检索计划 — _derive_search_plan 优先注入 planner 子问题
+    B4   检索计划排序 — 短检索词优先、长句压短兜底（原 R1-3 的「子问题优先」已被 B4 反转）
 """
 
 import sys
@@ -89,20 +89,65 @@ class TestDeriveDirectSearchQueries:
 
 
 class TestDeriveSearchPlan:
-    def test_sub_questions_injected_first(self):
+    """B4：计划按「先宽后窄」排序 —— LLM 的短检索词优先，长句子问题兜底。
+
+    此前顺序是**反的**：长句 `sub_questions` 排第一，而计划上限只有 6 条，
+    sub_questions 一多，LLM 专为检索生成的短词就全被挤掉了。
+    """
+
+    def test_llm_search_queries_come_first(self):
         from mult_agents.nodes._evidence import _derive_search_plan
 
-        subs = [
-            "企业知识库 Agent 平台市场规模与增长率",
-            "主流平台竞品对比",
-            "收费模式与定价案例",
-        ]
-        plan = _derive_search_plan([], subs, [], "调研企业知识库 Agent 平台市场")
-        section_ids = [p["section_id"] for p in plan]
-        # 子问题应排在最前
-        assert section_ids[:3] == ["sub_question"] * 3
-        # 子问题检索词与输入一致
-        assert [p["query"] for p in plan[:3]] == subs
+        outline = [{
+            "id": "sec_1",
+            "title": "主流 AI Agent 框架的技术演进",
+            "description": "LangGraph、AutoGen 等框架的架构对比",
+            "search_queries": ["LangGraph 状态机", "AutoGen 多智能体"],
+        }]
+        subs = ["【核心原问题】2024年主流AI Agent框架在架构设计上呈现出哪些核心发展趋势"]
+
+        plan = _derive_search_plan(outline, subs, [], "2024年AI Agent框架发展趋势调研")
+
+        assert [p["query"] for p in plan[:2]] == ["LangGraph 状态机", "AutoGen 多智能体"], (
+            "LLM 专为检索生成的短词应排最前"
+        )
+
+    def test_grounding_accepts_query_matching_its_own_section(self):
+        """检索词只要对得上所属章节的主题就合法，不要求与用户原句同词。"""
+        from mult_agents.nodes._evidence import _derive_search_plan
+
+        outline = [{
+            "id": "sec_1",
+            "title": "LangGraph 状态机编排",
+            "search_queries": ["LangGraph 状态机"],
+        }]
+
+        plan = _derive_search_plan(outline, [], [], "2024年AI Agent框架发展趋势调研")
+
+        assert [p["query"] for p in plan[:1]] == ["LangGraph 状态机"]
+
+    def test_rejects_query_unrelated_to_topic_and_section(self):
+        """与话题、子问题、所属章节都对不上的检索词仍应被挡掉。"""
+        from mult_agents.nodes._evidence import _derive_search_plan
+
+        outline = [{"id": "sec_1", "title": "AI Agent 框架", "search_queries": ["如何选购冰箱"]}]
+
+        plan = _derive_search_plan(outline, [], [], "2024年AI Agent框架发展趋势调研")
+
+        assert all(p["query"] != "如何选购冰箱" for p in plan)
+
+    def test_sub_questions_are_condensed_and_used_as_fallback(self):
+        from mult_agents.nodes._evidence import _derive_search_plan
+
+        long_sub = (
+            "【核心原问题】2024年主流AI Agent框架（如LangChain、LlamaIndex等）"
+            "在架构设计上呈现出哪些核心发展趋势"
+        )
+        plan = _derive_search_plan([], [long_sub], [], "2024年AI Agent框架发展趋势调研")
+
+        assert plan, "无 LLM 检索词时应回落到子问题"
+        assert all(len(p["query"]) <= 40 for p in plan), "回落时也必须压到可检索的长度"
+        assert "【" not in plan[0]["query"], "结构性标注应被剥掉"
 
     def test_fallback_when_empty(self):
         from mult_agents.nodes._evidence import _derive_search_plan
@@ -110,3 +155,40 @@ class TestDeriveSearchPlan:
         plan = _derive_search_plan([], [], [], "企业知识库平台")
         assert len(plan) >= 1
         assert plan[0]["query"]
+
+
+class TestCondenseQuery:
+    """Anthropic 的实测结论：agent 默认给出又长又具体的查询，返回结果极少。"""
+
+    def test_strips_annotations_and_question_tail(self):
+        from mult_agents.nodes._evidence import _condense_query
+
+        result = _condense_query("【核心原问题】AI Agent 框架有哪些发展趋势")
+
+        assert "【" not in result
+        assert "有哪些" not in result
+        assert "AI Agent 框架" in result
+
+    def test_keeps_short_query_untouched(self):
+        from mult_agents.nodes._evidence import _condense_query
+
+        assert _condense_query("LangGraph 状态机") == "LangGraph 状态机"
+
+    def test_cuts_at_clause_boundary_not_mid_word(self):
+        from mult_agents.nodes._evidence import _condense_query
+
+        result = _condense_query(
+            "RAG与Fine-tuning技术路线对比分析，需要给出成本、适用场景与迁移代价的量化对比"
+        )
+
+        assert len(result) <= 40
+        assert result == "RAG与Fine-tuning技术路线对比分析", "应在子句边界截断，而不是把词切一半"
+
+    def test_grounding_uses_sub_questions_too(self):
+        """只用原问题判接地会误杀与子问题相关的合法检索词。"""
+        from mult_agents.nodes._evidence import _is_query_grounded
+
+        assert _is_query_grounded(
+            "LangGraph 状态机", "2024年AI Agent框架发展趋势调研 LangGraph 多智能体协同"
+        )
+        assert not _is_query_grounded("LangGraph 状态机", "2024年AI Agent框架发展趋势调研")

@@ -87,6 +87,33 @@ def _guess_primary_entity(query: str) -> str:
 
 
 
+# 检索词长度上限。Anthropic 的实测结论：agent 默认给出又长又具体的查询，
+# 返回结果极少；正确策略是「先宽后窄」—— 先用短而宽的查询摸清有什么，再逐步收窄。
+MAX_QUERY_CHARS = 40
+
+# 查询里的结构性噪声：方括号/圆括号标注、疑问尾巴。它们不描述主题，只会稀释检索。
+_QUERY_ANNOTATION = re.compile(r"【[^】]*】|（[^）]*）|\([^)]*\)")
+_QUERY_TAIL = re.compile(r"(呈现出|有哪些|是什么样的|是什么|怎么样|如何|哪些|为什么|的哪些)[^，,。；;]*$")
+
+
+def _condense_query(text: str, max_chars: int = MAX_QUERY_CHARS) -> str:
+    """把过长的查询压到可检索的长度。
+
+    只做确定性处理（去标注、去疑问尾巴、按子句边界截断），**不做语义提炼** ——
+    那需要额外一次 LLM 调用，成本与收益不成比例。真正的短词由 `plan` 节点产出。
+    """
+    cleaned = _QUERY_ANNOTATION.sub("", str(text or "")).strip()
+    cleaned = _QUERY_TAIL.sub("", cleaned).strip().rstrip("？?。.!！，,、；;")
+    if len(cleaned) <= max_chars:
+        return cleaned
+    # 优先在子句边界截断，避免把词切一半
+    for separator in ("，", ",", "、", "；", ";", " "):
+        head = cleaned.split(separator, 1)[0].strip()
+        if max_chars // 2 <= len(head) <= max_chars:
+            return head
+    return cleaned[:max_chars].strip()
+
+
 def _derive_direct_search_queries(query: str) -> list[str]:
     base_query = _strip_instruction(query.strip())
     if not base_query:
@@ -133,19 +160,42 @@ def _is_query_grounded(candidate: str, user_query: str) -> bool:
 
 
 def _derive_search_plan(outline: list[dict], sub_questions: list[str], _research_questions: list[str], query: str) -> list[dict]:
+    """组装检索计划，按「先宽后窄」排序。
+
+    优先级（B4 修正，此前是**反的**）：
+      ① LLM 专为检索生成的 search_queries —— 短而宽，最该先跑
+      ② 围绕原问题确定性生成的宽查询
+      ③ 子问题压短后兜底 —— 长句检索效果差，只在前面都没产出时才用
+
+    此前把长句 `sub_questions` 排第一位，而计划上限是 6 条 ——
+    sub_questions 一多，LLM 精心生成的短检索词就全被挤掉了。
+    """
     plan: list[dict] = []
-    # 规划子问题优先：planner 拆解的检索意图比原始 query 更适合检索（已剥离疑问语气词）
-    for sub_question in sub_questions or []:
-        text = str(sub_question).strip().rstrip("？?。.!！")
-        if text:
-            plan.append(
-                {
-                    "section_id": "sub_question",
-                    "query": text,
-                    "source_preference": "hybrid",
-                    "reason": "来自规划子问题",
-                }
-            )
+
+    # 接地基准 = 原问题 + 全部子问题。只用原问题判会把「LangGraph 状态机」这类
+    # 与子问题相关、但与用户原句无词面重叠的合法检索词误杀。
+    grounding = " ".join([str(query or "")] + [str(item) for item in (sub_questions or [])])
+
+    for section in outline:
+        if not isinstance(section, dict):
+            continue
+        section_id = str(section.get("id") or "sec")
+        # 章节自身的标题/描述也算接地基准：一条检索词只要能对上它所属章节的主题，
+        # 就是合法的 —— 否则「LangGraph 状态机」这类与子问题不同词但同义的词会被误杀。
+        section_grounding = " ".join(
+            [grounding, str(section.get("title") or ""), str(section.get("description") or "")]
+        )
+        for item in section.get("search_queries", []) or []:
+            text = _condense_query(item)
+            if text and _is_query_grounded(text, section_grounding):
+                plan.append(
+                    {
+                        "section_id": section_id,
+                        "query": text,
+                        "source_preference": "hybrid",
+                        "reason": f"来自大纲章节 {section_id}",
+                    }
+                )
     for direct_query in _derive_direct_search_queries(query):
         plan.append(
             {
@@ -155,21 +205,17 @@ def _derive_search_plan(outline: list[dict], sub_questions: list[str], _research
                 "reason": "围绕用户原始问题生成的直接检索词",
             }
         )
-    for section in outline:
-        if not isinstance(section, dict):
-            continue
-        section_id = str(section.get("id") or "sec")
-        for item in section.get("search_queries", []) or []:
-            text = str(item).strip()
-            if text and _is_query_grounded(text, query):
-                plan.append(
-                    {
-                        "section_id": section_id,
-                        "query": text,
-                        "source_preference": "hybrid",
-                        "reason": f"来自大纲章节 {section_id}",
-                    }
-                )
+    for sub_question in sub_questions or []:
+        text = _condense_query(sub_question)
+        if text:
+            plan.append(
+                {
+                    "section_id": "sub_question",
+                    "query": text,
+                    "source_preference": "hybrid",
+                    "reason": "来自规划子问题（压短后）",
+                }
+            )
     if not plan:
         plan.append({"section_id": "sec_1", "query": query, "source_preference": "hybrid", "reason": "fallback"})
     deduped = _dedupe_sources(plan, ["query"])
