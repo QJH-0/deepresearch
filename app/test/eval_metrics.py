@@ -364,6 +364,26 @@ async def run_single_query(app, config, query, token_acc, memory_manager=None):
     return final, dict(result), elapsed, token_acc.total_tokens
 
 
+REPORTS_DIR = Path(__file__).resolve().parents[2] / "output" / "eval_reports"
+
+
+def save_report(phase: str, index: int, query: str, report: str) -> None:
+    """把整篇报告落盘，供事后诊断。
+
+    评测 JSON 只存 500 字预览（`final_preview`），做不了「哪些句子没带角标」
+    这类分析 —— 引用覆盖率的诊断就卡在这里。落盘成本可忽略，诊断价值高。
+    """
+    try:
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^\w\u4e00-\u9fff]+", "_", str(query))[:40].strip("_")
+        (REPORTS_DIR / f"{phase}_q{index:02d}_{safe}.md").write_text(
+            report or "", encoding="utf-8"
+        )
+    except OSError as exc:
+        # 落盘失败不该让整轮评测失败
+        logger.warning("报告落盘失败 | %s", exc)
+
+
 async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     config = AppConfig.from_file()
@@ -403,6 +423,7 @@ async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
         logger.info("[%d/%d] %s", i + 1, len(ma_queries), q["query"][:50])
         try:
             final, state, elapsed, tokens = await run_single_query(app, bl_config, q["query"], token_acc)
+            save_report("baseline", i, q["query"], final)
             stats = extract_retrieval_stats(state)
             quality = measure_quality(state, final, q["key_points"], q.get("expected_sources"))
             comp = judge(judge_completeness, q["query"], q["key_points"], final)
@@ -427,6 +448,7 @@ async def run_eval(output_path, max_queries=0, judge_model="", judge_rounds=3):
         logger.info("[%d/%d] %s", i + 1, len(ma_queries), q["query"][:50])
         try:
             final, state, elapsed, tokens = await run_single_query(app, im_config, q["query"], token_acc)
+            save_report("improved", i, q["query"], final)
             stats = extract_retrieval_stats(state)
             quality = measure_quality(state, final, q["key_points"], q.get("expected_sources"))
             comp = judge(judge_completeness, q["query"], q["key_points"], final)
