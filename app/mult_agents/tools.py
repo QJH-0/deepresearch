@@ -76,6 +76,24 @@ class DuckDuckGoProvider:
     def available(self) -> bool:
         return True
 
+    @staticmethod
+    def _resolve_proxy() -> str | None:
+        """解析 ddgs 该用的代理。
+
+        ⚠️ **ddgs 不读 `HTTP_PROXY`** —— 源码 `ddgs/api.py` 只认 `DDGS_PROXY`
+        或构造参数 `proxy=`。此前这里写的是 `return DDGS()`，等于代理完全没生效：
+        `.env` 里配了 `HTTP_PROXY` 也照样直连搜索引擎，而直连 duckduckgo
+        在本网络下必然超时（实测每次 16s），把整条链路拖慢。
+
+        优先级：`DDGS_PROXY`（ddgs 自己的变量）> `HTTPS_PROXY` > `HTTP_PROXY`。
+        不看 `NO_PROXY`：ddgs 只访问搜索引擎，没有「不该走代理」的目标。
+        """
+        for key in ("DDGS_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            value = (os.environ.get(key) or "").strip()
+            if value:
+                return value
+        return None
+
     def _ddgs(self):
         try:
             from ddgs import DDGS
@@ -84,7 +102,7 @@ class DuckDuckGoProvider:
         # 不传 timeout：ddgs 的 timeout 是**单次 HTTP 请求**上限，
         # 而 search_timeout_seconds 是**整条 Provider 链**的上限，两者作用域不同。
         # 把后者透传进来会拉长每次请求的等待，与「源不可达时快速失败」的初衷相反。
-        return DDGS()
+        return DDGS(proxy=self._resolve_proxy())
 
     async def search(self, query: str, max_results: int = 6) -> list[dict]:
         cache_key = f"ddg:{query}"

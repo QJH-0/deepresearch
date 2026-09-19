@@ -624,3 +624,68 @@ class TestSearchTimeout:
         assert "timeout" not in captured["kwargs"], (
             "ddgs 的 timeout 是单次 HTTP 请求上限，链路级取值不能透传进来"
         )
+
+
+class TestDDGSProxyWiring:
+    """ddgs 必须**显式**拿到代理 —— 它不读 `HTTP_PROXY`。
+
+    实测教训：线上 `.env` 配了 `HTTP_PROXY=http://127.0.0.1:7897`（代理本身可用，
+    走它访问 google/bing/wikipedia 都通），但 `return DDGS()` 等于代理完全没生效，
+    请求直连搜索引擎 —— 而直连 duckduckgo 在本网络必然超时（每次 16s），
+    把整条检索链拖慢。ddgs 源码 `ddgs/api.py` 只认 `DDGS_PROXY` 或构造参数 `proxy=`。
+    """
+
+    def test_proxy_is_passed_to_ddgs(self, monkeypatch):
+        import mult_agents.tools as tools
+
+        # ⚠️ 顺序要紧：Windows 的环境变量名**大小写不敏感**，
+        # `delenv("http_proxy")` 会连 `HTTP_PROXY` 一起删掉。
+        # 所以必须先清完再设值。
+        for key in ("DDGS_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+
+        captured = {}
+
+        class _FakeDDGS:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        import ddgs as ddgs_module
+
+        monkeypatch.setattr(ddgs_module, "DDGS", _FakeDDGS)
+
+        tools.DuckDuckGoProvider()._ddgs()
+
+        assert captured.get("proxy") == "http://127.0.0.1:7897", (
+            "ddgs 不读 HTTP_PROXY，不显式传就等于没有代理"
+        )
+
+    def test_ddgs_proxy_env_takes_precedence(self, monkeypatch):
+        """DDGS_PROXY 是 ddgs 自己的变量，优先于通用的 HTTP(S)_PROXY。"""
+        import mult_agents.tools as tools
+
+        monkeypatch.setenv("DDGS_PROXY", "http://ddgs-proxy:1")
+        monkeypatch.setenv("HTTPS_PROXY", "http://https-proxy:2")
+        monkeypatch.setenv("HTTP_PROXY", "http://http-proxy:3")
+
+        assert tools.DuckDuckGoProvider._resolve_proxy() == "http://ddgs-proxy:1"
+
+    def test_falls_back_through_https_then_http(self, monkeypatch):
+        import mult_agents.tools as tools
+
+        for key in ("DDGS_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTP_PROXY", "http://http-only:3")
+
+        assert tools.DuckDuckGoProvider._resolve_proxy() == "http://http-only:3"
+
+    def test_blank_proxy_is_treated_as_absent(self, monkeypatch):
+        """空串代理会让 ddgs 拿去当 URL 解析而报错，必须当成没配。"""
+        import mult_agents.tools as tools
+
+        for key in ("DDGS_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTP_PROXY", "   ")
+
+        assert tools.DuckDuckGoProvider._resolve_proxy() is None
