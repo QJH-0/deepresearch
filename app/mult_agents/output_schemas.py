@@ -135,11 +135,15 @@ class WebEvidenceItem(BaseModel):
 
 
 class WebSearchDraft(BaseModel):
-    """WebScout 的相关性过滤结果。"""
+    """WebScout 的相关性过滤结果。
+
+    不设 `gaps` 字段：检索节点只看得见自己这一条链路的记录，而「还缺什么」
+    必须同时看到 web 与 local 的证据才判得准 —— 那是 `retrieve_grader` 的职责。
+    （历史上这里曾有 `gaps`，无人读取且提示词也未要求，属死字段。）
+    """
 
     summary: str = ""
     evidence: list[WebEvidenceItem] = Field(default_factory=list)
-    gaps: list[str] = Field(default_factory=list)
     rejected_source_ids: list[str] = Field(default_factory=list)
     reject_reason: str = ""
 
@@ -158,11 +162,10 @@ class LocalEvidenceItem(BaseModel):
 
 
 class LocalRagDraft(BaseModel):
-    """LocalRAGScout 的相关性过滤结果。"""
+    """LocalRAGScout 的相关性过滤结果。见 `WebSearchDraft` 中关于不设 `gaps` 的说明。"""
 
     summary: str = ""
     evidence: list[LocalEvidenceItem] = Field(default_factory=list)
-    gaps: list[str] = Field(default_factory=list)
     rejected_source_ids: list[str] = Field(default_factory=list)
     reject_reason: str = ""
 

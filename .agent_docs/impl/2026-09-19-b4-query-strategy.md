@@ -74,6 +74,29 @@ Anthropic 点名的反模式是「agent 默认给出又长又具体的查询，�
 
 `_condense_query` 实测：85 字 → 28 字（`2024年主流AI Agent框架在架构设计与技术演进上`）。
 
+## 计划最后一项的核查结论：前提不成立，关闭
+
+计划原文：「消除 `web_search` / `local_rag` 里那段**信息增量为零**的 LLM 重写」。
+
+按要求先核查其前置条件（`rejected_source_ids` / `gaps` / `supports_questions` 的消费方），
+**结论是这一项不该做** —— 该 LLM 步骤的信息增量并不为零：
+
+| 产出字段 | 消费方 | 是否死字段 |
+| --- | --- | --- |
+| `evidence[]`（含 `reliability_hint` / `supports_questions` / `notes`） | `_context.evidence_for_prompt` 喂给 `deep_dive`；`notes` 在 `_TRUNCATABLE_FIELDS` 内 | ❌ 有价值 |
+| `rejected_source_ids` | `_finalize_query_traces` 写入 trace → `_fallbacks` 渲染执行附录 | ❌ 有价值 |
+| `reject_reason` | 同上 | ❌ 有价值 |
+| `gaps` | **无任何消费方**；提示词也没要求它（LLM 只因为 schema 声明才填） | ✅ **死字段** |
+
+### 为什么删 `gaps` 而不是接线
+
+`web_search` 只看得见 web 记录、`local_rag` 只看得见本地记录，**各自都看不到另一条链路**。
+而「还缺什么」必须同时看到两条链路的证据才判得准 —— 那正是 `retrieve_grader` 的职责
+（它通过 `evidence_for_prompt` 拿到合并后的证据）。
+
+所以检索节点算出的 `gaps` 不是「暂时没人用」，而是**天生信息不全、结构上劣于 grader**。
+接线它只会引入噪声。已从 `WebSearchDraft` / `LocalRagDraft` 删除，并在 schema 里写明原因。
+
 ## 验证
 
 | 项 | 结果 |
@@ -104,4 +127,4 @@ Anthropic 点名的反模式是「agent 默认给出又长又具体的查询，�
 | B2 `fetch_url` 工具 | ✅（真实评测中调用 0 次，需更多样本观察） |
 | B3 `reflect` 并入 `analyze` | ✅ |
 | B4 查询策略 | ✅ |
-| 原计划「消除检索节点里信息增量为零的 LLM 重写」 | ⏸ 未做（需先确认 `rejected_source_ids` / `gaps` / `supports_questions` 的消费方） |
+| ~~原计划「消除检索节点里信息增量为零的 LLM 重写」~~ | ❌ **前提不成立，已关闭**（见上一节核查结论）；顺带删掉死字段 `gaps` |
