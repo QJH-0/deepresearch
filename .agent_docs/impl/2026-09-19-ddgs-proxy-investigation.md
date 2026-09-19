@@ -203,3 +203,85 @@ def _ddgs(self):
 | 回归专项 | **116 passed, 7 deselected** |
 | **人为漂移验证** | `_resolve_proxy` 不读任何变量 → `TestDDGSProxyWiring` **3 个断言失败**；还原后 34 passed |
 
+
+---
+
+# 追加：ddgs MCP 模式的实测结论（2026-09-19 12:xx）
+
+用户反馈「在 SpringAI 项目里用过 ddgs 的 MCP，可以返回数据」，要求改用 MCP 模式。
+实测后的结论：**在本项目里走不通，且原因与 SpringAI 场景不同。**
+
+## 1. `ddgs mcp` 起不来：依赖版本不够
+
+```
+Error: MCP dependencies not installed. Run: pip install 'ddgs[mcp]'
+```
+
+根因：`ddgs` 声明 `mcp>=2.0; extra == "mcp"`，而环境里是 **mcp 1.12.1**
+（只有旧 API `mcp.server.fastmcp`，没有 `ddgs/api_server/mcp.py` 要的
+`mcp.server.mcpserver`）。
+
+## 2. ⚠️ 装 `mcp>=2.0` 会把项目搞坏
+
+`pip install "mcp>=2.0"` 的解析结果是 `mcp 2.2.0` + **`starlette 1.6.0`**，
+而项目的 `fastapi 0.123.0` 要求 `starlette<0.51.0`。实测后果：
+
+```
+TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'
+```
+
+**FastAPI 连 app 都建不起来** —— 后端直接不可用。
+已恢复到 `mcp 1.12.1` + `starlette 0.50.0`，并跑全量测试确认无残留
+（**654 passed**）。
+
+注：`mcp 2.2` 自己只要求 `starlette>=0.27`（Python<3.14），**是 pip 解析到了最新版**。
+但把 `starlette` 钉在 `<0.51` 与 `mcp>=2.0` 一起装时，解析器最终把 `mcp` 卸掉了 ——
+两者在本环境无法共存。
+
+## 3. 为什么 SpringAI 里能跑，这里不行
+
+**在 SpringAI 里，`ddgs mcp` 是一个独立的 Python 子进程** ——
+它的 Python 依赖（mcp 2.x、starlette）装在那个子进程自己的环境里，
+**与 Java 项目的依赖树互不影响**。
+
+本项目是 **Python 项目**，`mcp` 与本项目的 `fastapi`/`starlette` 共用同一个环境，
+于是 `ddgs[mcp]` 的依赖升级会直接冲击 Web 框架。**这是场景差异，不是 ddgs 的问题。**
+
+## 4. 而且底层调用是同一条路径
+
+`ddgs/api_server/mcp.py:45` 的工具实现：
+
+```python
+lambda: DDGS(proxy=_expand_proxy_tb_alias(os.environ.get("DDGS_PROXY"))).text(...)
+```
+
+与我在 §3 测的 `DDGS(proxy=...).text(...)` **完全相同**。
+`ddgs text` CLI 子命令走同一条路径，实测也失败：
+
+```
+① 带 -pr http://127.0.0.1:7897
+   DDGSException: ... error sending request for url (https://search.yahoo.com/search?...)
+   > cannot decrypt peer's message
+② 不带代理
+   DDGSException: ... (https://www.startpage.com/) > tls handshake eof
+```
+
+## 5. 新的线索：失败发生在 **TLS 层**
+
+`cannot decrypt peer's message` 与 `tls handshake eof` 都是 TLS 层错误，
+而不是「连不上」。含义是**代理在干扰/无法透传 TLS 流**（常见于
+MITM 拦截、或分流规则把部分域名直连而 TLS 会话对不上）。
+
+这解释了此前的矛盾现象：同一代理下 `curl` 到 `bing.com/search` 是 200，
+而 ddgs 的各引擎报 TLS 错误 —— 不同客户端/不同域名走的路径不一样。
+
+**这是给用户排查代理配置的直接线索**（例如换 socks5、或检查代理的分流规则）。
+
+## 6. 本次按用户要求做的配置变更
+
+`config.json`：`search_providers` 由 `["ddgs", "tavily", "searxng"]` 收成 **`["ddgs"]`**
+（用户明确要求「只要一个 ddgs 数据源，其他的不要」）。
+
+**未做 MCP 接入**，理由：它会破坏 FastAPI 依赖，且底层搜索路径相同、
+不会改变可达性。若用户仍要 MCP，需先解决 `mcp>=2.0` 与 `fastapi 0.123` 的共存问题
+（例如升级 FastAPI，或把 MCP server 放到独立环境里以子进程方式调用）。
