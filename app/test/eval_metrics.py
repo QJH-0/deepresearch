@@ -40,7 +40,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import init_checkpointer, close_checkpointer
+from mult_agents.runtime import init_checkpointer, close_checkpointer, recursion_limit_for
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 from mult_agents.eval_metrics import measure as measure_quality, aggregate as aggregate_metric
@@ -351,6 +351,10 @@ async def run_single_query(app, config, query, token_acc, memory_manager=None):
     cfg = {
         "configurable": {"thread_id": f"{config.thread_id}_eval_{int(start)}"},
         "callbacks": [token_acc],
+        # 按循环上限推算：内层重检会把超步数放大到默认 25 以上
+        "recursion_limit": recursion_limit_for(
+            config.max_iterations, config.max_retrieval_rounds
+        ),
     }
     # 节点全是 async 函数：同步 invoke 会抛
     # TypeError: No synchronous function provided to "intent"

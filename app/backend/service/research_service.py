@@ -24,7 +24,7 @@ from langgraph.types import Command
 
 from mult_agents.config import AppConfig
 from mult_agents.graph import build_app as build_workflow_app
-from mult_agents.runtime import build_checkpointer, get_checkpointer
+from mult_agents.runtime import build_checkpointer, get_checkpointer, recursion_limit_for
 from mult_agents.models import build_agents
 from mult_agents.state import create_initial_state
 from mult_agents.research_logger import get_research_logger, close_research_logger
@@ -382,7 +382,13 @@ class ResearchService:
         # R4.4: 用户真实输入写入 chat_messages（前端可见）
         input_state["chat_messages"] = [HumanMessage(content=query)]
         input_state["agent_messages"] = []
-        config = {"configurable": {"thread_id": runtime_config.thread_id}}
+        config = {
+            "configurable": {"thread_id": runtime_config.thread_id},
+            # 按循环上限推算：内层重检会把超步数放大到默认 25 以上
+            "recursion_limit": recursion_limit_for(
+                runtime_config.max_iterations, runtime_config.max_retrieval_rounds
+            ),
+        }
 
         # 对话摘要压缩：从 checkpoint 获取已有消息 + 新 query 合并判断
         input_state = await self._apply_summary_if_needed(
@@ -540,7 +546,13 @@ class ResearchService:
         # R4.4: 用户真实输入写入 chat_messages（前端可见）
         input_state["chat_messages"] = [HumanMessage(content=query)]
         input_state["agent_messages"] = []
-        config = {"configurable": {"thread_id": runtime_config.thread_id}}
+        config = {
+            "configurable": {"thread_id": runtime_config.thread_id},
+            # 按循环上限推算：内层重检会把超步数放大到默认 25 以上
+            "recursion_limit": recursion_limit_for(
+                runtime_config.max_iterations, runtime_config.max_retrieval_rounds
+            ),
+        }
 
         # 对话摘要压缩
         input_state = await self._apply_summary_if_needed(
@@ -604,7 +616,13 @@ class ResearchService:
         # R4.4: 用户真实输入写入 chat_messages
         input_state["chat_messages"] = [HumanMessage(content=query)]
         input_state["agent_messages"] = []
-        config = {"configurable": {"thread_id": runtime_config.thread_id}}
+        config = {
+            "configurable": {"thread_id": runtime_config.thread_id},
+            # 按循环上限推算：内层重检会把超步数放大到默认 25 以上
+            "recursion_limit": recursion_limit_for(
+                runtime_config.max_iterations, runtime_config.max_retrieval_rounds
+            ),
+        }
 
         # 对话摘要压缩
         input_state = await self._apply_summary_if_needed(
@@ -1004,7 +1022,14 @@ class ResearchService:
             mode: "continue" | "answer" | "modify"
         """
         self._ensure_initialized()
-        config = {"configurable": {"thread_id": thread_id}}
+        base_config = self._base_config
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": recursion_limit_for(
+                base_config.max_iterations if base_config else 3,
+                base_config.max_retrieval_rounds if base_config else 2,
+            ),
+        }
         run_id = uuid.uuid4().hex[:12]
         final = ""
 

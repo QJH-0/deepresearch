@@ -123,6 +123,21 @@ async def close_checkpointer() -> None:
     _checkpointer_context = None
 
 
+def recursion_limit_for(max_iterations: int, max_retrieval_rounds: int) -> int:
+    """按实际循环上限推算 LangGraph 的 recursion_limit。
+
+    默认的 25 是「图不深」时代的假设。B1 引入内层重检后，每轮外层研究最多消耗
+    `(max_retrieval_rounds + 1) × 3` 个超步（web_search + local_rag + retrieve_grader
+    各一次，重检时整组再来一遍），再加 deep_dive / analyze / reflect 三步。
+    `max_iterations=2` 时就会撞破默认值 —— 实测
+    `Recursion limit of 25 reached without hitting a stop condition`，整轮研究失败。
+
+    这里按配置算出上限并留 10 步余量（入口路由、HITL 中断、write 等）。
+    """
+    per_round = (max_retrieval_rounds + 1) * 3 + 3
+    return 10 + max_iterations * per_round
+
+
 def get_checkpointer():
     """获取已初始化的 checkpointer 单例（未初始化返回 None）。"""
     return _checkpointer_instance

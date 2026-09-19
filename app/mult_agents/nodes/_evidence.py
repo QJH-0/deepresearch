@@ -177,6 +177,23 @@ def _derive_search_plan(outline: list[dict], sub_questions: list[str], _research
 
 
 
+def _retrieval_pass_index(state: AgentState) -> int:
+    """检索批次号：把 (外层轮次, 内层重检轮次) 编码成一个单调递增的数。
+
+    ⚠️ B1 引入内层重检后**必须**用它生成 source_id。若沿用 `iteration`，
+    同一外层轮次内的多次检索会得到完全相同的前缀，于是 `WEB1_1-1` 同时指向
+    两条不同证据 —— 引用溯源断链，证据重复率虚高（实测 41%）。
+
+    编码方式：`外层轮次 × (内层上限 + 1) + 内层轮次 + 1`，结果落在
+    `[1, (max_iterations) × (max_retrieval_rounds + 1)]` 内，保持 ID 格式
+    `[A-Z]+\d+_\d+-\d+` 不变。
+    """
+    outer = int(state.get("iteration", 0) or 0)
+    inner = int(state.get("retrieval_round", 0) or 0)
+    span = int(state.get("max_retrieval_rounds", 2) or 0) + 1
+    return outer * span + inner + 1
+
+
 def _build_queries(state: AgentState, source_preference: str) -> list[dict]:
     queries: list[dict] = []
 

@@ -17,7 +17,7 @@ from ._evidence import (
     _build_queries, _assign_source_ids, _dedupe_sources, _minimal_record_filter,
     _summarize_records, _format_raw_records, _fallback_web_evidence,
     _prune_evidence_to_allowed_sources, _enrich_evidence_from_raw,
-    _finalize_query_traces, _filter_web_records,
+    _finalize_query_traces, _filter_web_records, _retrieval_pass_index,
 )
 
 logger = logging.getLogger("mult_agents")
@@ -35,8 +35,10 @@ async def web_search_node(state: AgentState, agent, agent_name: str, writer: Str
     query_traces = []
     
     iteration = state.get("iteration", 0)
-    prefix = f"WEB{iteration+1}"
-    logger.info("[web_search_node] 迭代信息 | iteration=%s | prefix=%s", iteration, prefix)
+    # 用检索批次号而非 iteration：内层重检会多次检索，用 iteration 会撞 ID
+    prefix = f"WEB{_retrieval_pass_index(state)}"
+    logger.info("[web_search_node] 迭代信息 | iteration=%s | retrieval_round=%s | prefix=%s",
+                iteration, state.get("retrieval_round", 0), prefix)
     
     for query_index, item in enumerate(queries, 1):
         query_text = str(item.get("query", ""))

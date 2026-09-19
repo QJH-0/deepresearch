@@ -129,6 +129,65 @@ class TestRetrievalGraderNode:
         assert "首轮检索词" not in captured["prompt"], "重检轮次不应再报首轮计划为已执行词"
 
 
+class TestRetrievalPassIndex:
+    """source_id 的批次号必须在内层重检时也不撞车。
+
+    实测教训：B1 之前用 `iteration` 生成前缀，引入内层重检后同一外层轮次内
+    多次检索得到相同前缀 → `WEB1_1-1` 同时指向两条不同证据，
+    证据重复率虚高到 41%，引用溯源断链。
+    """
+
+    def test_unique_across_outer_and_inner_rounds(self):
+        from mult_agents.nodes._evidence import _retrieval_pass_index
+
+        seen = [
+            _retrieval_pass_index(
+                {"iteration": outer, "retrieval_round": inner, "max_retrieval_rounds": 2}
+            )
+            for outer in range(3)
+            for inner in range(3)
+        ]
+
+        assert len(seen) == len(set(seen)), f"批次号必须两两不同，实际 {seen}"
+
+    def test_starts_at_one(self):
+        from mult_agents.nodes._evidence import _retrieval_pass_index
+
+        assert _retrieval_pass_index({}) == 1
+
+    def test_stays_pure_digits_so_id_format_holds(self):
+        """source_id 的格式约束是 [A-Z]+\\d+_\\d+-\\d+，批次号掺字母会让正则失配。"""
+        import re
+
+        from mult_agents.nodes._evidence import _retrieval_pass_index
+
+        for outer in range(3):
+            for inner in range(3):
+                index = _retrieval_pass_index(
+                    {"iteration": outer, "retrieval_round": inner, "max_retrieval_rounds": 2}
+                )
+                assert re.fullmatch(r"\d+", str(index)), f"批次号 {index} 不是纯数字"
+
+
+class TestRecursionLimit:
+    """内层重检放大超步数：默认 recursion_limit=25 不够。
+
+    实测 `max_iterations=2` 时抛
+    `Recursion limit of 25 reached without hitting a stop condition`，整轮研究失败。
+    """
+
+    def test_exceeds_langgraph_default(self):
+        from mult_agents.runtime import recursion_limit_for
+
+        assert recursion_limit_for(2, 2) > 25, "实测该配置会撞破默认上限 25"
+
+    def test_scales_with_both_limits(self):
+        from mult_agents.runtime import recursion_limit_for
+
+        assert recursion_limit_for(3, 2) > recursion_limit_for(2, 2), "外层轮次越多，上限越高"
+        assert recursion_limit_for(2, 3) > recursion_limit_for(2, 2), "内层重检越多，上限越高"
+
+
 class TestRouteAfterRetrievalGrade:
     """路由函数只做路由决策，判定结果由节点写入。
 
