@@ -21,6 +21,9 @@ langmem>=0.0.30
 
 # 搜索
 ddgs>=9.0
+# primp 2.0.0 有 TLS bug：走代理访问搜索引擎报 `cannot decrypt peer's message` /
+# `tls handshake eof`，ddgs 所有后端 0/6 全失败。2.0.1 修复后 3/3 成功。
+primp>=2.0.1
 
 # 中间件
 psycopg2-binary>=2.9

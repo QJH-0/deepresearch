@@ -1,0 +1,24 @@
+{
+  "_readme": [
+    "MCP 服务器配置（标准 mcpServers 格式，可直接复制到其他 MCP 客户端）。",
+    "",
+    "为什么用 uvx 而不是直接调库：",
+    "  ddgs 的 MCP 模式要求 mcp>=2.0，而本项目是 Python 项目，mcp 与 fastapi 共用同一个",
+    "  环境 —— 装 mcp>=2.0 会把 starlette 拉到 1.6.0，而 fastapi 0.123 要求 starlette<0.51，",
+    "  实测直接导致 `TypeError: Router.__init__() got an unexpected keyword argument",
+    "  'on_startup'`，后端不可用。",
+    "  改用 uvx 启动，uv 会自动建**隔离环境**装 ddgs[mcp]，项目环境完全不受影响。",
+    "",
+    "代理：ddgs 的 MCP 服务器读 DDGS_PROXY（不是 HTTP_PROXY），必须在这里显式传。"
+  ],
+  "mcpServers": {
+    "ddgs": {
+      "command": "uvx",
+      "args": ["--from", "ddgs[mcp]", "ddgs", "mcp"],
+      "env": {
+        "DDGS_PROXY": "http://127.0.0.1:7897",
+        "UV_CACHE_DIR": ".uv-cache"
+      }
+    }
+  }
+}

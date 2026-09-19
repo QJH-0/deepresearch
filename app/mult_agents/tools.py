@@ -28,6 +28,7 @@ from typing import Optional
 import httpx
 from langchain_core.tools import tool
 
+from .mcp_search import DdgsMcpProvider
 from .rag.core import RAGConfig, RAGSystem
 
 logger = logging.getLogger("mult_agents")
@@ -245,7 +246,7 @@ class TavilyProvider:
 # ── Provider 链式降级管理器 ──
 
 
-_VALID_PROVIDER_NAMES = {"ddgs", "tavily", "searxng"}
+_VALID_PROVIDER_NAMES = {"ddgs", "ddgs_mcp", "tavily", "searxng"}
 
 
 class SearchProviderChain:
@@ -306,6 +307,8 @@ def _get_provider_chain() -> SearchProviderChain:
         order = _load_search_provider_order()
         factories = {
             "ddgs": lambda: _get_ddg_provider(),
+            # ddgs 的 MCP 模式：子进程跑在 uvx 隔离环境里，见 mcp_servers.json
+            "ddgs_mcp": lambda: DdgsMcpProvider(),
             "tavily": lambda: TavilyProvider(),
             "searxng": lambda: SearXNGProvider(os.getenv("SEARX_URL", "").strip()),
         }
