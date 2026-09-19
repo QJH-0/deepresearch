@@ -72,6 +72,9 @@ class AppConfig:
     # ── 深度思考节点 ──
     # 默认关闭：兼容通道不透出 reasoning_content，开启只付延迟与成本（实测 write 77.3s→42.9s）
     thinking_nodes: list = field(default_factory=list)
+    # ── 检索阶段内层重检上限（grader 判定不充分时最多再检几轮）──
+    # 位置受 dataclass 规则约束：带默认值的字段必须排在本类无默认值字段之后
+    max_retrieval_rounds: int = 2
     # ── 其他业务配置 ──
     sse_heartbeat_seconds: int = 15
     search_providers: list = field(default_factory=lambda: ["ddgs", "searxng"])
@@ -149,6 +152,9 @@ class AppConfig:
             user_id=_env_str("USER_ID", biz.user_id),
             tenant_id=_env_str("TENANT_ID", biz.tenant_id),
             max_iterations=_env_int("MAX_ITERATIONS", biz.max_iterations),
+            max_retrieval_rounds=_env_int(
+                "MAX_RETRIEVAL_ROUNDS", getattr(biz, "max_retrieval_rounds", 2)
+            ),
             enable_memory=_env_bool("ENABLE_MEMORY", biz.enable_memory),
             # P5: 新记忆配置
             memory_embedding_model=_env_str("MEMORY_EMBEDDING_MODEL", biz.memory_embedding_model),

@@ -22,6 +22,7 @@ from .output_schemas import (
     LocalRagDraft,
     PlanDraft,
     ReflectionDraft,
+    RetrievalGradeDraft,
     WebSearchDraft,
 )
 from .prompts import PROMPTS
@@ -243,6 +244,8 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         reflector=_structured_for("reflect", 0.3, ReflectionDraft),
         scout_web=_structured_for("web_search", 0.4, WebSearchDraft),
         scout_local=_structured_for("local_rag", 0.4, LocalRagDraft),
+        # 检索充分性裁判：内层自适应循环用，判定用低温保证可复现
+        retrieval_grader=_structured_for("retrieve_grader", 0.0, RetrievalGradeDraft),
         evidence_judge=_structured_for(
             "deep_dive", 0.2, DeepDiveDraft, enable_thinking="deep_dive" in thinking_nodes
         ),

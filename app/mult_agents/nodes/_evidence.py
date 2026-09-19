@@ -179,10 +179,12 @@ def _derive_search_plan(outline: list[dict], sub_questions: list[str], _research
 
 def _build_queries(state: AgentState, source_preference: str) -> list[dict]:
     queries: list[dict] = []
-    
-    # Check if we are in re-search iteration
-    iteration = state.get("iteration", 0)
-    if iteration > 0 and state.get("supplementary_queries"):
+
+    # 优先级：内层重检词（grader 针对本轮缺口生成）> 外层补搜计划 > 首轮计划。
+    # retrieval_queries 非空即表示正处于检索阶段的内层重检。
+    if state.get("retrieval_queries"):
+        base_plan = state.get("retrieval_queries", [])
+    elif state.get("iteration", 0) > 0 and state.get("supplementary_queries"):
         base_plan = state.get("supplementary_queries", [])
     else:
         base_plan = state.get("search_plan", [])

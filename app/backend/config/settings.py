@@ -63,6 +63,8 @@ class BusinessSettings(BaseSettings):
     user_id: str = "default_user"
     thread_id: str = "default"
     max_iterations: int = 3
+    # 检索阶段内层重检上限：grader 判定不充分时最多再检几轮（每轮多一次检索 + 一次判定）
+    max_retrieval_rounds: int = 2
     enable_memory: bool = True
     # P5: 旧记忆配置已清理，新记忆走 MemoryService
     memory_embedding_model: str = "text-embedding-v3"

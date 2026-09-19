@@ -7,6 +7,7 @@ from .intent import intent_node, direct_answer_node
 from .plan import plan_node
 from .web_search import web_search_node
 from .local_rag import local_rag_node
+from .retrieve_grader import retrieval_grader_node
 from .deep_dive import deep_dive_node
 from .analyze import analyze_node, reflect_node
 from .write import write_node
@@ -21,6 +22,7 @@ __all__ = [
     "plan_node",
     "web_search_node",
     "local_rag_node",
+    "retrieval_grader_node",
     "deep_dive_node",
     "analyze_node",
     "reflect_node",

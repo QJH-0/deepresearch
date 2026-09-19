@@ -97,6 +97,21 @@ class ReflectionDraft(BaseModel):
     supplementary_queries: list[SupplementaryQuery] = Field(default_factory=list)
 
 
+class RetrievalGradeDraft(BaseModel):
+    """检索充分性判定：内层自适应循环的裁判。
+
+    与 `ReflectionDraft` 的分工：本节点判「这一轮检索够不够，不够就换个词再搜」，
+    是**检索阶段内部**的循环；`reflect` 判的是「跨轮次还要不要继续研究」，
+    是外层循环。两者层级不同，不要混用。
+    """
+
+    sufficient: bool = Field(description="现有证据是否足以支撑后续分析")
+    gaps: list[str] = Field(default_factory=list, description="仍缺的信息；sufficient 为真时留空")
+    rewritten_queries: list[SupplementaryQuery] = Field(
+        default_factory=list, description="针对缺口的新检索词；sufficient 为真时留空"
+    )
+
+
 # ── 检索节点：证据整理的结构化产出 ──
 #
 # 这几个 schema 只约束「结构必需字段」（source_id 必须存在且非空），

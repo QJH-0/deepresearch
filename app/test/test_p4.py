@@ -325,10 +325,12 @@ def _make_initial_state(hitl_enabled=True, plan_review=True, write_review=False,
         "needs_more_research": False, "missing_gaps": [], "research_notes": [],
         "draft": "", "final": "", "web_retrieval_stats": {},
         "local_retrieval_stats": {}, "web_search_trace": [], "local_rag_trace": [],
+        "retrieval_grade": {}, "retrieval_queries": [],
         "hitl_enabled": hitl_enabled,
         "hitl_config": {"plan_review": plan_review, "analyze_clarify": True, "write_review": write_review},
         "user_feedback": {}, "plan_revision_count": revision_count,
         "phase": "planning", "iteration": iteration, "max_iterations": max_iterations,
+        "retrieval_round": 0, "max_retrieval_rounds": 2,
     }
 
 

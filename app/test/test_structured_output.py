@@ -184,6 +184,7 @@ class TestBuildStructuredAgent:
             LocalRagDraft,
             PlanDraft,
             ReflectionDraft,
+            RetrievalGradeDraft,
             WebSearchDraft,
         )
 
@@ -208,6 +209,7 @@ class TestBuildStructuredAgent:
             "reflect": ReflectionDraft,
             "web_search": WebSearchDraft,
             "local_rag": LocalRagDraft,
+            "retrieve_grader": RetrievalGradeDraft,
             "deep_dive": DeepDiveDraft,
             "analyze": AnalysisDraft,
         }

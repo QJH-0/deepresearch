@@ -94,7 +94,13 @@ def test_no_hypotheses_references():
 
 
 def test_graph_topology_has_clarify():
-    """graph.get_graph().nodes 集合包含旧节点集 + clarify。"""
+    """graph.get_graph().nodes 集合包含全部节点。
+
+    刻意**不用 try/except 兜底**：此前这里 `except (TypeError, Exception)` 后
+    退化成「检查 graph.py 源码里出现过节点名」，结果 build_app 真的编译失败时
+    测试仍然通过 —— B1 加 grader 时就踩过这个坑（条件边目标传了 list，
+    compile 抛 unhashable type，却被兜底吞掉）。图编译失败必须让测试失败。
+    """
     from langgraph.checkpoint.memory import InMemorySaver
     from mult_agents.graph import build_app
     from mult_agents.runtime import AgentBundle
@@ -102,35 +108,60 @@ def test_graph_topology_has_clarify():
     # 用 mock agents 避免 LLM 初始化
     mock_agents = AgentBundle(
         intent_router=None, planner=None, reflector=None, scout_web=None,
-        scout_local=None, evidence_judge=None, analyst=None,
+        scout_local=None, retrieval_grader=None, evidence_judge=None, analyst=None,
         direct_responder=None, writer=None, clarifier=None,
     )
-    try:
-        app = build_app(mock_agents, InMemorySaver())
-        g = app.get_graph()
-        node_names = set(g.nodes.keys())
-    except (TypeError, Exception) as e:
-        # 在 mock 环境下 build_app 可能因 langgraph mock 不完整而失败
-        # 改为检查 graph.py 源码中节点定义
-        import inspect
-        from mult_agents import graph as graph_mod
-        src = inspect.getsource(graph_mod)
-        expected_nodes = [
-            "intent", "direct_answer", "clarify", "plan",
-            "web_search", "local_rag", "deep_dive",
-            "analyze", "reflect", "write",
-        ]
-        for node in expected_nodes:
-            assert node in src, f"graph.py 缺少节点定义: {node}"
-        return
+    app = build_app(mock_agents, InMemorySaver())
+    node_names = set(app.get_graph().nodes.keys())
 
     expected_nodes = {
         "__start__", "__end__",
         "intent", "direct_answer", "clarify", "plan",
-        "web_search", "local_rag", "deep_dive",
+        "web_search", "local_rag", "retrieve_grader", "deep_dive",
         "analyze", "reflect", "write",
     }
     assert expected_nodes <= node_names, f"缺少节点: {expected_nodes - node_names}"
+
+
+def test_retrieval_inner_loop_topology():
+    """锁定检索内层循环的边。
+
+    此前没有任何测试锁定边集合，拓扑改动只能靠人看 diff。B1 引入 grader 后必须锁住，
+    否则「重检回环被删」「检索绕过 grader 直连 deep_dive」这类退化不会被发现。
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+    from mult_agents.graph import build_app
+    from mult_agents.runtime import AgentBundle
+
+    mock_agents = AgentBundle(
+        intent_router=None, planner=None, reflector=None, scout_web=None,
+        scout_local=None, retrieval_grader=None, evidence_judge=None, analyst=None,
+        direct_responder=None, writer=None, clarifier=None,
+    )
+    edges = {
+        (edge.source, edge.target)
+        for edge in build_app(mock_agents, InMemorySaver()).get_graph().edges
+    }
+
+    expected = {
+        ("plan", "web_search"),
+        ("plan", "local_rag"),
+        ("web_search", "retrieve_grader"),
+        ("local_rag", "retrieve_grader"),
+        ("retrieve_grader", "web_search"),   # 不充分 → 扇出回两条检索边
+        ("retrieve_grader", "local_rag"),
+        ("retrieve_grader", "deep_dive"),    # 充分/达上限 → 出检索阶段
+        ("deep_dive", "analyze"),
+        ("analyze", "reflect"),
+        ("analyze", "write"),
+        ("reflect", "web_search"),
+        ("reflect", "local_rag"),
+    }
+    assert expected <= edges, f"缺少边: {expected - edges}"
+    assert ("web_search", "deep_dive") not in edges, (
+        "检索必须经 retrieve_grader 才能进 deep_dive，否则自适应重检被绕过"
+    )
+    assert ("local_rag", "deep_dive") not in edges
 
 
 # ──────────────────────────────────────────────

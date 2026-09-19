@@ -327,6 +327,7 @@ class ResearchService:
             memory_context=memory_context,
             hitl_enabled=runtime_config.hitl_enabled,
             hitl_config=runtime_config.hitl_config,
+            max_retrieval_rounds=runtime_config.max_retrieval_rounds,
         )
 
     # ── 流式入口 ──────────────────────────────────────
@@ -376,6 +377,7 @@ class ResearchService:
             memory_context=memory_context,
             hitl_enabled=runtime_config.hitl_enabled,
             hitl_config=runtime_config.hitl_config,
+            max_retrieval_rounds=runtime_config.max_retrieval_rounds,
         )
         # R4.4: 用户真实输入写入 chat_messages（前端可见）
         input_state["chat_messages"] = [HumanMessage(content=query)]
@@ -533,6 +535,7 @@ class ResearchService:
             memory_context=memory_context,
             hitl_enabled=runtime_config.hitl_enabled,
             hitl_config=runtime_config.hitl_config,
+            max_retrieval_rounds=runtime_config.max_retrieval_rounds,
         )
         # R4.4: 用户真实输入写入 chat_messages（前端可见）
         input_state["chat_messages"] = [HumanMessage(content=query)]
@@ -596,6 +599,7 @@ class ResearchService:
             memory_context=memory_context,
             hitl_enabled=runtime_config.hitl_enabled,
             hitl_config=runtime_config.hitl_config,
+            max_retrieval_rounds=runtime_config.max_retrieval_rounds,
         )
         # R4.4: 用户真实输入写入 chat_messages
         input_state["chat_messages"] = [HumanMessage(content=query)]

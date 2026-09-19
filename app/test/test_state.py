@@ -100,9 +100,11 @@ class TestCreateInitialState:
         "missing_gaps", "research_notes", "draft", "final",
         "web_retrieval_stats", "local_retrieval_stats",
         "web_search_trace", "local_rag_trace",
+        "retrieval_grade", "retrieval_queries",
         "hitl_enabled", "hitl_config", "user_feedback", "plan_revision_count",
         # ProgressState
         "phase", "iteration", "max_iterations",
+        "retrieval_round", "max_retrieval_rounds",
     }
 
     # 只写不读的死字段：节点产出无人消费，却让 State 体积与调试噪音持续增长。

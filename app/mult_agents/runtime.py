@@ -53,6 +53,7 @@ class AgentBundle:
     reflector: any
     scout_web: any
     scout_local: any
+    retrieval_grader: any
     evidence_judge: any
     analyst: any
     direct_responder: any

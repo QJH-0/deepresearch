@@ -49,6 +49,8 @@ CURRENT_VALUE_CHANNELS = (
     "findings",
     "claim_map",
     "missing_gaps",
+    "retrieval_grade",
+    "retrieval_queries",
 )
 
 

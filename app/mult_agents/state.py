@@ -74,6 +74,11 @@ class ResearchState(TypedDict):
     web_search_trace: Annotated[list[dict], operator.add]
     local_rag_trace: Annotated[list[dict], operator.add]
 
+    # 检索充分性（内层自适应循环，当前值语义）
+    # 轮次计数与上限在 ProgressState（与 iteration/max_iterations 同级）
+    retrieval_grade: dict
+    retrieval_queries: list[dict]
+
     # HITL
     hitl_enabled: bool
     hitl_config: dict
@@ -87,6 +92,9 @@ class ProgressState(TypedDict):
     phase: str
     iteration: int
     max_iterations: int
+    # 检索阶段内层循环：grader 判定不充分时自增，出检索阶段时归零
+    retrieval_round: int
+    max_retrieval_rounds: int
 
 
 class AgentState(ConversationState, ResearchState, ProgressState):
@@ -109,6 +117,7 @@ def create_initial_state(
     memory_context: str = "",
     hitl_enabled: bool = False,
     hitl_config: dict | None = None,
+    max_retrieval_rounds: int = 2,
 ) -> AgentState:
     return {
         # ConversationState
@@ -146,6 +155,9 @@ def create_initial_state(
         "local_retrieval_stats": {},
         "web_search_trace": [],
         "local_rag_trace": [],
+        "retrieval_grade": {},
+        "retrieval_round": 0,
+        "retrieval_queries": [],
         "hitl_enabled": hitl_enabled,
         "hitl_config": hitl_config or {
             "plan_review": True,
@@ -159,4 +171,6 @@ def create_initial_state(
         "phase": "initialized",
         "iteration": 0,
         "max_iterations": max_iterations,
+        "retrieval_round": 0,
+        "max_retrieval_rounds": max_retrieval_rounds,
     }

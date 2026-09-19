@@ -16,6 +16,7 @@
   "user_id": "default_user",
   "thread_id": "default",
   "max_iterations": 3,
+  "max_retrieval_rounds": 2,
   "enable_memory": true,
   "memory_embedding_model": "text-embedding-v3",
   "memory_hot_path_top_k": 5,
