@@ -1070,7 +1070,7 @@ class TestAgentBuilderConsolidation:
 
         # 先确认覆盖到位，否则下面的断言会退化成空断言
         assert {key for key, _ in captured} >= {
-            "intent_router", "plan", "reflect", "web_search", "local_rag",
+            "intent_router", "plan", "web_search", "local_rag",
             "retrieve_grader", "deep_dive", "analyze",
             "direct_answer", "write", "clarify",
         }, "有 agent 未被覆盖，本断言形同虚设"

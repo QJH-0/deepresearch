@@ -128,7 +128,6 @@ NODE_LABELS = {
     "local_rag": "知识库检索",
     "deep_dive": "证据裁判",
     "analyze": "综合分析",
-    "reflect": "补充搜索",
     "write": "报告撰写",
 }
 

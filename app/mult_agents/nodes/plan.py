@@ -1,7 +1,7 @@
 """plan 节点（P4: plan_approval 三分支 approve/revise/reject）。
 
 注意：plan_node 不重置 iteration。该字段表示已完成的检索轮次，
-由 reflect_node 与 write_node 递增；全新任务时由 create_initial_state 初始化为 0。
+由 analyze_node 与 write_node 递增；全新任务时由 create_initial_state 初始化为 0。
 
 P4 改造：
 - interrupt(kind=plan_approval) 载荷含 kind 键

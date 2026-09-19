@@ -5,7 +5,7 @@
     "deep_dive": { "model": "qwen3.8-max" },
     "analyze": { "model": "qwen3.8-max" },
     "plan": { "model": "qwen3.8-max" },
-    "reflect": { "model": "qwen3.7-plus" },
+    "retrieve_grader": { "model": "qwen3.7-plus" },
     "web_search": { "model": "qwen3.7-flash" },
     "local_rag": { "model": "qwen3.7-flash" },
     "intent_router": { "model": "qwen3.7-flash" },

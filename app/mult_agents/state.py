@@ -61,6 +61,8 @@ class ResearchState(TypedDict):
     claim_map: list[dict]
     source_index: list[dict]
     needs_more_research: bool
+    # 路由决策（当前值）：analyze 写入，条件边只读它决定继续研究还是成文
+    next_action: str
     missing_gaps: list[str]
     # 研究笔记（累积：每轮一条，由 analyze 从 findings/gaps/审计标记汇编）
     # 作用：让后续轮次与报告附录读「结论演进」，而不必重读全部证据
@@ -147,6 +149,7 @@ def create_initial_state(
         "claim_map": [],
         "source_index": [],
         "needs_more_research": False,
+        "next_action": "",
         "missing_gaps": [],
         "research_notes": [],
         "draft": "",

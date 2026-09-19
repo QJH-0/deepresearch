@@ -12,18 +12,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langgraph.types import StreamWriter
 
-from mult_agents.nodes.analyze import analyze_node, reflect_node
+from mult_agents.nodes.analyze import analyze_node
 from mult_agents.nodes.clarify import clarify_node
 from mult_agents.nodes.deep_dive import deep_dive_node
 from mult_agents.nodes.intent import direct_answer_node, intent_node
 from mult_agents.nodes.local_rag import local_rag_node
 from mult_agents.nodes.plan import plan_node
+from mult_agents.nodes.retrieve_grader import retrieval_grader_node
 from mult_agents.nodes.web_search import web_search_node
 from mult_agents.nodes.write import write_node
 
 STREAM_NODES = [
     analyze_node, clarify_node, deep_dive_node, direct_answer_node,
-    intent_node, local_rag_node, plan_node, reflect_node,
+    intent_node, local_rag_node, plan_node, retrieval_grader_node,
     web_search_node, write_node,
 ]
 

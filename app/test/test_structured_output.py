@@ -183,7 +183,6 @@ class TestBuildStructuredAgent:
             IntentDecision,
             LocalRagDraft,
             PlanDraft,
-            ReflectionDraft,
             RetrievalGradeDraft,
             WebSearchDraft,
         )
@@ -206,7 +205,6 @@ class TestBuildStructuredAgent:
         assert wired == {
             "intent_router": IntentDecision,
             "plan": PlanDraft,
-            "reflect": ReflectionDraft,
             "web_search": WebSearchDraft,
             "local_rag": LocalRagDraft,
             "retrieve_grader": RetrievalGradeDraft,
@@ -310,19 +308,24 @@ class TestDecisionNodesConsumeStructuredResult:
         assert len(out["findings"]) == 1
 
     @pytest.mark.asyncio
-    async def test_reflect_node_stores_plain_dicts(self, monkeypatch):
-        """state 要能被 checkpointer 序列化，schema 对象必须先 dump 成 dict。"""
+    async def test_analyze_emits_gap_queries_and_advances_iteration(self, monkeypatch):
+        """B3：缺口检索词与轮次推进都由 analyze 负责（原 reflect 节点的职责）。
+
+        state 要能被 checkpointer 序列化，schema 对象必须先 dump 成 dict。
+        """
         import json
 
         from mult_agents.nodes import analyze
-        from mult_agents.output_schemas import ReflectionDraft, SupplementaryQuery
+        from mult_agents.output_schemas import AnalysisDraft, SupplementaryQuery
 
         async def fake_invoke(state, prompt, agent, agent_name, node, writer=None):
             return (
-                ReflectionDraft(
-                    reflection_summary="补搜",
-                    supplementary_queries=[
-                        SupplementaryQuery(section_id="gap_1", query="q2", source_preference="web")
+                AnalysisDraft(
+                    analysis_summary="分析",
+                    needs_more_research=True,
+                    missing_gaps=["缺口A"],
+                    gap_queries=[
+                        SupplementaryQuery(section_id="gap_1", query="补检词", source_preference="web")
                     ],
                 ),
                 [],
@@ -330,14 +333,49 @@ class TestDecisionNodesConsumeStructuredResult:
 
         monkeypatch.setattr(analyze, "_invoke_structured_agent", fake_invoke)
 
-        out = await analyze.reflect_node(
-            {"query": "q", "iteration": 0, "missing_gaps": ["g"], "supplementary_queries": []},
+        out = await analyze.analyze_node(
+            {
+                "query": "q", "iteration": 0, "max_iterations": 3, "hitl_enabled": False,
+                "sub_questions": [], "evidence_pool": [], "audit_flags": [],
+            },
             None,
-            "reflect",
+            "analyst",
         )
 
         assert out["supplementary_queries"] == [
-            {"section_id": "gap_1", "query": "q2", "source_preference": "web", "reason": ""}
+            {"section_id": "gap_1", "query": "补检词", "source_preference": "web", "reason": ""}
         ]
         json.dumps(out["supplementary_queries"])
-        assert out["iteration"] == 1
+        assert out["next_action"] == "reflect"
+        assert out["iteration"] == 1, "继续研究才推进轮次"
+
+    @pytest.mark.asyncio
+    async def test_analyze_stops_at_iteration_cap(self, monkeypatch):
+        """已达迭代上限时不得推进轮次，否则上限闸永远不生效。"""
+        from mult_agents.nodes import analyze
+        from mult_agents.output_schemas import AnalysisDraft, SupplementaryQuery
+
+        async def fake_invoke(state, prompt, agent, agent_name, node, writer=None):
+            return (
+                AnalysisDraft(
+                    analysis_summary="分析",
+                    needs_more_research=True,
+                    gap_queries=[SupplementaryQuery(section_id="g", query="q")],
+                ),
+                [],
+            )
+
+        monkeypatch.setattr(analyze, "_invoke_structured_agent", fake_invoke)
+
+        out = await analyze.analyze_node(
+            {
+                "query": "q", "iteration": 3, "max_iterations": 3, "hitl_enabled": False,
+                "sub_questions": [], "evidence_pool": [], "audit_flags": [],
+            },
+            None,
+            "analyst",
+        )
+
+        assert out["next_action"] == "write"
+        assert out["iteration"] == 3, "达上限时不得推进轮次"
+        assert out["supplementary_queries"] == []

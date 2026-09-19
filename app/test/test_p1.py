@@ -107,7 +107,7 @@ def test_graph_topology_has_clarify():
 
     # 用 mock agents 避免 LLM 初始化
     mock_agents = AgentBundle(
-        intent_router=None, planner=None, reflector=None, scout_web=None,
+        intent_router=None, planner=None, scout_web=None,
         scout_local=None, retrieval_grader=None, evidence_judge=None, analyst=None,
         direct_responder=None, writer=None, clarifier=None,
     )
@@ -118,7 +118,7 @@ def test_graph_topology_has_clarify():
         "__start__", "__end__",
         "intent", "direct_answer", "clarify", "plan",
         "web_search", "local_rag", "retrieve_grader", "deep_dive",
-        "analyze", "reflect", "write",
+        "analyze", "write",
     }
     assert expected_nodes <= node_names, f"缺少节点: {expected_nodes - node_names}"
 
@@ -134,7 +134,7 @@ def test_retrieval_inner_loop_topology():
     from mult_agents.runtime import AgentBundle
 
     mock_agents = AgentBundle(
-        intent_router=None, planner=None, reflector=None, scout_web=None,
+        intent_router=None, planner=None, scout_web=None,
         scout_local=None, retrieval_grader=None, evidence_judge=None, analyst=None,
         direct_responder=None, writer=None, clarifier=None,
     )
@@ -152,10 +152,9 @@ def test_retrieval_inner_loop_topology():
         ("retrieve_grader", "local_rag"),
         ("retrieve_grader", "deep_dive"),    # 充分/达上限 → 出检索阶段
         ("deep_dive", "analyze"),
-        ("analyze", "reflect"),
-        ("analyze", "write"),
-        ("reflect", "web_search"),
-        ("reflect", "local_rag"),
+        ("analyze", "web_search"),   # 需继续研究 → 扇出回两条检索边
+        ("analyze", "local_rag"),
+        ("analyze", "write"),        # 证据充分/达上限 → 成文
     }
     assert expected <= edges, f"缺少边: {expected - edges}"
     assert ("web_search", "deep_dive") not in edges, (
@@ -281,14 +280,13 @@ def test_all_nodes_importable():
         local_rag_node,
         deep_dive_node,
         analyze_node,
-        reflect_node,
         write_node,
         clarify_node,
         bind_agent,
     )
     assert all(callable(f) for f in [
         intent_node, direct_answer_node, plan_node, web_search_node,
-        local_rag_node, deep_dive_node, analyze_node, reflect_node,
+        local_rag_node, deep_dive_node, analyze_node,
         write_node, clarify_node, bind_agent,
     ])
 

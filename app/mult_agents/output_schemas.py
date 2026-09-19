@@ -70,17 +70,6 @@ class ClaimMapEntry(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
 
 
-class AnalysisDraft(BaseModel):
-    """证据分析与完备性评估。"""
-
-    analysis_summary: str = Field(description="分析总结")
-    needs_more_research: bool = Field(default=False, description="证据是否不足以回答问题")
-    missing_gaps: list[str] = Field(default_factory=list, description="尚缺的信息")
-    findings: list[Claim] = Field(default_factory=list, description="结论列表")
-    claim_map: list[ClaimMapEntry] = Field(default_factory=list)
-    next_actions: list[str] = Field(default_factory=list)
-
-
 class SupplementaryQuery(BaseModel):
     """一条补检索计划。"""
 
@@ -90,19 +79,32 @@ class SupplementaryQuery(BaseModel):
     reason: str = Field(default="", description="为什么这条检索能填补缺口")
 
 
-class ReflectionDraft(BaseModel):
-    """补检索计划。"""
+class AnalysisDraft(BaseModel):
+    """证据分析与完备性评估。
 
-    reflection_summary: str = Field(description="补搜思路概述")
-    supplementary_queries: list[SupplementaryQuery] = Field(default_factory=list)
+    同时承担「缺口 → 补检查询」的生成（原 `reflect` 节点的职责）。
+    合并的理由：缺口与补检词本就出自同一次判断，分两次调用会让模型
+    先说出缺口、再被要求根据自己刚写的缺口出词 —— 多一次调用，还多一次信息损失。
+    """
+
+    analysis_summary: str = Field(description="分析总结")
+    needs_more_research: bool = Field(default=False, description="证据是否不足以回答问题")
+    missing_gaps: list[str] = Field(default_factory=list, description="尚缺的信息")
+    gap_queries: list[SupplementaryQuery] = Field(
+        default_factory=list,
+        description="针对 missing_gaps 的补检索词；needs_more_research 为假时留空",
+    )
+    findings: list[Claim] = Field(default_factory=list, description="结论列表")
+    claim_map: list[ClaimMapEntry] = Field(default_factory=list)
+    next_actions: list[str] = Field(default_factory=list)
 
 
 class RetrievalGradeDraft(BaseModel):
     """检索充分性判定：内层自适应循环的裁判。
 
-    与 `ReflectionDraft` 的分工：本节点判「这一轮检索够不够，不够就换个词再搜」，
-    是**检索阶段内部**的循环；`reflect` 判的是「跨轮次还要不要继续研究」，
-    是外层循环。两者层级不同，不要混用。
+    层级说明：本节点判「这一轮检索够不够，不够就换个词再搜」，
+    是**检索阶段内部**的循环；「跨轮次还要不要继续研究」由 `analyze` 的
+    `next_action` 决定。两者层级不同，不要混用。
     """
 
     sufficient: bool = Field(description="现有证据是否足以支撑后续分析")

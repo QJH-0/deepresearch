@@ -205,7 +205,10 @@ def test_structured_nodes_configured_with_schema_capable_models():
     from mult_agents.models import supports_json_schema
 
     config = AppConfig.from_file()
-    structured_nodes = ("intent_router", "plan", "reflect", "analyze")
+    structured_nodes = (
+        "intent_router", "plan", "analyze",
+        "web_search", "local_rag", "retrieve_grader", "deep_dive",
+    )
 
     for node in structured_nodes:
         node_model = config.node_models.get(node, {}).get("model", config.model)

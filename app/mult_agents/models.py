@@ -21,7 +21,6 @@ from .output_schemas import (
     IntentDecision,
     LocalRagDraft,
     PlanDraft,
-    ReflectionDraft,
     RetrievalGradeDraft,
     WebSearchDraft,
 )
@@ -259,7 +258,6 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
     return AgentBundle(
         intent_router=_structured_for("intent_router", 0.0, IntentDecision),
         planner=_structured_for("plan", 0.3, PlanDraft),
-        reflector=_structured_for("reflect", 0.3, ReflectionDraft),
         scout_web=_structured_for("web_search", 0.4, WebSearchDraft),
         scout_local=_structured_for("local_rag", 0.4, LocalRagDraft),
         # 检索充分性裁判：内层自适应循环用，判定用低温保证可复现

@@ -5,12 +5,11 @@
     plan →(web_search ∥ local_rag) → retrieve_grader
     retrieve_grader →(不充分且未达上限)→ 回 (web_search ∥ local_rag)
     retrieve_grader →(充分 / 达上限)→ deep_dive → analyze
-    analyze →(reflect ↺ | write)
-    reflect →(web_search ∥ local_rag)
-    direct_answer / write → END
+    analyze →(需继续研究且未达迭代上限)→ 回 (web_search ∥ local_rag)
+    analyze →(证据充分 / 达上限)→ write → END
 
 两级循环：`retrieve_grader` 管**检索阶段内部**的自适应重检，
-`reflect` 管**跨轮次**的继续研究。层级不同，别混用。
+`analyze` 的 `next_action` 管**跨轮次**的继续研究。层级不同，别混用。
 """
 
 
@@ -28,7 +27,6 @@ from .nodes import (
     retrieval_grader_node,
     deep_dive_node,
     analyze_node,
-    reflect_node,
     write_node,
     clarify_node,
 )
@@ -45,19 +43,14 @@ def route_after_intent(state: AgentState) -> str:
     return "clarify"
 
 
-def should_continue_research(state: AgentState) -> str:
-    iteration = state.get("iteration", 0)
-    max_iter = state.get("max_iterations", 2)
+def route_after_analyze(state: AgentState) -> str | list[str]:
+    """只做路由决策：`next_action` 由 analyze 节点写入（含迭代上限的判定）。
 
-    # If we reached max iterations, stop and write report
-    if iteration >= max_iter:
-        return "write"
-
-    # If analyst found missing gaps and requested more research, go to reflect
-    if state.get("needs_more_research", False):
-        return "reflect"
-
-    # Otherwise, we have enough evidence, go to write report
+    返回**节点名**：LangGraph 的 path_map 只接受节点名列表。
+    继续研究时返回列表，扇出回两条检索边。
+    """
+    if state.get("next_action") == "reflect":
+        return ["web_search", "local_rag"]
     return "write"
 
 
@@ -86,7 +79,6 @@ def build_app(agents, checkpointer):
     )
     workflow.add_node("deep_dive", bind_agent(deep_dive_node, agents.evidence_judge, "evidence_judge"))
     workflow.add_node("analyze", bind_agent(analyze_node, agents.analyst, "analyst"))
-    workflow.add_node("reflect", bind_agent(reflect_node, agents.reflector, "reflect"))
     workflow.add_node("write", bind_agent(write_node, agents.writer, "writer"))
 
     workflow.add_edge(START, "intent")
@@ -114,18 +106,13 @@ def build_app(agents, checkpointer):
     )
     workflow.add_edge("deep_dive", "analyze")
 
+    # 继续研究的判定收在 analyze 节点内（含迭代上限），路由函数只读 next_action
     workflow.add_conditional_edges(
         "analyze",
-        should_continue_research,
-        {
-            "reflect": "reflect",
-            "write": "write"
-        }
+        route_after_analyze,
+        ["web_search", "local_rag", "write"],
     )
 
-    # 外层补搜同样经过 grader：新一轮检索也能自适应加深
-    workflow.add_edge("reflect", "web_search")
-    workflow.add_edge("reflect", "local_rag")
     workflow.add_edge("direct_answer", END)
     workflow.add_edge("write", END)
 
