@@ -1037,27 +1037,47 @@ class TestAgentBuilderConsolidation:
         assert not hasattr(runtime, "build_agent"), "runtime 不应再重复实现 build_agent"
         assert hasattr(runtime, "AgentBundle"), "AgentBundle 仍由 runtime 提供"
 
-    def test_no_agent_is_built_with_tools(self, monkeypatch):
-        """不变量：节点直调函数、不经过 agent tool-calling，因此所有 agent 的 tools 必须为空。
+    def test_only_deep_dive_is_built_with_tools(self, monkeypatch):
+        """B2 起的不变量：只有 deep_dive 绑定工具（fetch_url），其余 agent 的 tools 必须为空。
 
-        若将来真的启用工具调用，此断言会失败 —— 那时应同时恢复 tools.py 的 @tool 层。
+        ⚠️ 此用例此前是**空断言**：它只 patch 了 `build_agent`（自由文本节点
+        direct_answer / write / clarify），而真正可能带工具的是走
+        `build_structured_agent` 的结构化节点 —— 那 7 个从未被检查。
+        于是 AGENTS.md 声称「有测试锁住」的「所有 tools 为空」不变量，实际无人守护。
+        现同时 patch 两个构建入口，并断言结构化节点被全部覆盖。
         """
         from mult_agents import models
 
-        captured_tools = []
+        captured = []
 
-        def fake_build_agent(model, api_key, prompt_key, temperature, tools, enable_thinking=False, **kwargs):
-            captured_tools.append((prompt_key, tools))
+        def fake_build_agent(model, api_key, prompt_key, temperature, tools,
+                             enable_thinking=False, **kwargs):
+            captured.append((prompt_key, list(tools or [])))
             return MagicMock()
 
+        def fake_build_structured_agent(model, api_key, prompt_key, temperature, *,
+                                        response_format, tools=None, **kwargs):
+            captured.append((prompt_key, list(tools or [])))
+            return MagicMock(spec=models.StructuredAgent)
+
         monkeypatch.setattr(models, "build_agent", fake_build_agent)
+        monkeypatch.setattr(models, "build_structured_agent", fake_build_structured_agent)
         monkeypatch.setattr(models, "init_rag_system", lambda **kw: None)
 
         models.build_agents("qwen3.8-max", "test-key", _minimal_app_config())
 
-        assert captured_tools, "未捕获到任何 agent 构建调用"
-        assert all(tools == [] for _key, tools in captured_tools), (
-            f"存在被绑定工具的 agent: {[k for k, t in captured_tools if t]}"
+        assert captured, "未捕获到任何 agent 构建调用"
+
+        # 先确认覆盖到位，否则下面的断言会退化成空断言
+        assert {key for key, _ in captured} >= {
+            "intent_router", "plan", "reflect", "web_search", "local_rag",
+            "retrieve_grader", "deep_dive", "analyze",
+            "direct_answer", "write", "clarify",
+        }, "有 agent 未被覆盖，本断言形同虚设"
+
+        with_tools = {key for key, tools in captured if tools}
+        assert with_tools == {"deep_dive"}, (
+            f"只有 deep_dive 应绑定工具（fetch_url），实际带工具的是: {sorted(with_tools)}"
         )
 
     def test_tools_module_keeps_no_unwired_tool_layer(self):
@@ -1068,8 +1088,9 @@ class TestAgentBuilderConsolidation:
                         "python_inter", "safe_write_file", "search_knowledge_base"):
             assert not hasattr(tools, removed), f"{removed} 应已随未接线工具层删除"
 
+        # fetch_url_tool 是 B2 新增、**确实绑定给 deep_dive** 的工具，属保留项
         for kept in ("web_search_records", "search_knowledge_base_records",
-                     "init_rag_system", "SearchProviderChain"):
+                     "init_rag_system", "SearchProviderChain", "fetch_url_tool"):
             assert hasattr(tools, kept), f"{kept} 是仍在使用的入口，不应被删除"
 
     def test_prompts_do_not_describe_nonexistent_tools(self):

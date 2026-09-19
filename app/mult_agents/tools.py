@@ -1,20 +1,31 @@
-"""工具模块：Web 检索 Provider 链与本地 RAG 检索入口。
+"""工具模块：Web 检索 Provider 链、本地 RAG 检索入口、网页正文抓取。
 
 Web 检索采用可配置的 Provider 链式降级策略（参考 gpt-researcher 项目）：
 按 config.json 的 search_providers 顺序依次尝试，任一 Provider 成功即返回。
 内置 ddgs / tavily / searxng 三个 Provider，可通过配置调整顺序与启停。
 
-节点直接调用本模块的函数，不经过 agent 的 tool-calling —— 因此这里不再定义
-`@tool` 包装（历史版本曾保留一层未被任何 agent 绑定的工具定义，已清理）。
+**哪些走直调、哪些绑给 agent**（Anthropic 的判据：任务路径可预测就用 workflow）：
+
+- `web_search_records` / `search_knowledge_base_records`：节点**直调**。
+  「已知必须检索」的路径可预测，workflow 比 agent 更可控、更便宜。
+- `fetch_url_tool`：**绑定给 `deep_dive` 的 agent**。
+  「哪些证据可疑、要不要读原文核实」是运行时才知道的，属 agent 适用场景。
 """
 
+import ipaddress
 import json
 import logging
 import os
+import re
+import socket
 import urllib.parse
 import urllib.request
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from html.parser import HTMLParser
 from typing import Optional
+
+import httpx
+from langchain_core.tools import tool
 
 from .rag.core import RAGConfig, RAGSystem
 
@@ -407,3 +418,144 @@ def web_search_records(query: str, count: int = 5) -> list[dict]:
             "[search-chain] 检索超时 %.0fs，降级为空结果 | query=%s", timeout, query[:60]
         )
         return []
+
+
+# ══════════════════════════════════════════════════════════════
+# 网页正文抓取：唯一一个绑定给 agent 的工具
+# ══════════════════════════════════════════════════════════════
+#
+# 与上面几个入口的区别：`web_search_records` / `search_knowledge_base_records`
+# 仍由节点**直调**（任务路径可预测，workflow 比 agent 更可控更便宜）；
+# 只有 `fetch_url` 绑给 agent —— 「哪些证据可疑、要不要读原文」是运行时才知道的，
+# 符合 Anthropic 对「何时该用 agent」的判据。
+
+_FETCH_TIMEOUT_SECONDS = 20.0
+_FETCH_MAX_CHARS = 8000
+_FETCH_USER_AGENT = "Mozilla/5.0 (compatible; DeepResearch/1.0)"
+
+# 非正文区块：丢掉能显著提升正文密度，也避免把脚本/样式当证据
+_FETCH_DROP_TAGS = frozenset({
+    "script", "style", "noscript", "nav", "header", "footer",
+    "aside", "form", "svg", "iframe", "template",
+})
+_FETCH_BLOCK_TAGS = frozenset({
+    "p", "br", "div", "li", "tr", "section", "article", "blockquote",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+})
+
+
+class _HtmlTextExtractor(HTMLParser):
+    """把 HTML 抽成纯文本。用标准库而非 bs4：bs4 只是传递依赖，未在 requirements 声明。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._drop_depth = 0
+        self._chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in _FETCH_DROP_TAGS:
+            self._drop_depth += 1
+        elif tag in _FETCH_BLOCK_TAGS:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _FETCH_DROP_TAGS and self._drop_depth:
+            self._drop_depth -= 1
+        elif tag in _FETCH_BLOCK_TAGS:
+            self._chunks.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._drop_depth and data.strip():
+            self._chunks.append(data)
+
+    @property
+    def text(self) -> str:
+        joined = "".join(self._chunks)
+        joined = re.sub(r"[ \t\r\f\v]+", " ", joined)
+        return re.sub(r"\n\s*\n\s*\n+", "\n\n", joined).strip()
+
+
+def _is_public_host(host: str) -> bool:
+    """SSRF 防护：解析到的所有地址都必须是公网，否则拒绝。
+
+    只做「域名白名单」不够 —— 攻击者可以用指向 169.254.169.254 的域名绕过。
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (address.is_private or address.is_loopback or address.is_link_local
+                or address.is_reserved or address.is_multicast or address.is_unspecified):
+            return False
+    return True
+
+
+def fetch_url(url: str, max_chars: int = _FETCH_MAX_CHARS) -> str:
+    """抓取网页正文并转成纯文本。
+
+    返回带前缀的字符串而非抛异常：工具的输出会直接进 agent 的上下文，
+    「失败原因」本身就是 agent 决定下一步的依据，抛异常只会打断循环。
+    """
+    parsed = urllib.parse.urlparse(url or "")
+    if parsed.scheme not in ("http", "https"):
+        return f"[抓取失败] 只支持 http/https，收到: {parsed.scheme or '(空)'}"
+    if not parsed.hostname:
+        return "[抓取失败] URL 缺少主机名"
+    if not _is_public_host(parsed.hostname):
+        logger.warning("[fetch_url] 拒绝非公网目标 | url=%s", url[:120])
+        return "[抓取失败] 目标主机不在公网（内网/回环地址一律拒绝）"
+
+    try:
+        response = httpx.get(
+            url,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+            follow_redirects=True,
+            headers={"User-Agent": _FETCH_USER_AGENT},
+        )
+    except Exception as exc:
+        logger.warning("[fetch_url] 请求失败 | url=%s | error=%s", url[:120], exc)
+        return f"[抓取失败] 请求异常: {type(exc).__name__}: {exc}"
+
+    if response.status_code >= 400:
+        logger.warning("[fetch_url] HTTP %s | url=%s", response.status_code, url[:120])
+        return f"[抓取失败] HTTP {response.status_code}"
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    body = response.text or ""
+    if "html" in content_type or body.lstrip()[:1] == "<":
+        extractor = _HtmlTextExtractor()
+        try:
+            extractor.feed(body)
+        except Exception as exc:  # 解析异常不应让整条链路失败
+            logger.warning("[fetch_url] HTML 解析异常，改用原始文本 | %s", exc)
+            text = body
+        else:
+            text = extractor.text or body
+    else:
+        text = body
+
+    text = text.strip()
+    if not text:
+        return "[抓取失败] 正文为空"
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n...[已截断，原文共 {len(text)} 字]"
+    logger.info("[fetch_url] 抓取成功 | url=%s | 字数=%s", url[:120], len(text))
+    return text
+
+
+@tool
+def fetch_url_tool(url: str) -> str:
+    """抓取指定网页的正文（已转纯文本），用于核实证据原文。
+
+    何时使用：某条证据的摘要（snippet）与结论相关但不足以确认，或两条证据互相冲突、
+    需要看原文才能判断时。不要对已经足够清楚的证据重复抓取，也不要一次抓取超过 3 个 URL。
+
+    Args:
+        url: 要抓取的网页地址，必须是 http/https 开头且可从证据的 url 字段取得。
+    """
+    return fetch_url(url)

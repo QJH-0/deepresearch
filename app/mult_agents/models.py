@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 
 from langchain.agents import create_agent
-from langchain.agents.structured_output import ProviderStrategy
+from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
@@ -27,7 +27,7 @@ from .output_schemas import (
 )
 from .prompts import PROMPTS
 from .rag.core import RAGConfig
-from .tools import init_rag_system
+from .tools import fetch_url_tool, init_rag_system
 from .runtime import AgentBundle
 
 logger = logging.getLogger("mult_agents")
@@ -151,9 +151,20 @@ def build_structured_agent(
     timeout: float,
     max_retries: int,
     response_format: type[BaseModel],
+    tools: list | None = None,
     enable_thinking: bool = False,
 ) -> StructuredAgent:
-    """构建决策节点的结构化执行体。"""
+    """构建决策节点的结构化执行体。
+
+    **带工具时必须用 ToolStrategy，不能沿用 ProviderStrategy。** 实测：
+    ProviderStrategy 的原生 json_schema 与 tool_calls 不兼容 —— 模型先返回工具调用
+    （content 为空），框架却拿空 content 去解析 JSON，抛
+    `StructuredOutputValidationError: Native structured output expected valid JSON`。
+    ToolStrategy 把 schema 作为一次工具调用下发，与业务工具可以共存。
+
+    代价是约束强度略低于原生 json_schema（模型走工具调用通道提交结果）。
+    无工具的节点仍走 ProviderStrategy，不受影响。
+    """
     if not supports_json_schema(model):
         raise ValueError(
             f"型号 {model} 不支持 response_format 的 json_schema 模式，"
@@ -167,12 +178,17 @@ def build_structured_agent(
         max_retries=max_retries,
         enable_thinking=enable_thinking,
     )
+    bound_tools = list(tools or [])
+    strategy = (
+        ToolStrategy(response_format) if bound_tools
+        else ProviderStrategy(response_format, strict=True)
+    )
     return StructuredAgent(
         runnable=create_agent(
             model=llm,
-            tools=[],
+            tools=bound_tools,
             system_prompt=PROMPTS[prompt_key],
-            response_format=ProviderStrategy(response_format, strict=True),
+            response_format=strategy,
         ),
         schema=response_format,
     )
@@ -222,6 +238,7 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         node_key: str,
         default_temp: float,
         response_format,
+        tools: list | None = None,
         enable_thinking: bool = False,
     ):
         """决策节点的模型配置解析，与 _model_for 同源。"""
@@ -234,6 +251,7 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
             timeout=config.llm_timeout_seconds,
             max_retries=config.llm_max_retries,
             response_format=response_format,
+            tools=tools,
             enable_thinking=enable_thinking,
         )
 
@@ -247,7 +265,9 @@ def build_agents(model: str, api_key: str, config: AppConfig) -> AgentBundle:
         # 检索充分性裁判：内层自适应循环用，判定用低温保证可复现
         retrieval_grader=_structured_for("retrieve_grader", 0.0, RetrievalGradeDraft),
         evidence_judge=_structured_for(
-            "deep_dive", 0.2, DeepDiveDraft, enable_thinking="deep_dive" in thinking_nodes
+            "deep_dive", 0.2, DeepDiveDraft,
+            tools=[fetch_url_tool],
+            enable_thinking="deep_dive" in thinking_nodes,
         ),
         analyst=_structured_for(
             "analyze", 0.3, AnalysisDraft, enable_thinking="analyze" in thinking_nodes
