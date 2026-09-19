@@ -12,6 +12,7 @@ Web 检索采用可配置的 Provider 链式降级策略（参考 gpt-researcher
   「哪些证据可疑、要不要读原文核实」是运行时才知道的，属 agent 适用场景。
 """
 
+import asyncio
 import ipaddress
 import json
 import logging
@@ -19,6 +20,7 @@ import os
 import re
 import socket
 import threading
+import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -59,6 +61,29 @@ def _normalize_web_record(title: str, url: str, snippet: str) -> dict:
         "source_type": "web",
         "published_at": "",
     }
+
+
+# DuckDuckGo 的请求间隔下限（秒），可用环境变量覆盖。
+#
+# 为什么必须有：实测连续请求下前 2~3 次成功、之后急剧退化（15 次里只成功 2 次），
+# 是典型的限流行为。而一次研究要发 17~44 次查询 —— 没有间隔的话大部分请求会被拒，
+# 表现为「搜索失败，降级为空结果」，进而导致证据池空、报告完备性掉到 0。
+#
+# 用模块级锁 + 时间戳而非每实例状态：并发检索时也只有一个请求在飞，
+# 否则多个节点同时打 DDG 一样会触发限流。
+_DDG_MIN_INTERVAL_SECONDS = float(os.getenv("DDG_MIN_INTERVAL_SECONDS", "1.5") or 1.5)
+_DDG_LAST_CALL_AT = 0.0
+_DDG_THROTTLE_LOCK = asyncio.Lock()
+
+
+async def _throttle_ddg() -> None:
+    """保证两次 DuckDuckGo 请求之间至少间隔 _DDG_MIN_INTERVAL_SECONDS。"""
+    global _DDG_LAST_CALL_AT
+    async with _DDG_THROTTLE_LOCK:
+        wait = _DDG_MIN_INTERVAL_SECONDS - (time.monotonic() - _DDG_LAST_CALL_AT)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _DDG_LAST_CALL_AT = time.monotonic()
 
 
 class DuckDuckGoProvider:
@@ -120,6 +145,7 @@ class DuckDuckGoProvider:
             except Exception:
                 pass
 
+        await _throttle_ddg()
         try:
             raw = await asyncio.to_thread(
                 lambda: self._ddgs().text(query, max_results=max_results)

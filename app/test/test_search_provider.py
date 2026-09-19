@@ -692,3 +692,69 @@ class TestDDGSProxyWiring:
         monkeypatch.setenv("HTTP_PROXY", "   ")
 
         assert tools.DuckDuckGoProvider._resolve_proxy() is None
+
+
+class TestDdgThrottle:
+    """DuckDuckGo 请求间隔。
+
+    实测：无间隔时连续 15 次请求只成功 2 次（前 2~3 次成功后急剧退化），
+    是典型限流。而一次研究要发 17~44 次查询，被限流会直接导致证据池空、
+    报告完备性掉到 0。加 1.5s 间隔后 12 次里成功 6 次。
+    """
+
+    def test_enforces_minimum_interval(self):
+        import asyncio
+        import time
+
+        import mult_agents.tools as tools
+
+        async def run():
+            started = time.monotonic()
+            for _ in range(3):
+                await tools._throttle_ddg()
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(run())
+
+        expected = tools._DDG_MIN_INTERVAL_SECONDS * 2
+        assert elapsed >= expected * 0.9, (
+            f"三次调用至少应等待 {expected:.1f}s，实际 {elapsed:.2f}s —— 节流失效会让 DDG 限流"
+        )
+
+    def test_interval_is_configurable_and_positive(self):
+        import mult_agents.tools as tools
+
+        assert tools._DDG_MIN_INTERVAL_SECONDS > 0
+
+
+class TestDdgThrottle:
+    """DuckDuckGo 请求间隔。
+
+    实测：无间隔时连续 15 次请求只成功 2 次（前 2~3 次成功后急剧退化），
+    是典型限流。而一次研究要发 17~44 次查询，被限流会直接导致证据池空、
+    报告完备性掉到 0。加 1.5s 间隔后 12 次里成功 6 次。
+    """
+
+    def test_enforces_minimum_interval(self):
+        import asyncio
+        import time
+
+        import mult_agents.tools as tools
+
+        async def run():
+            started = time.monotonic()
+            for _ in range(3):
+                await tools._throttle_ddg()
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(run())
+
+        expected = tools._DDG_MIN_INTERVAL_SECONDS * 2
+        assert elapsed >= expected * 0.9, (
+            f"三次调用至少应等待 {expected:.1f}s，实际 {elapsed:.2f}s —— 节流失效会让 DDG 限流"
+        )
+
+    def test_interval_is_configurable_and_positive(self):
+        import mult_agents.tools as tools
+
+        assert tools._DDG_MIN_INTERVAL_SECONDS > 0
