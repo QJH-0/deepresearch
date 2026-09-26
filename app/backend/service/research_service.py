@@ -126,6 +126,7 @@ NODE_LABELS = {
     "plan": "研究规划",
     "web_search": "网络检索",
     "local_rag": "知识库检索",
+    "retrieve_grader": "检索判定",
     "deep_dive": "证据裁判",
     "analyze": "综合分析",
     "write": "报告撰写",
